@@ -4,7 +4,7 @@
 // フォルトが起きた時点で必ず JS 側へ制御を返す。これがハードウェアタイマ
 // 割り込みの代わりとなり、OS(JS)によるプリエンプションを成立させる。
 
-import { OPCODE_TABLE, ARG_SIZE, FLAG, type ArgKind } from './isa.ts';
+import { type ArgKind, FLAG, OPCODE_TABLE } from './isa.ts';
 
 export const MEM_SIZE = 64 * 1024; // 64 KiB (DESIGN §2)
 export const NUM_REGS = 8; // R0-R7

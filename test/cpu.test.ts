@@ -1,8 +1,7 @@
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
-
-import { CPU, MEM_SIZE, type Context } from '../src/cpu.ts';
+import { test } from 'node:test';
 import { assemble } from '../src/assembler.ts';
+import { type Context, CPU, MEM_SIZE } from '../src/cpu.ts';
 import { FLAG, SYSCALL_INT } from '../src/isa.ts';
 
 // アセンブルして 1 プロセス分のコンテキストを作るヘルパ。

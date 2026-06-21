@@ -4,8 +4,8 @@
 // CPU の run(QUANTUM) が必ず JS へ戻る性質を使い、JS 側で時分割制御を行う
 // ことでプリエンプティブ・マルチタスクを実現する。
 
-import { CPU, MEM_SIZE, type Context, type RunResult } from './cpu.ts';
 import { assemble } from './assembler.ts';
+import { type Context, CPU, MEM_SIZE, type RunResult } from './cpu.ts';
 import { SYS, SYSCALL_INT } from './isa.ts';
 
 export type ProcState = 'ready' | 'running' | 'blocked' | 'terminated';

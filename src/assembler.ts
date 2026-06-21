@@ -10,7 +10,7 @@
 //   - 即値 / アドレスは 10進・0x16進・文字リテラル 'A'・ラベル名。
 //   - 擬似命令: '.word v[,v...]'(32bit 値を並べる) / '.string "..."'(NUL 終端)。
 
-import { ISA, ARG_SIZE, type Mnemonic, type ArgKind } from './isa.ts';
+import { ARG_SIZE, type ArgKind, ISA, type Mnemonic } from './isa.ts';
 
 export interface AssembleResult {
   bytes: Uint8Array;
@@ -115,8 +115,8 @@ export function assemble(source: string): AssembleResult {
     if (text === '') continue;
 
     // 行頭の連続したラベル定義 (例: 'loop:' や 'a: b: NOP')
-    let labelMatch: RegExpExecArray | null;
-    while ((labelMatch = /^([A-Za-z_.][\w.]*)\s*:\s*/.exec(text))) {
+    const labelRe = /^([A-Za-z_.][\w.]*)\s*:\s*/;
+    for (let labelMatch = labelRe.exec(text); labelMatch; labelMatch = labelRe.exec(text)) {
       const name = labelMatch[1]!;
       if (labels.has(name)) throw new AsmError(`ラベル重複: '${name}'`, lineNo);
       labels.set(name, addr);
