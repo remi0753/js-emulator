@@ -1,0 +1,16 @@
+{
+  "name": "jscpu-os",
+  "version": "0.1.0",
+  "description": "TypeScript で実装する仮想レジスタマシン CPU と、その上で動くプリエンプティブ・マルチタスク OS",
+  "type": "module",
+  "scripts": {
+    "test": "node --test --experimental-strip-types",
+    "typecheck": "tsc --noEmit",
+    "demo": "node demo/multitask.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.2",
+    "typescript": "^5.7.0"
+  },
+  "license": "MIT"
+}
