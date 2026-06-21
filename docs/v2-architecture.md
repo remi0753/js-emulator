@@ -1,0 +1,161 @@
+# v2 Architecture — a Unix-like OS on a virtual machine
+
+v1 gave us a register-machine CPU and a JS round-robin scheduler with simple
+per-process memory images. v2 turns this into a realistic, **xv6-style** OS:
+real privilege separation, a paging MMU, hardware traps/interrupts, port-mapped
+devices, a filesystem on a host-backed disk, and a Unix process model
+(`fork`/`exec`/`wait`/pipes) with a shell.
+
+## Big picture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ User layer (guest bytecode, USER mode)                         │
+│   init -> sh -> coreutils (echo, cat, ls, ...)                 │
+│   libc-style syscall stubs; ELF-like executables loaded from FS│
+├──────────────────────────────────────────────────────────────┤
+│ Kernel (TypeScript, conceptually ring 0)                       │
+│   trap/IRQ dispatch · scheduler · physical & virtual memory    │
+│   managers · VFS + filesystem · device drivers · fork/exec     │
+├──────────────────────────────────────────────────────────────┤
+│ Virtual hardware (TypeScript)                                  │
+│   CPU (privilege levels, paging MMU, traps) · physical RAM     │
+│   · PIT timer · console/tty · block disk (disk.img) · keyboard │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Where the kernel runs (model A)
+
+The kernel is **TypeScript**, not guest bytecode. User programs run as guest
+bytecode in **user mode**. The user/kernel boundary is enforced by real hardware
+mechanisms:
+
+- user code physically cannot read/write kernel/other-process memory (MMU
+  user/supervisor page permissions),
+- user code cannot execute privileged instructions (`IN`/`OUT`/`IRET`/`HLT`/
+  paging control) — attempts trap,
+- the only way into the kernel is a **trap** (syscall instruction), a **fault**
+  (page fault, illegal op, protection violation, divide-by-zero), or a **device
+  interrupt** (timer, keyboard).
+
+When any of these happen, `cpu.run()` returns to the TS kernel, which inspects
+and mutates guest state (using the MMU to reach user memory) and resumes the
+process. This is essentially a hypervisor/emulator structure: the *hardware* and
+the *privilege boundary* are genuine; only the kernel's implementation language
+is the host.
+
+> A future "model B" (kernel itself as guest bytecode) would require a C-like ->
+> ISA compiler and is explicitly out of scope.
+
+## CPU changes
+
+### Privilege levels
+
+- Two modes: `KERNEL` (0) and `USER` (1). The CPU runs guest code in USER mode;
+  "kernel mode" is conceptually "executing in the TS kernel".
+- Privileged instructions in USER mode raise a **general-protection trap**
+  (return to kernel): `IN`, `OUT`, `IRET`, `HLT`, and paging/trap-control ops.
+
+### New registers
+
+| Register | Meaning                                                      |
+|----------|-------------------------------------------------------------|
+| `PTBR`   | page-table base (physical addr of the page directory; ~CR3) |
+| `PFLA`   | page-fault linear address (set on a page fault; ~CR2)       |
+| paging on| whether address translation is active                       |
+
+(The trap/interrupt vector table and kernel stack live in the TS kernel in model
+A, so no in-CPU IDT/TSS is required yet.)
+
+### Paging MMU
+
+- **Physical memory**: one `Uint8Array` (e.g. 16 MiB).
+- **Page size**: 4 KiB. **Two-level** table, x86-32 style:
+  `vaddr = [10-bit dir index][10-bit table index][12-bit offset]`.
+- **PTE/PDE**: physical frame number + flags `P` (present), `W` (writable),
+  `U` (user-accessible).
+- Every USER-mode access walks the table from `PTBR`:
+  - not present -> **page fault** (with faulting vaddr in `PFLA`),
+  - write to a read-only page -> page fault,
+  - user access to a supervisor-only page -> page fault.
+- The kernel reaches user memory through the same translation
+  (`mmu.translate(ptbr, vaddr, write)`), so `copyin`/`copyout` are explicit and
+  safe — exactly like a real kernel copying across the user boundary.
+- With paging off (boot / v1 compatibility) accesses are physical and flat.
+
+### Traps, faults and interrupts
+
+`cpu.run(maxCycles)` returns a richer result describing why it stopped:
+
+| `reason`      | trigger                                          |
+|---------------|--------------------------------------------------|
+| `'timer'`     | quantum elapsed (PIT tick) -> preemption         |
+| `'syscall'`   | user executed the syscall/trap instruction       |
+| `'pagefault'` | bad translation; carries vaddr + access kind     |
+| `'fault'`     | illegal opcode / div0 / privileged-in-user / GP  |
+| `'irq'`       | a device raised an interrupt (e.g. keyboard)     |
+
+The kernel handles the event and calls `run()` again to resume the process.
+
+### Port-mapped I/O
+
+- New privileged instructions `IN rd, port` and `OUT port, rs`.
+- Devices attach to a **port bus** at fixed port numbers. Kernel drivers (TS)
+  drive devices through the same bus the guest would use, so the mechanism is
+  exercised end to end. User processes never touch ports directly (privileged) —
+  they request I/O via syscalls.
+
+## Devices
+
+| Device       | Ports / role                                                |
+|--------------|-------------------------------------------------------------|
+| PIT timer    | programmable tick; drives preemption and the clock          |
+| Console/tty  | character output; line-buffered echo                        |
+| Keyboard     | input ring buffer; raises an IRQ / blocking `read`          |
+| Block disk   | 512-byte sectors, backed by host `disk.img` (persistent)    |
+
+## Kernel subsystems (TypeScript)
+
+- **Physical memory manager**: free-frame allocator over physical RAM.
+- **Virtual memory manager**: build/tear-down address spaces, map/unmap pages,
+  grow the user heap/stack, `copyin`/`copyout`.
+- **Process manager**: PCB with page table, trap frame, fd table, parent/child
+  links, state machine; `fork` (full copy first, copy-on-write later), `exec`,
+  `wait`, `exit` with zombie reaping.
+- **Scheduler**: timer-driven preemptive round-robin (later: priorities).
+- **Trap/syscall dispatch**: decode the syscall number/args from the trap frame,
+  validate user pointers, run the handler, write the return value back.
+- **VFS + filesystem**: a small Unix-like FS (superblock, inode table, block
+  bitmap, direct/indirect blocks) on the block device; path lookup; file
+  descriptors; `open`/`read`/`write`/`close`/`dup`/pipes.
+- **Drivers**: timer, console, keyboard, disk — all via the port bus.
+
+## Executable format
+
+A minimal ELF-like format: a header (magic, entry point, segment count) plus
+segments `{ vaddr, fileOffset, fileSize, memSize, flags(R/W/X) }`. The loader
+maps each segment into a fresh address space, zero-fills BSS, sets up the user
+stack, and starts the process at the entry point in USER mode.
+
+## Boot sequence
+
+1. TS kernel initializes physical RAM, the port bus, and devices.
+2. Mounts `disk.img`, reads the superblock, brings up the FS.
+3. Creates the first process from `/init` (loaded from the FS).
+4. `init` execs `/bin/sh`; the shell reads commands and `fork`/`exec`s programs.
+
+## Syscall surface (target)
+
+Process: `fork`, `exec`, `exit`, `wait`, `getpid`, `kill`, `sbrk`.
+Files: `open`, `close`, `read`, `write`, `lseek`, `dup`, `pipe`, `stat`,
+`mkdir`, `unlink`, `chdir`, `getcwd`.
+Misc: `sleep`, `yield`, `uptime`.
+
+(The exact numbers and ABI are defined incrementally in
+[syscalls.md](syscalls.md) as each is implemented.)
+
+## Compatibility with v1
+
+The v1 flat model keeps working: with paging disabled the CPU addresses physical
+memory directly, and the existing simple scheduler/tests remain valid while the
+v2 kernel is built alongside. New ISA opcodes are additive.

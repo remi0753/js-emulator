@@ -38,7 +38,9 @@ npm run typecheck  # tsc type check
 
 ## Docs
 
-- [docs/architecture.md](docs/architecture.md) — layers and the CPU/OS boundary
+- [docs/architecture.md](docs/architecture.md) — v1 layers and the CPU/OS boundary
+- [docs/v2-architecture.md](docs/v2-architecture.md) — v2 design: Unix-like OS
+  (paging MMU, traps, port I/O, filesystem, shell)
 - [docs/isa.md](docs/isa.md) — registers, encoding, instruction set
 - [docs/syscalls.md](docs/syscalls.md) — system call ABI
 - [docs/roadmap.md](docs/roadmap.md) — devices, roadmap, design decisions
