@@ -44,8 +44,10 @@ process. This is essentially a hypervisor/emulator structure: the *hardware* and
 the *privilege boundary* are genuine; only the kernel's implementation language
 is the host.
 
-> A future "model B" (kernel itself as guest bytecode) would require a C-like ->
-> ISA compiler and is explicitly out of scope.
+> A future **model B** (kernel itself as guest bytecode, JS = hardware only) is a
+> planned long-term goal, not part of v2. It requires in-CPU trap machinery plus
+> a C-like -> ISA compiler, then porting the kernel and userland to guest code.
+> See the v3 phases in [roadmap.md](roadmap.md).
 
 ## CPU changes
 

@@ -37,6 +37,29 @@ on a host-backed disk, and a Unix process model with a shell.
 - **Phase 5** ⬜ userland: `init`, a shell, a few coreutils, pipes.
 - **Phase 6** ⬜ polish: keyboard input, more syscalls, copy-on-write `fork`.
 
+### v3 — self-hosting (model B): the kernel becomes guest code
+
+Long-term ambition: move the kernel *off* the host and onto the VM, so the OS is
+truly self-hosted. JS provides only the hardware (CPU, MMU, devices); the kernel
+and all of userland are guest bytecode running on the virtual machine — the most
+faithful model of a real OS.
+
+Writing a whole kernel + userland in raw assembly is impractical, so this stage
+is really about building a **toolchain** first, then porting.
+
+- **Phase 7** ⬜ in-CPU trap machinery for guest kernels: real interrupt vector
+  table (IDT) + kernel-mode execution + `IRET` + a kernel stack / trap frame on
+  the CPU itself (model A handled traps in TS; model B needs them in-guest).
+- **Phase 8** ⬜ a **C-like language and compiler** targeting the ISA: lexer,
+  parser, type checker, codegen, plus a linker and a tiny freestanding runtime
+  (`crt0`, no host libc). This is itself a large sub-project.
+- **Phase 9** ⬜ port the kernel (memory managers, scheduler, VFS, drivers,
+  fork/exec) from TypeScript to the C-like language; boot it in kernel mode.
+- **Phase 10** ⬜ port userland (libc, shell, coreutils) and build a real disk
+  image from compiled guest binaries; the TS layer shrinks to pure hardware.
+- **Phase 11** ⬜ stretch: self-hosting toolchain (the compiler/assembler run
+  *inside* the guest OS), so the system can rebuild itself.
+
 ## Design decisions
 
 - Register machine (R0–R7 + PC/SP/FLAGS), 32-bit, little-endian.
