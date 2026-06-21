@@ -57,8 +57,15 @@ export const ISA = {
   INT: { opcode: 0x40, args: ['imm'] },
   EI: { opcode: 0x41, args: [] },
   DI: { opcode: 0x42, args: [] },
+  // --- ポート I/O (v2, 特権命令) ---
+  IN: { opcode: 0x43, args: ['reg', 'reg'] }, // rd = port[rp]
+  OUT: { opcode: 0x44, args: ['reg', 'reg'] }, // port[rp] = rs  (オペランド: rp, rs)
+  IRET: { opcode: 0x45, args: [] }, // トラップから復帰 (model B / Phase 7 用に予約)
   HLT: { opcode: 0xff, args: [] },
 } as const satisfies Record<string, InstrSpec>;
+
+// v2 CPU で「特権命令」として扱うニーモニック (USER モードで実行するとトラップ)。
+export const PRIVILEGED: ReadonlySet<Mnemonic> = new Set(['IN', 'OUT', 'IRET', 'HLT', 'EI', 'DI']);
 
 export type Mnemonic = keyof typeof ISA;
 

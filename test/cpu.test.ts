@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+
 import { assemble } from '../src/assembler.ts';
 import { type Context, CPU, MEM_SIZE } from '../src/cpu.ts';
 import { FLAG, SYSCALL_INT } from '../src/isa.ts';
 
-// アセンブルして 1 プロセス分のコンテキストを作るヘルパ。
+// Assemble a program and build a single-process context.
 function makeContext(source: string): Context {
   const { bytes } = assemble(source);
   const mem = new Uint8Array(MEM_SIZE);
@@ -12,7 +13,7 @@ function makeContext(source: string): Context {
   return { regs: new Array(8).fill(0), pc: 0, sp: MEM_SIZE, flags: 0, mem };
 }
 
-test('算術: ADD / SUB / MUL とフラグ', () => {
+test('arithmetic: ADD / SUB / MUL and flags', () => {
   const cpu = new CPU();
   cpu.loadContext(
     makeContext(`
@@ -29,21 +30,21 @@ test('算術: ADD / SUB / MUL とフラグ', () => {
   const r = cpu.run(1000);
   assert.equal(r.reason, 'halt');
   assert.equal(cpu.regs[0], 0);
-  assert.ok((cpu.flags & FLAG.ZF) !== 0, 'ZF が立つべき');
+  assert.ok((cpu.flags & FLAG.ZF) !== 0, 'ZF should be set');
 });
 
-test('分岐: ループで 1+2+...+5 = 15 を計算', () => {
+test('branching: loop computes 1+2+...+5 = 15', () => {
   const cpu = new CPU();
   cpu.loadContext(
     makeContext(`
-      MOV R0, 0       ; 合計
-      MOV R1, 1       ; カウンタ
-      MOV R2, 5       ; 上限
-      MOV R3, 1       ; 定数 1
+      MOV R0, 0       ; sum
+      MOV R1, 1       ; counter
+      MOV R2, 5       ; limit
+      MOV R3, 1       ; constant 1
     loop:
       ADD R0, R1      ; sum += i
       CMP R1, R2      ; i - 5
-      JZ done         ; i == 5 なら終了
+      JZ done         ; stop when i == 5
       ADD R1, R3      ; i++
       JMP loop
     done:
@@ -55,7 +56,7 @@ test('分岐: ループで 1+2+...+5 = 15 を計算', () => {
   assert.equal(cpu.regs[0], 15);
 });
 
-test('符号付き分岐: JL / JG', () => {
+test('signed branches: JL / JG', () => {
   const cpu = new CPU();
   cpu.loadContext(
     makeContext(`
@@ -63,7 +64,7 @@ test('符号付き分岐: JL / JG', () => {
       MOV R1, 10
       CMP R0, R1      ; 3 - 10 < 0 -> SF
       JL less
-      MOV R2, 100     ; 通らない
+      MOV R2, 100     ; not taken
       HLT
     less:
       MOV R2, 7
@@ -74,12 +75,12 @@ test('符号付き分岐: JL / JG', () => {
   assert.equal(cpu.regs[2], 7);
 });
 
-test('WRITE 相当: INT 0x80 で停止し R0/R1 を読める', () => {
+test('WRITE-like: INT 0x80 stops and exposes R0/R1', () => {
   const cpu = new CPU();
   cpu.loadContext(
     makeContext(`
       MOV R0, 1       ; syscall WRITE
-      MOV R1, 'A'     ; 文字
+      MOV R1, 'A'     ; char
       INT 0x80
       HLT
     `),
@@ -89,12 +90,12 @@ test('WRITE 相当: INT 0x80 で停止し R0/R1 を読める', () => {
   assert.equal(r.reason === 'int' && r.int, SYSCALL_INT);
   assert.equal(cpu.regs[0], 1);
   assert.equal(cpu.regs[1], 'A'.charCodeAt(0));
-  // INT の後ろから再開できる
+  // resumes right after INT
   const r2 = cpu.run(1000);
   assert.equal(r2.reason, 'halt');
 });
 
-test('スタック: PUSH / POP / CALL / RET', () => {
+test('stack: PUSH / POP / CALL / RET', () => {
   const cpu = new CPU();
   cpu.loadContext(
     makeContext(`
@@ -113,7 +114,7 @@ test('スタック: PUSH / POP / CALL / RET', () => {
   assert.equal(cpu.regs[0], 10);
 });
 
-test('クォンタム: maxCycles 到達で reason=quantum', () => {
+test('quantum: reason=quantum when maxCycles is reached', () => {
   const cpu = new CPU();
   cpu.loadContext(
     makeContext(`
@@ -126,7 +127,7 @@ test('クォンタム: maxCycles 到達で reason=quantum', () => {
   assert.equal(r.reason, 'quantum');
 });
 
-test('フォルト: 0 除算と不正オペコード', () => {
+test('faults: divide-by-zero and illegal opcode', () => {
   const cpu = new CPU();
   cpu.loadContext(
     makeContext(`
@@ -139,7 +140,7 @@ test('フォルト: 0 除算と不正オペコード', () => {
   const r = cpu.run(1000);
   assert.equal(r.reason, 'fault');
 
-  // 不正オペコード (0xEE は未定義)
+  // illegal opcode (0xEE is undefined)
   const ctx: Context = {
     regs: new Array(8).fill(0),
     pc: 0,
@@ -153,12 +154,12 @@ test('フォルト: 0 除算と不正オペコード', () => {
   assert.equal(cpu2.run(10).reason, 'fault');
 });
 
-test('コンテキスト切替: save/load で 2 つの状態を保持', () => {
+test('context switch: save/load keeps two independent states', () => {
   const cpu = new CPU();
   const a = makeContext(`spin: ADD R0, R1\nJMP spin`);
-  a.regs[1] = 1; // A は R0 を +1 し続ける
+  a.regs[1] = 1; // A increments R0 by 1
   const b = makeContext(`spin: ADD R0, R1\nJMP spin`);
-  b.regs[1] = 10; // B は R0 を +10 し続ける
+  b.regs[1] = 10; // B increments R0 by 10
 
   for (let i = 0; i < 3; i++) {
     cpu.loadContext(a);
@@ -169,7 +170,7 @@ test('コンテキスト切替: save/load で 2 つの状態を保持', () => {
     cpu.run(4);
     cpu.saveContext(b);
   }
-  // それぞれ独立に積算されている
+  // each accumulated independently
   assert.ok(a.regs[0]! > 0);
   assert.ok(b.regs[0]! > a.regs[0]!);
 });
