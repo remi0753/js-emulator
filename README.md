@@ -1,4 +1,4 @@
-# jscpu-os
+# js-emulator
 
 A virtual 32-bit register-machine **CPU** and a **preemptive multitasking OS**
 running on top of it, both written in TypeScript.

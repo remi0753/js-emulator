@@ -1,5 +1,5 @@
 {
-  "name": "jscpu-os",
+  "name": "js-emulator",
   "version": "0.1.0",
   "description": "TypeScript で実装する仮想レジスタマシン CPU と、その上で動くプリエンプティブ・マルチタスク OS",
   "type": "module",
