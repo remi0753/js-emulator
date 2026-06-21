@@ -1,16 +1,34 @@
 # js-emulator
 
-A virtual 32-bit register-machine **CPU** and a **preemptive multitasking OS**
-running on top of it, both written in TypeScript.
+A virtual 32-bit register-machine **CPU** and an **operating system** running on
+top of it, both written in TypeScript — built up in two generations.
 
-The whole point is the **CPU/OS boundary**: the CPU's `run(maxCycles)` always
-returns control to JavaScript after a fixed number of instructions. That return
-stands in for a hardware timer interrupt, letting the OS (plain JS) swap process
-state and implement preemption.
+The whole thing rests on one idea, the **CPU/OS boundary**: the CPU's
+`run(maxCycles)` always returns control to JavaScript after a fixed number of
+instructions (or on a trap/fault/interrupt). That return stands in for a hardware
+timer interrupt, letting the OS swap process state and implement preemption.
+
+## Two generations
+
+### v1 — the smallest real preemptive OS · [docs/v1.md](docs/v1.md)
+
+A 32-bit register machine plus a tiny JS round-robin OS. No MMU, no privilege
+levels, no devices — just enough to make **preemptive multitasking** real and to
+show the CPU/OS boundary on its own. Two processes time-slice and interleave:
 
 ```
 A:A  B:B  A:A  B:B  A:A  B:B  A:A  B:B  A:A  B:B   # two processes, time-sliced
 ```
+
+### v2 — a Unix-like OS (in progress) · [docs/v2.md](docs/v2.md)
+
+The same trick scaled up into a realistic, **xv6-style** OS: genuine
+**privilege separation**, a **paging MMU**, hardware **traps/interrupts**,
+**port-mapped devices**, a **filesystem** on a host-backed disk, and a Unix
+process model (`fork`/`exec`/`wait`/pipes) with a **shell**. The hardware and the
+user/kernel boundary are real; only the kernel's implementation language stays
+the host (TypeScript). **Done when** the kernel boots to a shell and `ls` lists
+the files on the mounted `disk.img`.
 
 ## Layout
 
@@ -41,9 +59,9 @@ npm run typecheck  # tsc type check
 
 ## Docs
 
-- [docs/architecture.md](docs/architecture.md) — v1 layers and the CPU/OS boundary
-- [docs/v2-architecture.md](docs/v2-architecture.md) — v2 design: Unix-like OS
-  (paging MMU, traps, port I/O, filesystem, shell)
-- [docs/isa.md](docs/isa.md) — registers, encoding, instruction set
+- [docs/v1.md](docs/v1.md) — v1 in detail: the CPU/OS boundary, scheduler, isolation
+- [docs/v2.md](docs/v2.md) — v2 design: privilege, paging MMU, traps, port I/O,
+  filesystem, shell
+- [docs/isa.md](docs/isa.md) — registers, encoding, instruction set (shared core)
 - [docs/syscalls.md](docs/syscalls.md) — system call ABI
-- [docs/roadmap.md](docs/roadmap.md) — devices, roadmap, design decisions
+- [docs/roadmap.md](docs/roadmap.md) — devices, roadmap (v1 → v2 → v3), design decisions

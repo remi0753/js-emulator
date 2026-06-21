@@ -20,7 +20,7 @@
 4. ✅ `src/v1/os.ts` — PCB / round-robin scheduler / `handleSyscall` / loader
 5. ✅ demo — two processes interleaving output (preemptive multitasking works)
 
-### v2 — Unix-like OS (see [v2-architecture.md](v2-architecture.md))
+### v2 — Unix-like OS (see [v2.md](v2.md))
 
 Goal: xv6-style OS — paging MMU, real traps/interrupts, port I/O, a filesystem
 on a host-backed disk, and a Unix process model with a shell.
