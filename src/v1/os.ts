@@ -3,9 +3,9 @@
 // It uses the fact that the CPU's run(QUANTUM) always returns to JS to do time
 // slicing in plain JS, which is what makes the multitasking preemptive.
 
-import { assemble } from './assembler.ts';
+import { assemble } from '../assembler.ts';
+import { SYS, SYSCALL_INT } from '../isa.ts';
 import { type Context, CPU, MEM_SIZE, type RunResult } from './cpu.ts';
-import { SYS, SYSCALL_INT } from './isa.ts';
 
 export type ProcState = 'ready' | 'running' | 'blocked' | 'terminated';
 

@@ -4,7 +4,7 @@
 // to JS the moment an INT / HLT / fault happens. That return stands in for a
 // hardware timer interrupt and lets the OS (in JS) drive preemption.
 
-import { type ArgKind, FLAG, OPCODE_TABLE } from './isa.ts';
+import { type ArgKind, FLAG, OPCODE_TABLE } from '../isa.ts';
 
 export const MEM_SIZE = 64 * 1024; // 64 KiB
 export const NUM_REGS = 8; // R0-R7

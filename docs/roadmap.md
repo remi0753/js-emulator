@@ -14,10 +14,10 @@
 
 ### v1 — register machine + cooperative-ish multitasking ✅
 
-1. ✅ `src/cpu.ts` — memory + CPU + ISA table + `run`/`loadContext`/`saveContext`
+1. ✅ `src/v1/cpu.ts` — memory + CPU + ISA table + `run`/`loadContext`/`saveContext`
 2. ✅ `src/assembler.ts` — mnemonics -> bytecode (with label resolution)
 3. ✅ unit tests — arithmetic, branching, `WRITE`, `HLT` for a single process
-4. ✅ `src/os.ts` — PCB / round-robin scheduler / `handleSyscall` / loader
+4. ✅ `src/v1/os.ts` — PCB / round-robin scheduler / `handleSyscall` / loader
 5. ✅ demo — two processes interleaving output (preemptive multitasking works)
 
 ### v2 — Unix-like OS (see [v2-architecture.md](v2-architecture.md))

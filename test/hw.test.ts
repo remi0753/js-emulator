@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { assemble } from '../src/assembler.ts';
-import { CPU, MODE } from '../src/hw/cpu.ts';
-import { PAGE_SIZE, PhysicalMemory } from '../src/hw/memory.ts';
-import { PTE } from '../src/hw/mmu.ts';
-import { PortBus, type PortDevice } from '../src/hw/ports.ts';
+import { CPU, MODE } from '../src/v2/hw/cpu.ts';
+import { PAGE_SIZE, PhysicalMemory } from '../src/v2/hw/memory.ts';
+import { PTE } from '../src/v2/hw/mmu.ts';
+import { PortBus, type PortDevice } from '../src/v2/hw/ports.ts';
 
 const MiB = 1024 * 1024;
 

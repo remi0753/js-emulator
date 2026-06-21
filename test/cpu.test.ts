@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { assemble } from '../src/assembler.ts';
-import { type Context, CPU, MEM_SIZE } from '../src/cpu.ts';
 import { FLAG, SYSCALL_INT } from '../src/isa.ts';
+import { type Context, CPU, MEM_SIZE } from '../src/v1/cpu.ts';
 
 // Assemble a program and build a single-process context.
 function makeContext(source: string): Context {

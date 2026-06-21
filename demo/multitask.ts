@@ -6,7 +6,7 @@
 //
 // 実行: npm run demo  (= node demo/multitask.ts)
 
-import { OS } from '../src/os.ts';
+import { OS } from '../src/v1/os.ts';
 
 // 引数 'X' の文字を count 回、毎回 YIELD しながら出力するプログラム。
 function printer(char: string, count: number): string {

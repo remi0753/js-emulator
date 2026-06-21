@@ -4,7 +4,7 @@
 // trap / fault / interrupt happens run() returns control to the TS kernel, which
 // inspects the state and resumes.
 
-import { FLAG, OPCODE_TABLE, PRIVILEGED } from '../isa.ts';
+import { FLAG, OPCODE_TABLE, PRIVILEGED } from '../../isa.ts';
 import { type PhysicalMemory, WORD } from './memory.ts';
 import { Mmu } from './mmu.ts';
 import type { PortBus } from './ports.ts';

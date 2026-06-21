@@ -15,12 +15,15 @@ A:A  B:B  A:A  B:B  A:A  B:B  A:A  B:B  A:A  B:B   # two processes, time-sliced
 ## Layout
 
 ```
-src/isa.ts        ISA table — single source of truth shared by CPU & assembler
-src/cpu.ts        register machine: fetch-decode-execute, memory, interrupts
-src/assembler.ts  assembly text -> bytecode (two-pass, label resolution)
-src/os.ts         PCB, round-robin scheduler, syscalls, program loader
-demo/multitask.ts two processes printing interleaved
-test/             node:test unit tests
+src/isa.ts         ISA table — single source of truth shared by CPU & assembler
+src/assembler.ts   assembly text -> bytecode (two-pass, label resolution)
+src/v1/            v1 — register machine + JS round-robin OS (working demo)
+  cpu.ts           register machine: fetch-decode-execute, memory, interrupts
+  os.ts            PCB, round-robin scheduler, syscalls, program loader
+src/v2/            v2 — Unix-like OS (in progress)
+  hw/              virtual hardware: cpu (privilege/MMU/traps), memory, mmu, ports
+demo/multitask.ts  two v1 processes printing interleaved
+test/              node:test unit tests
 ```
 
 ## Requirements

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { OS } from '../src/os.ts';
+import { OS } from '../src/v1/os.ts';
 
 // An OS that just collects console output into an array.
 function makeOS(quantum = 1000) {
