@@ -1,14 +1,14 @@
-// アセンブラ: ニーモニックのテキスト → バイトコード (DESIGN §9-2)。
+// Assembler: mnemonic text -> bytecode.
 //
-// CPU と同じ ISA テーブル(単一の真実)を引いてオペランドの並びを決める。
-// 2 パス方式: パス1 でラベルのアドレスを確定し、パス2 でバイト列を出力する。
+// Uses the same ISA table (single source of truth) as the CPU to decide the
+// operand layout. Two passes: pass 1 fixes label addresses, pass 2 emits bytes.
 //
-// 構文:
-//   - 1 行 1 命令。';' か '#' 以降はコメント。
-//   - ラベル定義は 'name:'(命令と同じ行に置いてもよい)。
-//   - レジスタは R0-R7。
-//   - 即値 / アドレスは 10進・0x16進・文字リテラル 'A'・ラベル名。
-//   - 擬似命令: '.word v[,v...]'(32bit 値を並べる) / '.string "..."'(NUL 終端)。
+// Syntax:
+//   - One instruction per line. ';' or '#' starts a comment.
+//   - A label definition is 'name:' (may share a line with an instruction).
+//   - Registers are R0-R7.
+//   - Immediates / addresses: decimal, 0x hex, char literal 'A', or a label.
+//   - Directives: '.word v[,v...]' (32-bit words) / '.string "..."' (NUL-terminated).
 
 import { ARG_SIZE, type ArgKind, ISA, type Mnemonic } from './isa.ts';
 
@@ -18,7 +18,7 @@ export interface AssembleResult {
   size: number;
 }
 
-// パス1 で組み立てる中間表現。
+// Intermediate representation built in pass 1.
 type Item =
   | { kind: 'instr'; addr: number; mnemonic: Mnemonic; operands: string[]; line: number }
   | { kind: 'data'; addr: number; bytes: number[] };
@@ -33,7 +33,7 @@ function stripComment(line: string): string {
   return line;
 }
 
-// オペランドを ',' で分割(文字列リテラル内のカンマは無視)。
+// Split operands on ',' (commas inside a string literal are ignored).
 function splitOperands(s: string): string[] {
   const out: string[] = [];
   let cur = '';
@@ -55,34 +55,34 @@ function splitOperands(s: string): string[] {
 
 function parseReg(tok: string, line: number): number {
   const m = /^R([0-7])$/i.exec(tok);
-  if (!m) throw new AsmError(`不正なレジスタ: '${tok}'`, line);
+  if (!m) throw new AsmError(`invalid register: '${tok}'`, line);
   return Number(m[1]);
 }
 
-// 即値 / アドレスの値を解決。ラベルは labels から引く(パス2)。
+// Resolve the value of an immediate / address. Labels are looked up (pass 2).
 function parseValue(tok: string, labels: Map<string, number>, line: number): number {
-  // 文字リテラル 'A'
+  // char literal 'A'
   const ch = /^'(\\?.)'$/.exec(tok);
   if (ch) {
     const body = ch[1]!;
     const map: Record<string, number> = { '\\n': 10, '\\t': 9, '\\0': 0, '\\\\': 92, "\\'": 39 };
     const code = body.length === 2 ? map[body] : body.codePointAt(0);
-    if (code === undefined) throw new AsmError(`不正な文字リテラル: ${tok}`, line);
+    if (code === undefined) throw new AsmError(`invalid char literal: ${tok}`, line);
     return code >>> 0;
   }
-  // 16進
+  // hex
   if (/^[-+]?0x[0-9a-f]+$/i.test(tok)) return Number(tok) >>> 0;
-  // 10進
+  // decimal
   if (/^[-+]?\d+$/.test(tok)) return Number(tok) >>> 0;
-  // ラベル
+  // label
   const addr = labels.get(tok);
-  if (addr === undefined) throw new AsmError(`未定義のラベル / 不正な値: '${tok}'`, line);
+  if (addr === undefined) throw new AsmError(`undefined label / invalid value: '${tok}'`, line);
   return addr >>> 0;
 }
 
 function parseStringLiteral(tok: string, line: number): number[] {
   const m = /^"(.*)"$/s.exec(tok);
-  if (!m) throw new AsmError(`不正な文字列リテラル: ${tok}`, line);
+  if (!m) throw new AsmError(`invalid string literal: ${tok}`, line);
   const body = m[1]!;
   const bytes: number[] = [];
   for (let i = 0; i < body.length; i++) {
@@ -98,7 +98,7 @@ function parseStringLiteral(tok: string, line: number): number[] {
 
 export class AsmError extends Error {
   constructor(message: string, line: number) {
-    super(`アセンブルエラー (line ${line}): ${message}`);
+    super(`assemble error (line ${line}): ${message}`);
   }
 }
 
@@ -108,17 +108,17 @@ export function assemble(source: string): AssembleResult {
   const items: Item[] = [];
   let addr = 0;
 
-  // --- パス1: ラベル位置とレイアウトを確定 ---
+  // --- pass 1: fix label positions and the layout ---
   for (let i = 0; i < rawLines.length; i++) {
     const lineNo = i + 1;
     let text = stripComment(rawLines[i]!).trim();
     if (text === '') continue;
 
-    // 行頭の連続したラベル定義 (例: 'loop:' や 'a: b: NOP')
+    // leading run of label definitions (e.g. 'loop:' or 'a: b: NOP')
     const labelRe = /^([A-Za-z_.][\w.]*)\s*:\s*/;
     for (let labelMatch = labelRe.exec(text); labelMatch; labelMatch = labelRe.exec(text)) {
       const name = labelMatch[1]!;
-      if (labels.has(name)) throw new AsmError(`ラベル重複: '${name}'`, lineNo);
+      if (labels.has(name)) throw new AsmError(`duplicate label: '${name}'`, lineNo);
       labels.set(name, addr);
       text = text.slice(labelMatch[0].length).trim();
     }
@@ -128,12 +128,12 @@ export function assemble(source: string): AssembleResult {
     const head = (spaceIdx === -1 ? text : text.slice(0, spaceIdx)).toUpperCase();
     const rest = spaceIdx === -1 ? '' : text.slice(spaceIdx).trim();
 
-    // 擬似命令(データ)
+    // directives (data)
     if (head === '.WORD') {
       const vals = splitOperands(rest);
       const bytes: number[] = [];
       for (const v of vals) {
-        // ラベル参照は不可(値が確定していない場合があるため数値のみ)。
+        // labels are not allowed here (numbers only, since values may be unresolved).
         const n = parseValue(v, labels, lineNo) >>> 0;
         bytes.push(n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff);
       }
@@ -143,19 +143,19 @@ export function assemble(source: string): AssembleResult {
     }
     if (head === '.STRING') {
       const bytes = parseStringLiteral(rest.trim(), lineNo);
-      bytes.push(0); // NUL 終端
+      bytes.push(0); // NUL terminator
       items.push({ kind: 'data', addr, bytes });
       addr += bytes.length;
       continue;
     }
 
-    // 通常命令
+    // normal instruction
     const spec = (ISA as Record<string, { opcode: number; args: readonly ArgKind[] }>)[head];
-    if (!spec) throw new AsmError(`不明なニーモニック: '${head}'`, lineNo);
+    if (!spec) throw new AsmError(`unknown mnemonic: '${head}'`, lineNo);
     const operands = rest === '' ? [] : splitOperands(rest);
     if (operands.length !== spec.args.length) {
       throw new AsmError(
-        `'${head}' はオペランド ${spec.args.length} 個ですが ${operands.length} 個でした`,
+        `'${head}' takes ${spec.args.length} operand(s) but got ${operands.length}`,
         lineNo,
       );
     }
@@ -163,7 +163,7 @@ export function assemble(source: string): AssembleResult {
     addr += 1 + spec.args.reduce((sum, a) => sum + ARG_SIZE[a], 0);
   }
 
-  // --- パス2: バイト列を出力 ---
+  // --- pass 2: emit the byte stream ---
   const size = addr;
   const bytes = new Uint8Array(size);
   const write32 = (at: number, v: number) => {

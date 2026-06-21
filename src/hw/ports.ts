@@ -1,21 +1,22 @@
-// ポート I/O バス (v2)。デバイスを固定ポート番号に接続する。
+// Port I/O bus (v2). Attaches devices at fixed port numbers.
 //
-// CPU の特権命令 IN/OUT と、TS カーネルのドライバの両方がこの同じバスを
-// 通じてデバイスを操作する (= ポート I/O の機構を端から端まで使う)。
+// Both the CPU's privileged IN/OUT instructions and the TS kernel drivers talk
+// to devices through this same bus (so the port I/O mechanism is exercised end
+// to end).
 
 export interface PortDevice {
-  // ポートからの読み出し (IN)。32bit 値を返す。
+  // Read from a port (IN). Returns a 32-bit value.
   read?(port: number): number;
-  // ポートへの書き込み (OUT)。
+  // Write to a port (OUT).
   write?(port: number, value: number): void;
 }
 
 export class PortBus {
-  // port 番号 -> デバイス
+  // port number -> device
   private readers = new Map<number, PortDevice>();
   private writers = new Map<number, PortDevice>();
 
-  // [base, base+count) のポート範囲にデバイスを割り当てる。
+  // Assign a device to the port range [base, base+count).
   register(base: number, count: number, device: PortDevice): void {
     for (let p = base; p < base + count; p++) {
       if (device.read) this.readers.set(p, device);
@@ -25,13 +26,13 @@ export class PortBus {
 
   in(port: number): number {
     const dev = this.readers.get(port);
-    if (!dev?.read) throw new PortError(`未接続ポートからの IN: 0x${port.toString(16)}`);
+    if (!dev?.read) throw new PortError(`IN from an unwired port: 0x${port.toString(16)}`);
     return dev.read(port) >>> 0;
   }
 
   out(port: number, value: number): void {
     const dev = this.writers.get(port);
-    if (!dev?.write) throw new PortError(`未接続ポートへの OUT: 0x${port.toString(16)}`);
+    if (!dev?.write) throw new PortError(`OUT to an unwired port: 0x${port.toString(16)}`);
     dev.write(port, value >>> 0);
   }
 }

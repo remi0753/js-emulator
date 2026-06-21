@@ -1,8 +1,8 @@
-// v2 CPU。物理メモリ + ページング MMU + ポート I/O + 特権レベルを持つ。
+// v2 CPU. Has physical memory + a paging MMU + port I/O + privilege levels.
 //
-// model A: CPU はユーザープログラム (ゲストバイトコード) を USER モードで実行し、
-// トラップ / フォルト / 割り込みが起きると run() が TS カーネルへ制御を返す。
-// カーネルは状態を調べて再開する。
+// model A: the CPU runs user programs (guest bytecode) in USER mode, and when a
+// trap / fault / interrupt happens run() returns control to the TS kernel, which
+// inspects the state and resumes.
 
 import { FLAG, OPCODE_TABLE, PRIVILEGED } from '../isa.ts';
 import { type PhysicalMemory, WORD } from './memory.ts';
@@ -17,20 +17,20 @@ export type Mode = (typeof MODE)[keyof typeof MODE];
 export type FaultKind =
   | 'illegal-opcode'
   | 'divide-by-zero'
-  | 'privileged' // USER モードで特権命令
-  | 'illegal' // 未実装命令など
-  | 'phys-range'; // ページング無効時の物理範囲外
+  | 'privileged' // privileged instruction in USER mode
+  | 'illegal' // unimplemented instruction, etc.
+  | 'phys-range'; // physical out-of-range while paging is off
 
-// run() が JS (カーネル) へ戻る理由 (DESIGN v2 §トラップ)。
+// Why run() returns to JS (the kernel).
 export type RunResult =
-  | { reason: 'timer' } // クォンタム満了 (PIT tick) → プリエンプション
+  | { reason: 'timer' } // quantum elapsed (PIT tick) -> preemption
   | { reason: 'syscall'; num: number } // INT n
   | { reason: 'pagefault'; vaddr: number; write: boolean; user: boolean; present: boolean }
   | { reason: 'fault'; kind: FaultKind; message: string }
-  | { reason: 'halt' } // HLT (カーネルモード / ブート時)
-  | { reason: 'irq'; line: number }; // デバイス割り込み
+  | { reason: 'halt' } // HLT (kernel mode / boot)
+  | { reason: 'irq'; line: number }; // device interrupt
 
-// CPU の保存可能な状態 (プロセスのトラップフレームに相当)。
+// The CPU's saveable state (equivalent to a process's trap frame).
 export interface CpuState {
   regs: number[];
   pc: number;
@@ -41,7 +41,7 @@ export interface CpuState {
   pagingEnabled: boolean;
 }
 
-// 実行ループ内部でのみ使う例外。run() がトラップ結果へ変換する。
+// Exceptions used only inside the execution loop. run() converts them to trap results.
 class PageFault {
   vaddr: number;
   write: boolean;
@@ -69,9 +69,9 @@ export class CPU {
   sp = 0;
   flags = 0;
   mode: Mode = MODE.KERNEL;
-  ptbr = 0; // ページディレクトリの物理アドレス (CR3 相当)
+  ptbr = 0; // page directory physical address (~CR3)
   pagingEnabled = false;
-  pfla = 0; // 直近のページフォルト線形アドレス (CR2 相当)
+  pfla = 0; // page-fault linear address from the last fault (~CR2)
 
   readonly mmu: Mmu;
   readonly phys: PhysicalMemory;
@@ -84,7 +84,7 @@ export class CPU {
     this.mmu = new Mmu(phys);
   }
 
-  // --- 状態の保存 / 復元 ---
+  // --- save / restore state ---
 
   loadState(s: CpuState): void {
     this.regs = s.regs;
@@ -106,17 +106,18 @@ export class CPU {
     s.pagingEnabled = this.pagingEnabled;
   }
 
-  // デバイスからの割り込み要求。次の命令境界で IF が立っていれば run() が返す。
+  // Interrupt request from a device. run() returns at the next instruction
+  // boundary if IF is set.
   raiseIrq(line: number): void {
     this.pendingIrq = line;
   }
 
-  // --- アドレス変換付きメモリアクセス ---
+  // --- memory access with address translation ---
 
   private xlate(vaddr: number, write: boolean): number {
     if (!this.pagingEnabled) {
       if (vaddr < 0 || vaddr + 1 > this.phys.size) {
-        throw new CpuFault('phys-range', `物理範囲外: 0x${vaddr.toString(16)}`);
+        throw new CpuFault('phys-range', `physical out of range: 0x${vaddr.toString(16)}`);
       }
       return vaddr;
     }
@@ -150,7 +151,7 @@ export class CPU {
     this.wr8(v + 3, (u >>> 24) & 0xff);
   }
 
-  // --- フェッチ (PC を進める) ---
+  // --- fetch (advances PC) ---
 
   private fetch8(): number {
     return this.rd8(this.pc++);
@@ -161,7 +162,7 @@ export class CPU {
     return v;
   }
 
-  // --- フラグ / スタック ---
+  // --- flags / stack ---
 
   private setZS(result: number): number {
     const r = result >>> 0;
@@ -186,11 +187,11 @@ export class CPU {
     return v;
   }
 
-  // --- 実行ループ ---
+  // --- execution loop ---
 
   run(maxCycles: number): RunResult {
     for (let cycle = 0; cycle < maxCycles; cycle++) {
-      // 命令境界で割り込みをチェック (IF が立っているときのみ受け付ける)。
+      // Check for an interrupt at the instruction boundary (only when IF is set).
       if (this.pendingIrq !== null && this.getFlag(FLAG.IF)) {
         const line = this.pendingIrq;
         this.pendingIrq = null;
@@ -221,19 +222,19 @@ export class CPU {
   private step(): RunResult | undefined {
     const opcode = this.fetch8();
     const entry = OPCODE_TABLE.get(opcode);
-    if (!entry) throw new CpuFault('illegal-opcode', `不正なオペコード: 0x${opcode.toString(16)}`);
+    if (!entry) throw new CpuFault('illegal-opcode', `illegal opcode: 0x${opcode.toString(16)}`);
 
-    // 特権命令を USER モードで実行したらトラップ。
+    // Trap if a privileged instruction is executed in USER mode.
     if (this.mode === MODE.USER && PRIVILEGED.has(entry.mnemonic)) {
-      throw new CpuFault('privileged', `USER モードでの特権命令: ${entry.mnemonic}`);
+      throw new CpuFault('privileged', `privileged instruction in USER mode: ${entry.mnemonic}`);
     }
 
-    // オペランドを仕様テーブル順に読む。
+    // Read operands in the order given by the spec table.
     const ops: number[] = [];
     for (const kind of entry.args) {
       if (kind === 'reg') {
         const r = this.fetch8();
-        if (r >= NUM_REGS) throw new CpuFault('illegal', `不正なレジスタ番号: ${r}`);
+        if (r >= NUM_REGS) throw new CpuFault('illegal', `invalid register number: ${r}`);
         ops.push(r);
       } else {
         ops.push(this.fetch32());
@@ -281,13 +282,13 @@ export class CPU {
         break;
       case 'DIV': {
         const b = r[ops[1]!]!;
-        if (b === 0) throw new CpuFault('divide-by-zero', '0 除算');
+        if (b === 0) throw new CpuFault('divide-by-zero', 'divide by zero');
         r[ops[0]!] = this.setZS(Math.floor(r[ops[0]!]! / b));
         break;
       }
       case 'MOD': {
         const b = r[ops[1]!]!;
-        if (b === 0) throw new CpuFault('divide-by-zero', '0 除算 (MOD)');
+        if (b === 0) throw new CpuFault('divide-by-zero', 'divide by zero (MOD)');
         r[ops[0]!] = this.setZS(r[ops[0]!]! % b);
         break;
       }
@@ -359,7 +360,7 @@ export class CPU {
         r[ops[0]!] = this.pop();
         break;
 
-      // --- システム ---
+      // --- system ---
       case 'INT':
         return { reason: 'syscall', num: ops[0]! >>> 0 };
       case 'EI':
@@ -371,11 +372,11 @@ export class CPU {
       case 'IN': // rd = port[rp]
         r[ops[0]!] = this.ports.in(r[ops[1]!]!) >>> 0;
         break;
-      case 'OUT': // port[rp] = rs   (オペランド: rp, rs)
+      case 'OUT': // port[rp] = rs   (operands: rp, rs)
         this.ports.out(r[ops[0]!]!, r[ops[1]!]!);
         break;
       case 'IRET':
-        throw new CpuFault('illegal', 'IRET は未実装 (model B / Phase 7)');
+        throw new CpuFault('illegal', 'IRET is not implemented (model B / Phase 7)');
       case 'HLT':
         return { reason: 'halt' };
     }

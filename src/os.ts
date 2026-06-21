@@ -1,8 +1,7 @@
-// OS 層 (DESIGN §6, §7, §9): PCB / ラウンドロビン・スケジューラ /
-// syscall ディスパッチ / プログラムローダ。
+// OS layer (v1): PCB / round-robin scheduler / syscall dispatch / program loader.
 //
-// CPU の run(QUANTUM) が必ず JS へ戻る性質を使い、JS 側で時分割制御を行う
-// ことでプリエンプティブ・マルチタスクを実現する。
+// It uses the fact that the CPU's run(QUANTUM) always returns to JS to do time
+// slicing in plain JS, which is what makes the multitasking preemptive.
 
 import { assemble } from './assembler.ts';
 import { type Context, CPU, MEM_SIZE, type RunResult } from './cpu.ts';
@@ -10,7 +9,7 @@ import { SYS, SYSCALL_INT } from './isa.ts';
 
 export type ProcState = 'ready' | 'running' | 'blocked' | 'terminated';
 
-// Process Control Block (DESIGN §6)
+// Process Control Block
 export interface PCB {
   pid: number;
   name: string;
@@ -18,7 +17,7 @@ export interface PCB {
   ctx: Context;
   state: ProcState;
   exitCode: number | null;
-  wakeAt: number; // SLEEP の起床時刻 (clock 基準)
+  wakeAt: number; // SLEEP wake-up time (in clock units)
 }
 
 interface Program {
@@ -28,10 +27,10 @@ interface Program {
 }
 
 export interface OSOptions {
-  quantum?: number; // 1 プロセスに与える命令数 (DESIGN §6)
-  // コンソール出力先。テストでは差し替え可能。char と発信プロセスを受け取る。
+  quantum?: number; // instructions granted to one process per slice
+  // Console sink. Replaceable for tests. Receives the char and the emitting process.
   onWrite?: (char: string, pcb: PCB) => void;
-  log?: (msg: string) => void; // カーネルログ (終了 / フォルト等)
+  log?: (msg: string) => void; // kernel log (termination / faults / etc.)
 }
 
 export class OS {
@@ -43,13 +42,13 @@ export class OS {
   private readyQueue: PCB[] = [];
   private sleepers: PCB[] = [];
   private nextPid = 1;
-  private clock = 0; // 経過時間 = 実行したクォンタム数
+  private clock = 0; // elapsed time = number of quanta executed
 
   readonly quantum: number;
   private onWrite: (char: string, pcb: PCB) => void;
   private log: (msg: string) => void;
 
-  // 収集した全コンソール出力 (テスト / 確認用)。
+  // All collected console output (for tests / inspection).
   output = '';
 
   constructor(opts: OSOptions = {}) {
@@ -58,9 +57,9 @@ export class OS {
     this.log = opts.log ?? (() => {});
   }
 
-  // --- プログラム管理 ---
+  // --- program management ---
 
-  // アセンブリソースを登録し、SPAWN で使えるプログラム ID を返す。
+  // Register an assembly source and return a program ID usable by SPAWN.
   loadProgram(name: string, source: string): number {
     const { bytes } = assemble(source);
     const id = this.nextProgramId++;
@@ -68,14 +67,14 @@ export class OS {
     return id;
   }
 
-  // --- プロセス生成 (loader, DESIGN §9) ---
+  // --- process creation (loader) ---
 
-  // プログラム ID から新しいプロセスを生成し ready キューへ。失敗時は null。
+  // Create a new process from a program ID and enqueue it. Returns null on failure.
   spawn(programId: number): PCB | null {
     const prog = this.programs.get(programId);
     if (!prog) return null;
 
-    // v1: プロセスごとに独立したメモリイメージ (DESIGN §2 プロセス分離)
+    // v1: each process gets an independent memory image (process isolation).
     const mem = new Uint8Array(MEM_SIZE);
     mem.set(prog.bytes, 0);
 
@@ -93,12 +92,12 @@ export class OS {
     return pcb;
   }
 
-  // --- スケジューラ本体 (DESIGN §6 のメインループ) ---
+  // --- scheduler (main loop) ---
 
   run(): void {
     while (this.readyQueue.length > 0 || this.sleepers.length > 0) {
       if (this.readyQueue.length === 0) {
-        // 走れるプロセスが無く、寝ているだけ → 時計を進めて起こす。
+        // Nothing runnable, only sleepers -> advance the clock to wake them.
         this.advanceClockToNextWake();
         continue;
       }
@@ -110,7 +109,7 @@ export class OS {
       const r = this.cpu.run(this.quantum);
       this.cpu.saveContext(pcb.ctx);
 
-      this.clock++; // 1 クォンタム分の時間が経過
+      this.clock++; // one quantum of time elapsed
       this.wakeSleepers();
 
       this.dispatch(pcb, r);
@@ -119,33 +118,33 @@ export class OS {
 
   private dispatch(pcb: PCB, r: RunResult): void {
     switch (r.reason) {
-      case 'quantum': // 時間切れ → 末尾へ (ラウンドロビン)
+      case 'quantum': // time slice expired -> to the tail (round-robin)
         this.makeReady(pcb);
         break;
       case 'int':
         if (r.int === SYSCALL_INT) this.handleSyscall(pcb);
         else {
-          this.log(`pid ${pcb.pid}: 未対応の INT 0x${r.int.toString(16)} → 終了`);
+          this.log(`pid ${pcb.pid}: unsupported INT 0x${r.int.toString(16)} -> terminating`);
           this.terminate(pcb, -1);
         }
         break;
-      case 'halt': // HLT → プロセス終了
+      case 'halt': // HLT -> process exit
         this.log(`pid ${pcb.pid} (${pcb.name}): HLT`);
         this.terminate(pcb, 0);
         break;
       case 'fault':
-        this.log(`pid ${pcb.pid} (${pcb.name}): フォルト: ${r.message} → 強制終了`);
+        this.log(`pid ${pcb.pid} (${pcb.name}): fault: ${r.message} -> killed`);
         this.terminate(pcb, -1);
         break;
     }
   }
 
-  // --- syscall ディスパッチ (DESIGN §7) ---
+  // --- syscall dispatch ---
 
   private handleSyscall(pcb: PCB): void {
     const regs = pcb.ctx.regs;
-    const num = regs[0]!; // R0 = syscall 番号
-    const a1 = regs[1]!; // R1 = 第1引数
+    const num = regs[0]!; // R0 = syscall number
+    const a1 = regs[1]!; // R1 = first argument
 
     switch (num) {
       case SYS.EXIT:
@@ -157,12 +156,12 @@ export class OS {
         const char = String.fromCharCode(a1 & 0xff);
         this.output += char;
         this.onWrite(char, pcb);
-        regs[0] = 0; // 戻り値
+        regs[0] = 0; // return value
         this.makeReady(pcb);
         break;
       }
 
-      case SYS.YIELD: // 自発的に CPU を手放す → 末尾へ
+      case SYS.YIELD: // voluntarily give up the CPU -> to the tail
         this.makeReady(pcb);
         break;
 
@@ -172,27 +171,27 @@ export class OS {
         break;
 
       case SYS.SPAWN: {
-        const child = this.spawn(a1); // R1 = プログラム ID
-        regs[0] = child ? child.pid : 0xffffffff; // 失敗は -1 (符号なし)
+        const child = this.spawn(a1); // R1 = program ID
+        regs[0] = child ? child.pid : 0xffffffff; // failure = -1 (unsigned)
         this.makeReady(pcb);
         break;
       }
 
-      case SYS.SLEEP: // R1 ティック後に起床するまでブロック
+      case SYS.SLEEP: // block until R1 ticks have passed
         pcb.state = 'blocked';
         pcb.wakeAt = this.clock + a1;
         this.sleepers.push(pcb);
         break;
 
       default:
-        this.log(`pid ${pcb.pid}: 未知の syscall ${num}`);
+        this.log(`pid ${pcb.pid}: unknown syscall ${num}`);
         regs[0] = 0xffffffff;
         this.makeReady(pcb);
         break;
     }
   }
 
-  // --- プロセス状態遷移ヘルパ ---
+  // --- process state transition helpers ---
 
   private makeReady(pcb: PCB): void {
     pcb.state = 'ready';
@@ -202,10 +201,10 @@ export class OS {
   private terminate(pcb: PCB, code: number): void {
     pcb.state = 'terminated';
     pcb.exitCode = code | 0;
-    // キューには戻さない。記録のため processes には残す。
+    // Not requeued. Kept in `processes` for the record.
   }
 
-  // --- スリープ管理 (v1 は実タイマの代替) ---
+  // --- sleep management (v1 substitute for a real timer) ---
 
   private wakeSleepers(): void {
     if (this.sleepers.length === 0) return;
@@ -220,7 +219,7 @@ export class OS {
   private advanceClockToNextWake(): void {
     let next = Infinity;
     for (const pcb of this.sleepers) next = Math.min(next, pcb.wakeAt);
-    if (next === Infinity) return; // 念のため (デッドロック回避)
+    if (next === Infinity) return; // safety (avoid deadlock)
     this.clock = next;
     this.wakeSleepers();
   }

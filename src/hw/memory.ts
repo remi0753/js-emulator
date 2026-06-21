@@ -1,8 +1,8 @@
-// 物理 RAM (v2)。1 枚の Uint8Array を全ハードウェアで共有する。
-// 仮想アドレス変換は mmu.ts が行い、ここは純粋な物理メモリとして振る舞う。
+// Physical RAM (v2). One Uint8Array shared by all hardware.
+// Virtual address translation is done by mmu.ts; this is plain physical memory.
 
-export const PAGE_SIZE = 4096; // 4 KiB ページ
-export const WORD = 4; // 32bit ワード (リトルエンディアン)
+export const PAGE_SIZE = 4096; // 4 KiB pages
+export const WORD = 4; // 32-bit word (little-endian)
 
 export class PhysicalMemory {
   readonly bytes: Uint8Array;
@@ -10,7 +10,7 @@ export class PhysicalMemory {
 
   constructor(size: number) {
     if (size % PAGE_SIZE !== 0) {
-      throw new Error(`物理メモリサイズはページ境界 (${PAGE_SIZE}) に揃える必要があります`);
+      throw new Error(`physical memory size must be page-aligned (${PAGE_SIZE})`);
     }
     this.size = size;
     this.bytes = new Uint8Array(size);
@@ -18,7 +18,7 @@ export class PhysicalMemory {
 
   private check(addr: number, n: number): void {
     if (addr < 0 || addr + n > this.size) {
-      throw new RangeError(`物理メモリ範囲外: 0x${addr.toString(16)} (+${n})`);
+      throw new RangeError(`physical memory out of range: 0x${addr.toString(16)} (+${n})`);
     }
   }
 
@@ -48,7 +48,7 @@ export class PhysicalMemory {
     b[addr + 3] = (v >>> 24) & 0xff;
   }
 
-  // 1 ページをゼロ埋め (フレーム割り当て時などに使う)。
+  // Zero a single page (used e.g. when allocating a frame).
   zeroPage(physAddr: number): void {
     this.check(physAddr, PAGE_SIZE);
     this.bytes.fill(0, physAddr, physAddr + PAGE_SIZE);

@@ -1,9 +1,9 @@
-// ページング MMU (v2)。x86-32 風の 2 レベルページテーブル。
+// Paging MMU (v2). An x86-32-style two-level page table.
 //
-//   vaddr = [ 10bit ディレクトリ索引 | 10bit テーブル索引 | 12bit オフセット ]
+//   vaddr = [ 10-bit dir index | 10-bit table index | 12-bit offset ]
 //
-// ページディレクトリ / ページテーブルはどちらも 1 ページ (4 KiB) = 1024 エントリ
-// × 4 byte。エントリ下位 12bit がフラグ、上位 20bit が物理フレーム番号。
+// The page directory and each page table are one page (4 KiB) = 1024 entries
+// x 4 bytes. The low 12 bits of an entry are flags, the high 20 bits the frame.
 
 import { PAGE_SIZE, type PhysicalMemory } from './memory.ts';
 
@@ -14,7 +14,7 @@ export const PTE = {
 } as const;
 
 export const ENTRIES_PER_TABLE = 1024;
-const ADDR_MASK = 0xfffff000; // フレーム先頭アドレスを取り出すマスク
+const ADDR_MASK = 0xfffff000; // mask that extracts the frame base address
 
 export function dirIndex(vaddr: number): number {
   return (vaddr >>> 22) & 0x3ff;
@@ -35,14 +35,14 @@ export interface TranslateOk {
 }
 export interface TranslateFault {
   ok: false;
-  present: boolean; // false: ページ不在 / true: 権限違反
+  present: boolean; // false: page not present / true: protection violation
   reason: 'not-present' | 'protection';
 }
 export type TranslateResult = TranslateOk | TranslateFault;
 
 export interface AccessOptions {
   write: boolean;
-  user: boolean; // USER モードからのアクセスか
+  user: boolean; // is this an access from USER mode?
 }
 
 export class Mmu {
@@ -52,7 +52,7 @@ export class Mmu {
     this.phys = phys;
   }
 
-  // ptbr (ページディレクトリの物理アドレス) を使って vaddr を物理アドレスへ変換。
+  // Translate vaddr to a physical address using ptbr (the page directory's physical addr).
   translate(ptbr: number, vaddr: number, opts: AccessOptions): TranslateResult {
     const pde = this.phys.read32(ptbr + dirIndex(vaddr) * 4);
     if ((pde & PTE.P) === 0) return fault('not-present');
@@ -67,15 +67,15 @@ export class Mmu {
     return { ok: true, paddr: (pte & ADDR_MASK) | pageOffset(vaddr) };
   }
 
-  // vaddr のページを物理フレームへマップする (カーネルがアドレス空間を組むときに使う)。
-  // 必要ならページテーブルを allocFrame() で確保する。
+  // Map the page containing vaddr to a physical frame (used by the kernel when
+  // building an address space). Allocates a page table via allocFrame() if needed.
   map(ptbr: number, vaddr: number, frame: number, flags: number, allocFrame: () => number): void {
     const pdeAddr = ptbr + dirIndex(vaddr) * 4;
     let pde = this.phys.read32(pdeAddr);
     if ((pde & PTE.P) === 0) {
       const tableFrame = allocFrame();
       this.phys.zeroPage(tableFrame);
-      // ディレクトリエントリは配下を広く許可し、実際の権限はページテーブル側で絞る。
+      // The directory entry permits broadly; the real permission is enforced by the PTE.
       pde = (tableFrame & ADDR_MASK) | PTE.P | PTE.W | PTE.U;
       this.phys.write32(pdeAddr, pde);
     }
