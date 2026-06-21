@@ -102,7 +102,10 @@ export class AsmError extends Error {
   }
 }
 
-export function assemble(source: string): AssembleResult {
+// `origin` is the virtual address the emitted image will be loaded at; labels
+// resolve to `origin + offset` so absolute references (jumps, LOAD/STORE) are
+// correct at runtime. The byte stream itself stays compact (offset 0-based).
+export function assemble(source: string, origin = 0): AssembleResult {
   const rawLines = source.split('\n');
   const labels = new Map<string, number>();
   const items: Item[] = [];
@@ -119,7 +122,7 @@ export function assemble(source: string): AssembleResult {
     for (let labelMatch = labelRe.exec(text); labelMatch; labelMatch = labelRe.exec(text)) {
       const name = labelMatch[1]!;
       if (labels.has(name)) throw new AsmError(`duplicate label: '${name}'`, lineNo);
-      labels.set(name, addr);
+      labels.set(name, origin + addr);
       text = text.slice(labelMatch[0].length).trim();
     }
     if (text === '') continue;
