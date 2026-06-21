@@ -152,6 +152,11 @@ test('faults: divide-by-zero and illegal opcode', () => {
   const cpu2 = new CPU();
   cpu2.loadContext(ctx);
   assert.equal(cpu2.run(10).reason, 'fault');
+
+  // a v2-only instruction (IN) is decodable but unsupported in v1 -> fault
+  const cpu3 = new CPU();
+  cpu3.loadContext(makeContext('IN R0, R1'));
+  assert.equal(cpu3.run(10).reason, 'fault');
 });
 
 test('context switch: save/load keeps two independent states', () => {

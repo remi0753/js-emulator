@@ -298,6 +298,9 @@ export class CPU {
         break;
       case 'HLT':
         return { reason: 'halt' };
+      default:
+        // A decodable opcode v1 cannot execute (e.g. v2-only IN/OUT/IRET) -> fault.
+        throw new CpuFault(`unsupported instruction in v1: ${entry.mnemonic}`);
     }
     return undefined;
   }
