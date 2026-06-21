@@ -25,7 +25,13 @@
 Goal: xv6-style OS — paging MMU, real traps/interrupts, port I/O, a filesystem
 on a host-backed disk, and a Unix process model with a shell.
 
-- **Phase 1** ⬜ CPU privilege levels + paging MMU + trap/fault/IRQ model +
+**Acceptance target (definition of done for v2):** boot the kernel, reach an
+interactive **shell**, and run **`ls`** to list the files and directories on the
+mounted `disk.img`. Reaching this exercises every v2 layer end to end — paging,
+traps/syscalls, the scheduler, the block driver, the filesystem/VFS, file
+descriptors, `fork`/`exec`, and userland.
+
+- **Phase 1** ✅ CPU privilege levels + paging MMU + trap/fault/IRQ model +
   `IN`/`OUT` port I/O (with tests for translation, page faults, privilege traps).
 - **Phase 2** ⬜ TS kernel core on the virtual HW: physical & virtual memory
   managers, timer-driven preemptive scheduler, syscall dispatch, console driver;
