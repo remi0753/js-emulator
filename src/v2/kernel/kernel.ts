@@ -88,10 +88,15 @@ export class Kernel {
 
   // Build an address space for a program image and start it in USER mode.
   // Accepts a flat assembled image (wrapped as a single segment) or a full
-  // Executable.
-  spawn(name: string, prog: Uint8Array | Executable): Process {
+  // Executable. `argv` is delivered to the program (argc in R0, argv ptr in R1).
+  spawn(name: string, prog: Uint8Array | Executable, argv: string[] = []): Process {
     const exe = prog instanceof Uint8Array ? flatExecutable(prog) : prog;
     const { pd, entry } = this.loadExecutable(exe);
+    const { sp, argvPtr, argc } = this.setupUserStack(pd, argv);
+
+    const cpu = this.userState(pd, entry, sp);
+    cpu.regs[0] = argc;
+    cpu.regs[1] = argvPtr;
 
     const proc: Process = {
       pid: this.nextPid++,
@@ -99,7 +104,7 @@ export class Kernel {
       state: 'ready',
       exitCode: null,
       pd,
-      cpu: this.userState(pd, entry),
+      cpu,
       parent: null,
       children: [],
       waitStatusPtr: 0,
@@ -112,10 +117,10 @@ export class Kernel {
 
   // Load an executable from a file on the filesystem and start it (a tiny "boot
   // loader" — how init is brought up before there is a shell to exec it).
-  spawnFromFile(name: string, path: string): Process {
+  spawnFromFile(name: string, path: string, argv: string[] = []): Process {
     const inum = this.fs.namei(path);
     if (inum === 0) throw new Error(`spawnFromFile: no such file: ${path}`);
-    return this.spawn(name, parseExecutable(this.fs.readFile(inum)));
+    return this.spawn(name, parseExecutable(this.fs.readFile(inum)), argv);
   }
 
   // The standard fd table for a new process: stdin/stdout/stderr on the console.
@@ -164,16 +169,46 @@ export class Kernel {
   }
 
   // A fresh USER-mode CPU state for a newly loaded image.
-  private userState(pd: number, entry: number): CpuState {
+  private userState(pd: number, entry: number, sp: number = LAYOUT.USER_STACK_TOP): CpuState {
     return {
       regs: new Array(8).fill(0),
       pc: entry,
-      sp: LAYOUT.USER_STACK_TOP,
+      sp,
       flags: 0,
       mode: MODE.USER,
       ptbr: pd,
       pagingEnabled: true,
     };
+  }
+
+  // Lay out argv at the top of the user stack and return the initial sp plus the
+  // argv vector pointer. Strings are copied in, then an array of pointers to them
+  // terminated by NULL; the program reads argc from R0 and the argv ptr from R1.
+  private setupUserStack(
+    pd: number,
+    argv: string[],
+  ): { sp: number; argvPtr: number; argc: number } {
+    let p = LAYOUT.USER_STACK_TOP;
+    const addrs: number[] = [];
+    for (const s of argv) {
+      const b = new Uint8Array(s.length + 1); // NUL-terminated
+      for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 0xff;
+      p -= b.length;
+      this.vmm.copyout(pd, p, b);
+      addrs.push(p);
+    }
+    p &= ~3; // align the pointer array to 4 bytes
+    const argc = argv.length;
+    p -= 4 * (argc + 1); // argc pointers + a NULL terminator
+    const argvPtr = p;
+    const word = new Uint8Array(4);
+    for (let i = 0; i < argc; i++) {
+      writeWord(word, addrs[i]!);
+      this.vmm.copyout(pd, argvPtr + i * 4, word);
+    }
+    writeWord(word, 0);
+    this.vmm.copyout(pd, argvPtr + argc * 4, word);
+    return { sp: argvPtr, argvPtr, argc };
   }
 
   // --- scheduler (timer-driven, preemptive round-robin) ---
@@ -262,7 +297,7 @@ export class Kernel {
       case SYS.EXEC:
         // On success the image is replaced (regs reset, R0 irrelevant); on
         // failure -1 is returned to the still-running caller.
-        regs[0] = this.sysExec(proc, regs[1]!);
+        regs[0] = this.sysExec(proc, regs[1]!, regs[2]!);
         this.ready(proc);
         break;
 
@@ -321,8 +356,13 @@ export class Kernel {
   private sysRead(proc: Process, fd: number, buf: number, len: number): number {
     const of = proc.fds[fd];
     if (!of?.readable) return ERR;
-    if (of.kind === 'console') return 0;
     try {
+      if (of.kind === 'console') {
+        // No keyboard yet (Phase 6): return queued input, or 0 (EOF) when empty.
+        const data = this.console.readInput(len);
+        this.vmm.copyout(proc.pd, buf, data);
+        return data.length;
+      }
       const din = this.fs.readInode(of.inum);
       const data = this.fs.readi(din, of.offset, len);
       this.vmm.copyout(proc.pd, buf, data);
@@ -332,6 +372,11 @@ export class Kernel {
       if (e instanceof BadAddress) return ERR;
       throw e;
     }
+  }
+
+  // Queue characters on stdin for processes to read (pre-keyboard input).
+  feedInput(s: string): void {
+    this.console.feedInput(s);
   }
 
   // open(path, flags): resolve (optionally create) a file and install an fd.
@@ -415,10 +460,12 @@ export class Kernel {
   // Replace the caller's image with the executable file at `pathPtr`, read from
   // the filesystem. Open file descriptors are preserved across exec (Unix
   // semantics). Returns ERR (caller intact) if the path is bad or not a program.
-  private sysExec(proc: Process, pathPtr: number): number {
+  private sysExec(proc: Process, pathPtr: number, argvPtr: number): number {
     let path: string;
+    let argv: string[];
     try {
       path = this.vmm.copyinStr(proc.pd, pathPtr);
+      argv = this.copyinArgv(proc, argvPtr);
     } catch (e) {
       if (e instanceof BadAddress) return ERR;
       throw e;
@@ -438,11 +485,28 @@ export class Kernel {
     // Build the new address space first, then drop the old one (so a failure
     // before this point leaves the caller runnable). fds are intentionally kept.
     const { pd, entry } = this.loadExecutable(exe);
+    const { sp, argvPtr: argvVec, argc } = this.setupUserStack(pd, argv);
     this.vmm.freeAddressSpace(proc.pd);
     proc.pd = pd;
     proc.name = path;
-    Object.assign(proc.cpu, this.userState(pd, entry));
+    Object.assign(proc.cpu, this.userState(pd, entry, sp));
+    proc.cpu.regs[0] = argc;
+    proc.cpu.regs[1] = argvVec;
     return 0; // overwritten by the new image anyway
+  }
+
+  // Read an argv vector (user array of string pointers, NULL-terminated) into JS
+  // strings. argvPtr == 0 means no arguments.
+  private copyinArgv(proc: Process, argvPtr: number, max = 32): string[] {
+    if (argvPtr === 0) return [];
+    const argv: string[] = [];
+    for (let i = 0; i < max; i++) {
+      const word = this.vmm.copyin(proc.pd, argvPtr + i * 4, 4);
+      const ptr = (word[0]! | (word[1]! << 8) | (word[2]! << 16) | (word[3]! << 24)) >>> 0;
+      if (ptr === 0) break;
+      argv.push(this.vmm.copyinStr(proc.pd, ptr));
+    }
+    return argv;
   }
 
   // Reap a zombie child if one exists, else block until one does (or return -1
@@ -524,4 +588,13 @@ export class Kernel {
     proc.state = 'ready';
     this.readyQueue.push(proc);
   }
+}
+
+// Write a 32-bit little-endian value into a 4-byte buffer.
+function writeWord(buf: Uint8Array, v: number): void {
+  const u = v >>> 0;
+  buf[0] = u & 0xff;
+  buf[1] = (u >>> 8) & 0xff;
+  buf[2] = (u >>> 16) & 0xff;
+  buf[3] = (u >>> 24) & 0xff;
 }

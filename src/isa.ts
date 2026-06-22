@@ -21,6 +21,8 @@ export const ISA = {
   STORE: { opcode: 0x04, args: ['reg', 'addr'] },
   LOADR: { opcode: 0x05, args: ['reg', 'reg'] },
   STORER: { opcode: 0x06, args: ['reg', 'reg'] },
+  LB: { opcode: 0x07, args: ['reg', 'reg'] }, // rd = mem8[ra] (zero-extended)
+  SB: { opcode: 0x08, args: ['reg', 'reg'] }, // mem8[ra] = rv & 0xff  (operands: ra, rv)
 
   // --- arithmetic / logic (update ZF/SF/CF) ---
   ADD: { opcode: 0x10, args: ['reg', 'reg'] },

@@ -38,7 +38,7 @@ Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 | 2 | `YIELD`  | —                             | give up the CPU (go to the ready-queue tail)                |
 | 3 | `GETPID` | —                             | R0 = this process's PID                                     |
 | 4 | `FORK`   | —                             | duplicate the process; R0 = child pid (parent) / 0 (child)  |
-| 5 | `EXEC`   | R1 = path ptr                 | replace the image with the executable file at `path`; -1 on error |
+| 5 | `EXEC`   | R1 = path ptr, R2 = argv ptr  | replace the image with the executable at `path`, passing `argv`; -1 on error |
 | 6 | `WAIT`   | R1 = status ptr (0 = ignore)  | reap a child; R0 = child pid (status written to ptr), -1 if none |
 | 7 | `OPEN`   | R1 = path ptr, R2 = flags     | open/create a file; R0 = fd / -1                            |
 | 8 | `CLOSE`  | R1 = fd                       | close a descriptor; R0 = 0 / -1                            |
@@ -60,6 +60,15 @@ for writing. `open` flags (`O.*` in abi.ts): `RDONLY=0`, `WRONLY=1`, `RDWR=2`,
   open; `exit` closes them all.
 - `exec` reads the executable's bytes from the filesystem and loads its segments,
   so programs are launched straight off the disk.
+
+### Arguments & stdin (Phase 5)
+
+- `exec` takes an `argv` vector (R2): a user array of string pointers terminated by
+  NULL. The kernel copies the strings onto the new program's stack and starts it
+  with **argc in R0** and the **argv pointer in R1**. R2 = 0 means no arguments.
+- `read` on stdin (fd 0) returns characters previously queued with the kernel's
+  `feedInput` (the live keyboard arrives in Phase 6); an empty queue reads as 0
+  (EOF), which is how the shell knows to quit.
 
 ### Process model (Phase 3)
 

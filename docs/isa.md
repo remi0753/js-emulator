@@ -57,6 +57,8 @@ never disagree on operand layout.
 | `STORE`  | `rs, addr`| `mem32[addr] = rs`              |
 | `LOADR`  | `rd, rs`  | `rd = mem32[rs]` (indirect)     |
 | `STORER` | `rd, rs`  | `mem32[rd] = rs` (indirect)     |
+| `LB`     | `rd, ra`  | `rd = mem8[ra]` (zero-extended) |
+| `SB`     | `ra, rv`  | `mem8[ra] = rv & 0xff`          |
 
 ### Arithmetic / logic (update ZF/SF, and CF where applicable)
 | Mnemonic              | Operands  | Effect                              |

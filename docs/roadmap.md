@@ -43,8 +43,14 @@ descriptors, `fork`/`exec`, and userland.
   inodes, block bitmap, direct + indirect blocks, directories), file descriptors,
   `open`/`read`/`write`/`close`, exec from the FS (see `src/v2/hw/devices/disk.ts`,
   `src/v2/kernel/{disk,fs}.ts`; demo `node demo/v2-fs.ts`).
-- **Phase 5** ⬜ userland: `init`, a shell, a few coreutils, pipes.
-- **Phase 6** ⬜ polish: keyboard input, more syscalls, copy-on-write `fork`.
+- **Phase 5** ✅ userland: `init`, a shell, and coreutils (`echo`, `cat`, `ls`),
+  all hand-written guest assembly; `exec` delivers `argv`; byte load/store (`LB`/
+  `SB`) added to the ISA for string code (see `src/v2/userland/programs.ts`; demo
+  `node demo/v2-shell.ts`). **This reaches the v2 acceptance target: boot → shell
+  → `ls` lists the disk.** Commands are fed on stdin (pre-keyboard); **pipes** move
+  to Phase 6 since they need the same blocking I/O as the keyboard.
+- **Phase 6** ⬜ polish: keyboard input + blocking I/O, **pipes** (`pipe`/`dup`),
+  more syscalls, copy-on-write `fork`.
 
 ### v3 — self-hosting (model B): the kernel becomes guest code
 

@@ -263,6 +263,12 @@ export class CPU {
       case 'STORER':
         this.wr32(r[ops[0]!]!, r[ops[1]!]!);
         break;
+      case 'LB':
+        r[ops[0]!] = this.rd8(r[ops[1]!]!);
+        break;
+      case 'SB':
+        this.wr8(r[ops[0]!]!, r[ops[1]!]! & 0xff);
+        break;
 
       case 'ADD': {
         const sum = r[ops[0]!]! + r[ops[1]!]!;
