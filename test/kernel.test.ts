@@ -6,6 +6,10 @@ import { LAYOUT } from '../src/v2/kernel/abi.ts';
 import { type Executable, encodeExecutable, parseExecutable, SEG } from '../src/v2/kernel/exec.ts';
 import { Kernel } from '../src/v2/kernel/kernel.ts';
 
+function bytes(s: string): Uint8Array {
+  return new Uint8Array([...s].map((c) => c.charCodeAt(0)));
+}
+
 // Assemble a user program at the address it will be loaded (so labels relocate).
 function image(source: string): Uint8Array {
   return assemble(source, LAYOUT.USER_TEXT).bytes;
@@ -487,4 +491,154 @@ test('executable format: encode/parse round-trips', () => {
   assert.deepEqual([...back.segments[0]!.data], [1, 2, 3]);
   assert.equal(back.segments[0]!.memSize, 0x1000);
   assert.equal(back.segments[1]!.flags, SEG.R | SEG.W);
+});
+
+// --- Phase 4: filesystem, file descriptors, exec from disk ---
+
+test('open/write/close then open/read: a file round-trips through syscalls', () => {
+  const { kernel, getOut } = makeKernel();
+  kernel.spawn(
+    'io',
+    image(`
+      MOV R0, 7          ; OPEN "/data", O_RDWR|O_CREATE
+      MOV R1, path
+      MOV R2, 0x202
+      INT 0x80
+      MOVR R5, R0        ; fd
+      MOV R0, 1          ; WRITE(fd, msg, 4)
+      MOVR R1, R5
+      MOV R2, msg
+      MOV R3, 4
+      INT 0x80
+      MOV R0, 8          ; CLOSE(fd)
+      MOVR R1, R5
+      INT 0x80
+      MOV R0, 7          ; OPEN "/data", O_RDONLY
+      MOV R1, path
+      MOV R2, 0
+      INT 0x80
+      MOVR R5, R0
+      MOV R0, 9          ; READ(fd, buf, 16)
+      MOVR R1, R5
+      MOV R2, buf
+      MOV R3, 16
+      INT 0x80
+      MOVR R6, R0        ; nread
+      MOV R0, 1          ; WRITE(stdout, buf, nread)
+      MOV R1, 1
+      MOV R2, buf
+      MOVR R3, R6
+      INT 0x80
+      MOV R0, 0
+      MOV R1, 0
+      INT 0x80
+    path:
+      .string "/data"
+    msg:
+      .string "DISK"
+    buf:
+      .word 0
+      .word 0
+      .word 0
+      .word 0
+    `),
+  );
+  kernel.run();
+  assert.equal(getOut(), 'DISK');
+  // The file persists in the filesystem after the writer exits.
+  assert.equal(kernel.processes.get(1)!.exitCode, 0);
+});
+
+test('open on a missing file without O_CREATE returns -1', () => {
+  const { kernel } = makeKernel();
+  kernel.spawn(
+    'p',
+    image(`
+      MOV R0, 7          ; OPEN "/nope", O_RDONLY
+      MOV R1, path
+      MOV R2, 0
+      INT 0x80
+      MOVR R1, R0        ; exit with the open() result (-1)
+      MOV R0, 0
+      INT 0x80
+    path:
+      .string "/nope"
+    `),
+  );
+  kernel.run();
+  assert.equal(kernel.processes.get(1)!.exitCode, -1);
+});
+
+test('a directory is an openable, readable file (dirents)', () => {
+  // Open "/", read the first 16-byte dirent, and print the first char of its
+  // name. The first entry is ".", so the program prints ".".
+  const { kernel, getOut } = makeKernel();
+  kernel.spawn(
+    'ls0',
+    image(`
+      MOV R0, 7          ; OPEN "/", O_RDONLY
+      MOV R1, root
+      MOV R2, 0
+      INT 0x80
+      MOVR R5, R0
+      MOV R0, 9          ; READ one dirent (16 bytes)
+      MOVR R1, R5
+      MOV R2, ent
+      MOV R3, 16
+      INT 0x80
+      MOV R2, ent        ; name starts 2 bytes in (after the u16 inum)
+      MOV R4, 2
+      ADD R2, R4
+      MOV R0, 1          ; WRITE(stdout, &name, 1)
+      MOV R1, 1
+      MOV R3, 1
+      INT 0x80
+      MOV R0, 0
+      MOV R1, 0
+      INT 0x80
+    root:
+      .string "/"
+    ent:
+      .word 0
+      .word 0
+      .word 0
+      .word 0
+    `),
+  );
+  kernel.run();
+  assert.equal(getOut(), '.');
+});
+
+test('spawnFromFile boots an executable read from the filesystem', () => {
+  const { kernel, getOut } = makeKernel();
+  kernel.install(
+    '/bin/hi',
+    image(`
+      MOV R0, 1
+      MOV R1, 1
+      MOV R2, msg
+      MOV R3, 2
+      INT 0x80
+      MOV R0, 0
+      MOV R1, 0
+      INT 0x80
+    msg:
+      .string "HI"
+    `),
+  );
+  kernel.spawnFromFile('init', '/bin/hi');
+  kernel.run();
+  assert.equal(getOut(), 'HI');
+  assert.equal(kernel.processes.get(1)!.name, 'init');
+});
+
+test('the filesystem persists across a remount from the disk image', () => {
+  const k1 = new Kernel({ log: () => {} });
+  k1.fs.writeFile('/greeting', bytes('persisted!'));
+
+  // Re-create a kernel mounting the very same disk bytes.
+  const k2 = new Kernel({ diskImage: k1.disk.data, log: () => {} });
+  const inum = k2.fs.namei('/greeting');
+  assert.notEqual(inum, 0);
+  assert.equal(String.fromCharCode(...k2.fs.readFile(inum)), 'persisted!');
 });

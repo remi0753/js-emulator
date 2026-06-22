@@ -39,8 +39,10 @@ descriptors, `fork`/`exec`, and userland.
 - **Phase 3** ✅ process model: `fork`/`exec`/`wait`/`exit`, ELF-like loader,
   multiple user programs (see `src/v2/kernel/exec.ts` + the process syscalls in
   `kernel.ts`; demo `node demo/v2-fork-exec.ts`).
-- **Phase 4** ⬜ storage: block driver over `disk.img`, on-disk FS, VFS, file
-  descriptors, `open`/`read`/`write`/`close`, exec from the FS.
+- **Phase 4** ✅ storage: block driver over `disk.img`, on-disk FS (superblock,
+  inodes, block bitmap, direct + indirect blocks, directories), file descriptors,
+  `open`/`read`/`write`/`close`, exec from the FS (see `src/v2/hw/devices/disk.ts`,
+  `src/v2/kernel/{disk,fs}.ts`; demo `node demo/v2-fs.ts`).
 - **Phase 5** ⬜ userland: `init`, a shell, a few coreutils, pipes.
 - **Phase 6** ⬜ polish: keyboard input, more syscalls, copy-on-write `fork`.
 

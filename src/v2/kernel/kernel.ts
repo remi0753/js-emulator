@@ -6,22 +6,29 @@
 
 import { CPU, type CpuState, MODE, type RunResult } from '../hw/cpu.ts';
 import { Console } from '../hw/devices/console.ts';
+import { BlockDisk } from '../hw/devices/disk.ts';
 import { PAGE_SIZE, PhysicalMemory } from '../hw/memory.ts';
 import { PortBus } from '../hw/ports.ts';
-import { FD, LAYOUT, PORT, SYS, SYSCALL_INT } from './abi.ts';
+import { FD, LAYOUT, O, PORT, SYS, SYSCALL_INT } from './abi.ts';
+import { BlockDriver } from './disk.ts';
 import { type Executable, encodeExecutable, flatExecutable, parseExecutable, SEG } from './exec.ts';
+import { Fs, T_DIR } from './fs.ts';
 import { Pmm } from './pmm.ts';
-import type { Process } from './process.ts';
+import type { OpenFile, Process } from './process.ts';
 import { BadAddress, PTE, Vmm } from './vmm.ts';
 
 const PHYS_SIZE = 16 * 1024 * 1024; // 16 MiB physical RAM
 const PMM_BASE = 1 * 1024 * 1024; // manage frames from 1 MiB up (low memory reserved)
 const ERR = 0xffffffff; // syscall error return (-1 unsigned)
+const DEFAULT_DISK_BLOCKS = 2048; // 1 MiB fresh disk when no image is supplied
+const NFD = 16; // open files per process
 
 export interface KernelOptions {
   quantum?: number; // instructions per time slice
   consoleSink?: (s: string) => void; // where console output goes (tests capture it)
   log?: (msg: string) => void; // kernel log
+  diskImage?: Uint8Array; // mount an existing disk image (else format a fresh one)
+  diskBlocks?: number; // size of a freshly formatted disk
 }
 
 export class Kernel {
@@ -31,14 +38,13 @@ export class Kernel {
   readonly pmm: Pmm;
   readonly vmm: Vmm;
   readonly console: Console;
+  readonly disk: BlockDisk;
+  readonly bio: BlockDriver;
+  readonly fs: Fs;
 
   readonly processes = new Map<number, Process>();
   private readyQueue: Process[] = [];
   private nextPid = 1;
-
-  // Installed executables, keyed by path. Stands in for the filesystem until
-  // Phase 4; exec() looks programs up here by their path string.
-  private programs = new Map<string, Uint8Array>();
 
   readonly quantum: number;
   private log: (msg: string) => void;
@@ -55,16 +61,27 @@ export class Kernel {
 
     this.console = new Console(opts.consoleSink);
     this.ports.register(PORT.CONSOLE_DATA, 1, this.console);
+
+    // Block disk + filesystem. Mount a supplied image, or format a fresh disk.
+    this.disk = opts.diskImage
+      ? new BlockDisk(opts.diskImage)
+      : BlockDisk.blank(opts.diskBlocks ?? DEFAULT_DISK_BLOCKS);
+    this.ports.register(PORT.DISK_DATA, 1, this.disk);
+    this.ports.register(PORT.DISK_POS, 1, this.disk);
+    this.ports.register(PORT.DISK_SECTORS, 1, this.disk);
+    this.bio = new BlockDriver(this.ports);
+    this.fs = new Fs(this.bio);
+    if (opts.diskImage) this.fs.mount();
+    else this.fs.mkfs();
   }
 
-  // --- program registry (stands in for the filesystem until Phase 4) ---
+  // --- program installation (write an executable into the filesystem) ---
 
-  // Install an executable under a path so exec() can find it. A flat assembled
-  // image is wrapped as a single segment; an Executable is encoded to bytes (its
-  // on-disk form), so the registry behaves like the future filesystem.
+  // Write an executable to the filesystem at `path` (creating parent dirs) so it
+  // can later be exec()'d. A flat assembled image is wrapped as one segment.
   install(path: string, prog: Executable | Uint8Array): void {
     const exe = prog instanceof Uint8Array ? flatExecutable(prog) : prog;
-    this.programs.set(path, encodeExecutable(exe));
+    this.fs.writeFile(path, encodeExecutable(exe));
   }
 
   // --- process creation (loader) ---
@@ -86,10 +103,49 @@ export class Kernel {
       parent: null,
       children: [],
       waitStatusPtr: 0,
+      fds: this.stdioFds(),
     };
     this.processes.set(proc.pid, proc);
     this.readyQueue.push(proc);
     return proc;
+  }
+
+  // Load an executable from a file on the filesystem and start it (a tiny "boot
+  // loader" — how init is brought up before there is a shell to exec it).
+  spawnFromFile(name: string, path: string): Process {
+    const inum = this.fs.namei(path);
+    if (inum === 0) throw new Error(`spawnFromFile: no such file: ${path}`);
+    return this.spawn(name, parseExecutable(this.fs.readFile(inum)));
+  }
+
+  // The standard fd table for a new process: stdin/stdout/stderr on the console.
+  private stdioFds(): (OpenFile | null)[] {
+    const fds: (OpenFile | null)[] = new Array(NFD).fill(null);
+    fds[FD.STDIN] = {
+      kind: 'console',
+      inum: 0,
+      offset: 0,
+      readable: true,
+      writable: false,
+      ref: 1,
+    };
+    fds[FD.STDOUT] = {
+      kind: 'console',
+      inum: 0,
+      offset: 0,
+      readable: false,
+      writable: true,
+      ref: 1,
+    };
+    fds[FD.STDERR] = {
+      kind: 'console',
+      inum: 0,
+      offset: 0,
+      readable: false,
+      writable: true,
+      ref: 1,
+    };
+    return fds;
   }
 
   // Load an executable into a fresh address space: map each segment (zero-filling
@@ -215,6 +271,21 @@ export class Kernel {
         this.sysWait(proc, regs[1]!);
         break;
 
+      case SYS.OPEN:
+        regs[0] = this.sysOpen(proc, regs[1]!, regs[2]!);
+        this.ready(proc);
+        break;
+
+      case SYS.CLOSE:
+        regs[0] = this.sysClose(proc, regs[1]!);
+        this.ready(proc);
+        break;
+
+      case SYS.READ:
+        regs[0] = this.sysRead(proc, regs[1]!, regs[2]!, regs[3]!);
+        this.ready(proc);
+        break;
+
       default:
         this.log(`pid ${proc.pid}: unknown syscall ${num}`);
         regs[0] = ERR;
@@ -223,17 +294,84 @@ export class Kernel {
     }
   }
 
-  // write(fd, buf, len): copy bytes out of user space and emit to the console.
+  // --- file syscalls ---
+
+  // write(fd, buf, len): console output or a write into a file at its offset.
   private sysWrite(proc: Process, fd: number, buf: number, len: number): number {
-    if (fd !== FD.STDOUT && fd !== FD.STDERR) return ERR;
+    const of = proc.fds[fd];
+    if (!of?.writable) return ERR;
     try {
       const data = this.vmm.copyin(proc.pd, buf, len);
-      for (const b of data) this.ports.out(PORT.CONSOLE_DATA, b);
-      return len;
+      if (of.kind === 'console') {
+        for (const b of data) this.ports.out(PORT.CONSOLE_DATA, b);
+        return len;
+      }
+      const din = this.fs.readInode(of.inum);
+      const n = this.fs.writei(of.inum, din, of.offset, data);
+      of.offset += n;
+      return n;
     } catch (e) {
       if (e instanceof BadAddress) return ERR;
       throw e;
     }
+  }
+
+  // read(fd, buf, len): read from a file at its offset into user space. The
+  // console has no input yet (Phase 6), so reading stdin returns 0 (EOF).
+  private sysRead(proc: Process, fd: number, buf: number, len: number): number {
+    const of = proc.fds[fd];
+    if (!of?.readable) return ERR;
+    if (of.kind === 'console') return 0;
+    try {
+      const din = this.fs.readInode(of.inum);
+      const data = this.fs.readi(din, of.offset, len);
+      this.vmm.copyout(proc.pd, buf, data);
+      of.offset += data.length;
+      return data.length;
+    } catch (e) {
+      if (e instanceof BadAddress) return ERR;
+      throw e;
+    }
+  }
+
+  // open(path, flags): resolve (optionally create) a file and install an fd.
+  private sysOpen(proc: Process, pathPtr: number, flags: number): number {
+    let path: string;
+    try {
+      path = this.vmm.copyinStr(proc.pd, pathPtr);
+    } catch (e) {
+      if (e instanceof BadAddress) return ERR;
+      throw e;
+    }
+
+    let inum = this.fs.namei(path);
+    if (inum === 0) {
+      if ((flags & O.CREATE) === 0) return ERR;
+      try {
+        inum = this.fs.create(path, /* T_FILE */ 2);
+      } catch {
+        return ERR;
+      }
+    }
+
+    const din = this.fs.readInode(inum);
+    const writable = din.type !== T_DIR && (flags & (O.WRONLY | O.RDWR)) !== 0;
+    if ((flags & O.TRUNC) !== 0 && writable) this.fs.itrunc(inum, din);
+    const readable = (flags & O.WRONLY) === 0;
+
+    const fd = proc.fds.indexOf(null);
+    if (fd === -1) return ERR;
+    proc.fds[fd] = { kind: 'file', inum, offset: 0, readable, writable, ref: 1 };
+    return fd;
+  }
+
+  // close(fd): drop the descriptor (and its reference to the open file).
+  private sysClose(proc: Process, fd: number): number {
+    const of = proc.fds[fd];
+    if (!of) return ERR;
+    of.ref--;
+    proc.fds[fd] = null;
+    return 0;
   }
 
   // --- process model: fork / exec / wait / exit ---
@@ -252,6 +390,11 @@ export class Kernel {
       ptbr: pd, // its own address space
       pagingEnabled: src.pagingEnabled,
     };
+    // Share open files with the parent (dup each fd, bumping its ref count).
+    const fds = parent.fds.map((of) => {
+      if (of) of.ref++;
+      return of;
+    });
     const child: Process = {
       pid: this.nextPid++,
       name: parent.name,
@@ -262,14 +405,16 @@ export class Kernel {
       parent: parent.pid,
       children: [],
       waitStatusPtr: 0,
+      fds,
     };
     parent.children.push(child.pid);
     this.processes.set(child.pid, child);
     return child;
   }
 
-  // Replace the caller's image with the program at `pathPtr`. Returns ERR (and
-  // leaves the process intact) if the path is bad or no such program exists.
+  // Replace the caller's image with the executable file at `pathPtr`, read from
+  // the filesystem. Open file descriptors are preserved across exec (Unix
+  // semantics). Returns ERR (caller intact) if the path is bad or not a program.
   private sysExec(proc: Process, pathPtr: number): number {
     let path: string;
     try {
@@ -278,14 +423,21 @@ export class Kernel {
       if (e instanceof BadAddress) return ERR;
       throw e;
     }
-    const bytes = this.programs.get(path);
-    if (!bytes) {
+    const inum = this.fs.namei(path);
+    if (inum === 0) {
       this.log(`pid ${proc.pid}: exec '${path}' -> not found`);
       return ERR;
     }
+    let exe: Executable;
+    try {
+      exe = parseExecutable(this.fs.readFile(inum));
+    } catch {
+      this.log(`pid ${proc.pid}: exec '${path}' -> not an executable`);
+      return ERR;
+    }
     // Build the new address space first, then drop the old one (so a failure
-    // before this point leaves the caller runnable).
-    const { pd, entry } = this.loadExecutable(parseExecutable(bytes));
+    // before this point leaves the caller runnable). fds are intentionally kept.
+    const { pd, entry } = this.loadExecutable(exe);
     this.vmm.freeAddressSpace(proc.pd);
     proc.pd = pd;
     proc.name = path;
@@ -338,6 +490,12 @@ export class Kernel {
     if (proc.pd !== 0) {
       this.vmm.freeAddressSpace(proc.pd);
       proc.pd = 0;
+    }
+    // Release every open file descriptor.
+    for (let fd = 0; fd < proc.fds.length; fd++) {
+      const of = proc.fds[fd];
+      if (of) of.ref--;
+      proc.fds[fd] = null;
     }
     proc.state = 'zombie';
     proc.exitCode = code | 0;

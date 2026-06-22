@@ -3,6 +3,17 @@
 
 import type { CpuState } from '../hw/cpu.ts';
 
+// An open file (the object a file descriptor points to). Shared between fds when
+// duplicated by fork, so it carries a reference count.
+export interface OpenFile {
+  kind: 'console' | 'file';
+  inum: number; // FS inode number (kind === 'file')
+  offset: number; // current read/write position
+  readable: boolean;
+  writable: boolean;
+  ref: number; // number of file descriptors referring to this open file
+}
+
 // 'waiting' = blocked in wait() until a child becomes a zombie.
 // 'zombie'  = exited; its address space is freed but the PCB lingers so the
 //             parent can read the exit code via wait() (then it is reaped).
@@ -20,4 +31,7 @@ export interface Process {
   parent: number | null; // parent pid (null for the first process / orphans)
   children: number[]; // live + zombie child pids
   waitStatusPtr: number; // user vaddr to store the child's exit code while waiting (0 = ignore)
+
+  // Open file descriptor table (index = fd). 0/1/2 are stdin/stdout/stderr.
+  fds: (OpenFile | null)[];
 }
