@@ -148,19 +148,27 @@ subsystems over one at a time.
   runs until a trap/halt, and inspects only hardware-visible state (registers,
   physical RAM, disk) — no scheduler, process table, or syscall dispatch.
 
-- **Phase 8** ⬜ implement real in-CPU trap and interrupt entry.
+- **Phase 8** ✅ implement real in-CPU trap and interrupt entry.
 
-  v2 returns to TypeScript on `INT`, page fault, privileged fault, IRQ, and timer
-  expiry. Model B needs the CPU to enter guest kernel mode instead. Add an
-  interrupt/trap descriptor table, trap vectors, saved trap frames, a kernel
-  stack mechanism, `IRET`, and controlled mode transitions between USER and
-  KERNEL. Page faults should save the faulting virtual address (`PFLA`/CR2-like)
-  and an error code. Timer and device IRQs should be delivered through the same
-  vector path as software traps.
+  When a guest installs an interrupt descriptor table (`LIDT`), the CPU now enters
+  guest kernel mode in-CPU on a trap instead of returning to the host: it switches
+  to the kernel stack (`LKSP` / esp0), pushes a trap frame (user sp / flags / mode
+  / return pc), jumps to the vector's handler in KERNEL mode with interrupts
+  masked, and the handler returns with `IRET`. Software `INT n`, CPU exceptions
+  (divide/illegal/GP via fixed vectors), and device/timer IRQs all take the same
+  IDT vector path; page faults save `PFLA` (CR2-like) and an x86-style error code
+  (`RDPFLA`/`RDERR`). An in-CPU timer (`STMR`) delivers IRQ0 through the vectors.
+  With no IDT installed the CPU keeps the model-A behaviour of returning to the
+  host, so the v2 kernel is unaffected. New ISA: `LIDT`/`LKSP`/`IRET`/`RDPFLA`/
+  `RDERR`/`STMR` (all privileged); see `src/isa.ts` (`TRAP`/IDT constants) and
+  `src/vm/custom32/cpu.ts`. Demo `node demo/v2-trap.ts`; tests in
+  `test/trap.test.ts`.
 
-  Done when a guest kernel written in assembly can install handlers, receive
-  `INT 0x80`, return with `IRET`, recover from a user page fault, and preempt a
-  user loop through a timer IRQ without TypeScript scheduler help.
+  Done: a guest kernel written in assembly installs handlers, receives `INT 0x80`
+  and returns with `IRET`, recovers from a user page fault (handler maps the page
+  and the faulting instruction retries), and preempts a user loop through a timer
+  IRQ — all with no TypeScript scheduler or syscall dispatch. A fault during trap
+  delivery (e.g. an unmapped kernel stack) is reported as a double fault.
 
 - **Phase 9** ⬜ define a boot path and disk-image contract.
 

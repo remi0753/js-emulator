@@ -62,12 +62,30 @@ export const ISA = {
   // --- port I/O (v2, privileged) ---
   IN: { opcode: 0x43, args: ['reg', 'reg'] }, // rd = port[rp]
   OUT: { opcode: 0x44, args: ['reg', 'reg'] }, // port[rp] = rs  (operands: rp, rs)
-  IRET: { opcode: 0x45, args: [] }, // return from trap (reserved for model B / Phase 7)
+  IRET: { opcode: 0x45, args: [] }, // return from a trap handler (model B / Phase 8)
+  // --- trap / interrupt entry (v2 model B, privileged) ---
+  LIDT: { opcode: 0x46, args: ['reg'] }, // IDTR = rX (physical base of the trap descriptor table)
+  LKSP: { opcode: 0x47, args: ['reg'] }, // kernel stack pointer (esp0) used on USER->KERNEL entry
+  RDPFLA: { opcode: 0x48, args: ['reg'] }, // rX = faulting linear address (CR2) of the last page fault
+  RDERR: { opcode: 0x49, args: ['reg'] }, // rX = error code of the last trap
+  STMR: { opcode: 0x4a, args: ['reg'] }, // arm the in-CPU timer: IRQ0 every rX instructions (0 = off)
   HLT: { opcode: 0xff, args: [] },
 } as const satisfies Record<string, InstrSpec>;
 
 // Mnemonics the v2 CPU treats as privileged (executing them in USER mode traps).
-export const PRIVILEGED: ReadonlySet<Mnemonic> = new Set(['IN', 'OUT', 'IRET', 'HLT', 'EI', 'DI']);
+export const PRIVILEGED: ReadonlySet<Mnemonic> = new Set([
+  'IN',
+  'OUT',
+  'IRET',
+  'HLT',
+  'EI',
+  'DI',
+  'LIDT',
+  'LKSP',
+  'RDPFLA',
+  'RDERR',
+  'STMR',
+]);
 
 export type Mnemonic = keyof typeof ISA;
 
@@ -93,6 +111,31 @@ export const FLAG = {
   SF: 1 << 1, // top bit (sign) of the result is 1
   CF: 1 << 2, // carry / borrow
   IF: 1 << 3, // interrupts enabled
+} as const;
+
+// Trap vectors (model B). CPU exceptions and device IRQs index the IDT here;
+// a software INT n indexes vector n directly (so a syscall uses SYSCALL_INT).
+export const TRAP = {
+  DIVZERO: 0, // divide by zero
+  ILLOP: 6, // illegal / unimplemented opcode (x86 #UD)
+  GP: 13, // general protection: privileged instr in user mode, phys range (x86 #GP)
+  PAGEFAULT: 14, // page fault (x86 #PF); pushes an error code, sets PFLA/CR2
+  IRQ_BASE: 32, // device IRQ line n is delivered at vector IRQ_BASE + n
+} as const;
+
+// The timer is wired to IRQ line 0 -> vector TRAP.IRQ_BASE.
+export const TIMER_IRQ = 0;
+
+// IDT layout: a flat table of 8-byte gate descriptors indexed by vector.
+//   +0: handler virtual address (offset)   +4: flags (bit 0 = Present)
+export const IDT_ENTRY_SIZE = 8;
+export const IDT_PRESENT = 1 << 0;
+
+// Page-fault error-code bits (pushed as the trap error code; readable via RDERR).
+export const PF_ERR = {
+  PRESENT: 1 << 0, // 0 = page not present, 1 = protection violation
+  WRITE: 1 << 1, // the access was a write
+  USER: 1 << 2, // the access came from USER mode
 } as const;
 
 // syscall numbers

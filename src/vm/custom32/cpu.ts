@@ -2,9 +2,27 @@
 //
 // model A: the CPU runs user programs (guest bytecode) in USER mode, and when a
 // trap / fault / interrupt happens run() returns control to the TS kernel, which
-// inspects the state and resumes.
+// inspects the state and resumes. This is the default (IDTR == 0).
+//
+// model B (Phase 8): once a guest installs an interrupt descriptor table (LIDT),
+// the CPU enters guest kernel mode in-CPU on a trap instead of returning to the
+// host. It switches to the kernel stack (LKSP), pushes a trap frame, jumps to the
+// vector's handler in KERNEL mode with interrupts disabled, and the handler
+// returns with IRET. Software INT n, CPU exceptions, and device/timer IRQs all
+// take the same vector path. If no IDT is installed (or the vector is absent),
+// the CPU falls back to the model-A behaviour of returning to the host.
 
-import { FLAG, type Mnemonic, OPCODE_TABLE, PRIVILEGED } from '../../isa.ts';
+import {
+  FLAG,
+  IDT_ENTRY_SIZE,
+  IDT_PRESENT,
+  type Mnemonic,
+  OPCODE_TABLE,
+  PF_ERR,
+  PRIVILEGED,
+  TIMER_IRQ,
+  TRAP,
+} from '../../isa.ts';
 import { type PhysicalMemory, WORD } from './memory.ts';
 import { Mmu } from './mmu.ts';
 import type { PortBus } from './ports.ts';
@@ -73,6 +91,13 @@ export class CPU {
   pagingEnabled = false;
   pfla = 0; // page-fault linear address from the last fault (~CR2)
 
+  // --- model-B trap-entry control registers ---
+  idtr = 0; // physical base of the interrupt descriptor table; 0 = trap entry off
+  ksp = 0; // kernel stack pointer (esp0) loaded on a USER->KERNEL trap
+  errorCode = 0; // error code of the most recent trap (readable via RDERR)
+  private timerInterval = 0; // in-CPU timer period in instructions; 0 = disabled
+  private timerCount = 0; // instructions remaining until the next timer IRQ
+
   readonly mmu: Mmu;
   readonly phys: PhysicalMemory;
   readonly ports: PortBus;
@@ -123,6 +148,11 @@ export class CPU {
   resetTransientState(): void {
     this.pendingIrq = null;
     this.pfla = 0;
+    this.idtr = 0;
+    this.ksp = 0;
+    this.errorCode = 0;
+    this.timerInterval = 0;
+    this.timerCount = 0;
   }
 
   // --- memory access with address translation ---
@@ -204,24 +234,50 @@ export class CPU {
 
   run(maxCycles: number): RunResult {
     for (let cycle = 0; cycle < maxCycles; cycle++) {
+      // Tick the in-CPU timer; on expiry post the timer IRQ (delivered below).
+      if (this.timerInterval > 0 && --this.timerCount <= 0) {
+        this.timerCount = this.timerInterval;
+        this.pendingIrq = TIMER_IRQ;
+      }
+
       // Check for an interrupt at the instruction boundary (only when IF is set).
+      // The saved return address is the next instruction (this.pc).
       if (this.pendingIrq !== null && this.getFlag(FLAG.IF)) {
         const line = this.pendingIrq;
         this.pendingIrq = null;
-        return this.trap({ reason: 'irq', line });
+        const deliver = this.deliver(TRAP.IRQ_BASE + line, this.pc, 0);
+        if (deliver === 'host') return this.trap({ reason: 'irq', line });
+        if (deliver === 'double') return this.trap(this.doubleFault());
+        continue; // delivered to the guest handler in-CPU
       }
+
       // Snapshot enough to restart the instruction if it faults part-way. A page
-      // fault (e.g. copy-on-write) must re-execute from the start, so the kernel
+      // fault (e.g. copy-on-write) must re-execute from the start, so the handler
       // can resolve it and resume transparently.
       const pc0 = this.pc;
       const sp0 = this.sp;
       try {
         const result = this.step();
-        if (result) return this.trap(result);
+        if (result) {
+          // step() only returns for INT (syscall) and HLT. HLT always stops the
+          // machine (the host execution boundary); a syscall vectors in-CPU when
+          // an IDT is installed, else returns to the host.
+          if (result.reason === 'syscall') {
+            const deliver = this.deliver(result.num, this.pc, 0);
+            if (deliver === 'host') return this.trap(result);
+            if (deliver === 'double') return this.trap(this.doubleFault());
+            continue;
+          }
+          return this.trap(result);
+        }
       } catch (e) {
         if (e instanceof PageFault) {
-          this.pc = pc0; // restart the faulting instruction after the kernel fixes it
+          this.pc = pc0; // restart the faulting instruction after the handler fixes it
           this.sp = sp0;
+          this.pfla = e.vaddr;
+          const deliver = this.deliver(TRAP.PAGEFAULT, pc0, pfErrorCode(e));
+          if (deliver === 'double') return this.trap(this.doubleFault());
+          if (deliver === 'guest') continue;
           return this.trap({
             reason: 'pagefault',
             vaddr: e.vaddr,
@@ -231,6 +287,9 @@ export class CPU {
           });
         }
         if (e instanceof CpuFault) {
+          const deliver = this.deliver(faultVector(e.kind), pc0, 0);
+          if (deliver === 'double') return this.trap(this.doubleFault());
+          if (deliver === 'guest') continue;
           return this.trap({ reason: 'fault', kind: e.kind, message: e.message });
         }
         throw e;
@@ -243,6 +302,46 @@ export class CPU {
   private trap(r: RunResult): RunResult {
     this.onTrap?.(r);
     return r;
+  }
+
+  // Deliver a trap to the guest in KERNEL mode by vectoring through the IDT.
+  // Returns 'guest' if it entered the handler, 'host' if there is no IDT or the
+  // vector is absent (fall back to model A), or 'double' if entry itself faulted.
+  private deliver(
+    vector: number,
+    returnPc: number,
+    errorCode: number,
+  ): 'guest' | 'host' | 'double' {
+    if (this.idtr === 0) return 'host';
+    const base = this.idtr + vector * IDT_ENTRY_SIZE;
+    const handler = this.phys.read32(base);
+    const flags = this.phys.read32(base + 4);
+    if ((flags & IDT_PRESENT) === 0) return 'host';
+
+    const oldMode = this.mode;
+    const oldFlags = this.flags;
+    const oldSp = this.sp;
+    try {
+      // Enter the kernel first so the frame pushes use supervisor translation,
+      // then switch to the kernel stack on a privilege change (USER->KERNEL).
+      this.mode = MODE.KERNEL;
+      if (oldMode === MODE.USER) this.sp = this.ksp;
+      this.errorCode = errorCode;
+      this.push(oldSp); // trap frame: user sp / flags / mode / return pc
+      this.push(oldFlags);
+      this.push(oldMode);
+      this.push(returnPc);
+    } catch (e) {
+      if (e instanceof PageFault || e instanceof CpuFault) return 'double';
+      throw e;
+    }
+    this.setFlag(FLAG.IF, false); // mask interrupts on handler entry
+    this.pc = handler;
+    return 'guest';
+  }
+
+  private doubleFault(): RunResult {
+    return { reason: 'fault', kind: 'illegal', message: 'double fault during trap delivery' };
   }
 
   private step(): RunResult | undefined {
@@ -409,11 +508,59 @@ export class CPU {
       case 'OUT': // port[rp] = rs   (operands: rp, rs)
         this.ports.out(r[ops[0]!]!, r[ops[1]!]!);
         break;
-      case 'IRET':
-        throw new CpuFault('illegal', 'IRET is not implemented (model B / Phase 8)');
+      case 'IRET': {
+        // Pop the trap frame pushed by deliver() (all reads while still KERNEL).
+        const pc = this.pop();
+        const mode = this.pop();
+        const flags = this.pop();
+        const sp = this.pop();
+        this.pc = pc;
+        this.flags = flags;
+        this.mode = mode === MODE.USER ? MODE.USER : MODE.KERNEL;
+        this.sp = sp; // restore the (user or nested-kernel) stack pointer
+        break;
+      }
+      case 'LIDT':
+        this.idtr = r[ops[0]!]! >>> 0;
+        break;
+      case 'LKSP':
+        this.ksp = r[ops[0]!]! >>> 0;
+        break;
+      case 'RDPFLA':
+        r[ops[0]!] = this.pfla >>> 0;
+        break;
+      case 'RDERR':
+        r[ops[0]!] = this.errorCode >>> 0;
+        break;
+      case 'STMR': {
+        const n = r[ops[0]!]! >>> 0;
+        this.timerInterval = n;
+        this.timerCount = n;
+        break;
+      }
       case 'HLT':
         return { reason: 'halt' };
     }
     return undefined;
   }
+}
+
+// Map a CPU exception to its trap vector (model B in-CPU delivery).
+function faultVector(kind: FaultKind): number {
+  switch (kind) {
+    case 'divide-by-zero':
+      return TRAP.DIVZERO;
+    case 'illegal-opcode':
+    case 'illegal':
+      return TRAP.ILLOP;
+    default: // privileged, phys-range
+      return TRAP.GP;
+  }
+}
+
+// Pack a page fault into an x86-like error code (readable by the handler via RDERR).
+function pfErrorCode(e: PageFault): number {
+  return (
+    (e.present ? PF_ERR.PRESENT : 0) | (e.write ? PF_ERR.WRITE : 0) | (e.user ? PF_ERR.USER : 0)
+  );
 }
