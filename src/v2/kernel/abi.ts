@@ -3,8 +3,7 @@
 import { SYSCALL_INT } from '../../isa.ts';
 import { PORT } from '../../vm/custom32/platform.ts';
 
-export { SYSCALL_INT };
-export { PORT };
+export { PORT, SYSCALL_INT };
 
 // syscall numbers (passed in R0; return value comes back in R0).
 // Args are in R1, R2, R3. Invoked with `INT 0x80`.

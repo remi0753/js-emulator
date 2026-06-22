@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-
-import { BlockDisk } from '../src/vm/custom32/devices/disk.ts';
-import { PortBus } from '../src/vm/custom32/ports.ts';
 import { PORT } from '../src/v2/kernel/abi.ts';
 import { BlockDriver, BSIZE } from '../src/v2/kernel/disk.ts';
 import { Fs, MAXFILE, NDIRECT, ROOTINO, T_DIR, T_FILE } from '../src/v2/kernel/fs.ts';
+import { BlockDisk } from '../src/vm/custom32/devices/disk.ts';
+import { PortBus } from '../src/vm/custom32/ports.ts';
 
 function newDisk(sectors = 2048) {
   const ports = new PortBus();

@@ -5,7 +5,7 @@ import { assemble } from '../src/assembler.ts';
 import { PF_ERR } from '../src/isa.ts';
 import { MODE } from '../src/vm/custom32/cpu.ts';
 import { Machine } from '../src/vm/custom32/machine.ts';
-import { PTE, dirIndex, tableIndex } from '../src/vm/custom32/mmu.ts';
+import { dirIndex, PTE, tableIndex } from '../src/vm/custom32/mmu.ts';
 
 // Phase 8: real in-CPU trap and interrupt entry. A guest kernel written in
 // assembly installs an IDT, takes traps in KERNEL mode, and returns with IRET —

@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { assemble } from '../src/assembler.ts';
-import { PTE } from '../src/vm/custom32/mmu.ts';
 import { LAYOUT } from '../src/v2/kernel/abi.ts';
 import { type Executable, encodeExecutable, parseExecutable, SEG } from '../src/v2/kernel/exec.ts';
 import { Kernel } from '../src/v2/kernel/kernel.ts';
 import { Machine } from '../src/vm/custom32/machine.ts';
+import { PTE } from '../src/vm/custom32/mmu.ts';
 
 function bytes(s: string): Uint8Array {
   return new Uint8Array([...s].map((c) => c.charCodeAt(0)));

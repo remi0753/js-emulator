@@ -11,9 +11,9 @@ import { Console } from './devices/console.ts';
 import { BlockDisk } from './devices/disk.ts';
 import { Keyboard } from './devices/keyboard.ts';
 import { PhysicalMemory } from './memory.ts';
-import { PortBus } from './ports.ts';
 import { PORT } from './platform.ts';
-import { Tracer, type TraceOptions } from './trace.ts';
+import { PortBus } from './ports.ts';
+import { type TraceOptions, Tracer } from './trace.ts';
 
 export const DEFAULT_PHYS_SIZE = 16 * 1024 * 1024; // 16 MiB physical RAM
 export const DEFAULT_DISK_BLOCKS = 2048; // 1 MiB fresh disk when no image is supplied
