@@ -230,10 +230,15 @@ subsystems over one at a time.
 
   Added a compiled guest kernel in `src/v3/guest-kernel.ts`, built by the Phase 10
   toolchain and run directly on the hardware-only `Machine`. The kernel writes to
-  the serial console, installs its own IDT, builds an identity-mapped page table,
-  enables paging from guest code (`LPTBR`/`PGON`), resolves a deliberate
-  not-present page fault in its page-fault handler, arms the in-CPU timer, handles
-  timer IRQ0 through the guest IDT, and stays in an idle loop. Demo
+  the serial console, has a `panic` that reports and halts, installs its own IDT
+  (every vector points at a default panic handler before the timer/page-fault
+  gates overwrite theirs, so it owns the whole trap path), builds an
+  identity-mapped page table, enables paging from guest code (`LPTBR`/`PGON`), and
+  runs a bump physical frame allocator. Its page-fault handler reads the faulting
+  address (`RDPFLA`), allocates a frame, maps the page, and lets the CPU retry the
+  access; it also arms the in-CPU timer, handles timer IRQ0 through the guest IDT,
+  and stays in an idle loop. The trap stubs are assembly that save the
+  caller-clobbered registers and call into C handlers. Demo
   `node demo/v3-guest-kernel.ts`; tests in `test/guest-kernel.test.ts`.
 
   Done: the guest kernel prints through a device, enables paging, handles a timer
