@@ -68,8 +68,10 @@ export class Machine {
 
   // Reset the CPU to a known boot state: registers cleared, paging off, KERNEL
   // mode, stack at the top of RAM, pc at 0. Override any field via `init` (e.g.
-  // `pc` to enter at a load address). Memory and devices are left intact.
+  // `pc` to enter at a load address). Memory and devices are left intact, but
+  // CPU-local transient state such as pending interrupts is cleared.
   reset(init: Partial<CpuState> = {}): void {
+    this.cpu.resetTransientState();
     this.cpu.loadState({
       regs: new Array(NUM_REGS).fill(0),
       pc: 0,

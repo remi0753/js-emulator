@@ -118,6 +118,13 @@ export class CPU {
     this.pendingIrq = line;
   }
 
+  // Clear CPU-local transient hardware state that is not part of a process trap
+  // frame. Used by Machine.reset(), not by scheduler context switches.
+  resetTransientState(): void {
+    this.pendingIrq = null;
+    this.pfla = 0;
+  }
+
   // --- memory access with address translation ---
 
   private xlate(vaddr: number, write: boolean): number {

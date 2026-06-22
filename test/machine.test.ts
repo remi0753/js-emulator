@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { assemble } from '../src/assembler.ts';
+import { FLAG } from '../src/isa.ts';
 import { MODE } from '../src/vm/custom32/cpu.ts';
 import { Machine } from '../src/vm/custom32/machine.ts';
 import { PTE } from '../src/vm/custom32/mmu.ts';
@@ -40,6 +41,19 @@ test('machine.reset can enter at a load address and override the stack', () => {
   assert.equal(machine.cpu.sp, 0x1000);
   assert.equal(machine.run(10).reason, 'halt');
   assert.equal(machine.cpu.regs[0], 1);
+});
+
+test('machine.reset clears transient CPU state such as pending IRQs and fault address', () => {
+  const machine = new Machine({ physSize: 64 * 1024 });
+  const { bytes } = assemble('HLT');
+  machine.load(0, bytes);
+
+  machine.raiseIrq(7);
+  machine.cpu.pfla = 0xdeadbeef;
+  machine.reset({ flags: FLAG.IF });
+
+  assert.equal(machine.cpu.pfla, 0);
+  assert.equal(machine.run(10).reason, 'halt');
 });
 
 test('machine.run surfaces a syscall trap (INT) to the host', () => {
