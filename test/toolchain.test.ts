@@ -97,7 +97,10 @@ test('Phase 10: pointer arithmetic scales by element size', () => {
 });
 
 test('Phase 10: block scopes resolve shadowed locals independently', () => {
-  assert.equal(runExit('int r; r=0; { int x; x=10; r=r+x; } { int x; x=99; r=r+x; } return r;'), 109);
+  assert.equal(
+    runExit('int r; r=0; { int x; x=10; r=r+x; } { int x; x=99; r=r+x; } return r;'),
+    109,
+  );
   assert.equal(runExit('int x; x=1; { int x; x=2; { int x; x=3; } } return x;'), 1);
   assert.equal(runExit('int s; s=0; for (int i=0;i<4;i=i+1){ s=s+i; } return s;'), 6);
 });
@@ -122,16 +125,54 @@ test('Phase 10: pointer globals initialized from string / address relocate', () 
 });
 
 test('Phase 10: links multiple objects with shared runtime/crt0', () => {
-  const objA = compileC(
-    `int helper(int x); int main(int a, char **v){ return helper(20) + 1; }`,
-    { start: 'user' },
-  );
+  const objA = compileC(`int helper(int x); int main(int a, char **v){ return helper(20) + 1; }`, {
+    start: 'user',
+  });
   const objB = compileC(`int helper(int x){ int t; t = x; return t * 2; }`, { start: 'none' });
   const linked = linkExecutable([objA, objB]);
   const kernel = new Kernel({ consoleSink: () => {}, log: () => {} });
   kernel.spawn('p', linked.executable, ['p']);
   kernel.run();
   assert.equal(kernel.processes.get(1)!.exitCode, 41);
+});
+
+test('Phase 10: cross-object prototypes preserve pointer return types', () => {
+  const objA = compileC(`int *get(); int main(int a, char **v){ return *(get() + 1); }`, {
+    start: 'user',
+  });
+  const objB = compileC(`int xs[2]; int *get(){ xs[0]=11; xs[1]=22; return xs; }`, {
+    start: 'none',
+  });
+  const linked = linkExecutable([objA, objB]);
+  const kernel = new Kernel({ consoleSink: () => {}, log: () => {} });
+  kernel.spawn('p', linked.executable, ['p']);
+  kernel.run();
+  assert.equal(kernel.processes.get(1)!.exitCode, 22);
+});
+
+test('Phase 10: duplicate public symbols are link errors', () => {
+  const objA = compileC(`int helper(){ return 1; } int main(int a, char **v){ return helper(); }`);
+  const objB = compileC(`int helper(){ return 2; }`, { start: 'none' });
+  assert.throws(() => linkExecutable([objA, objB]), /duplicate text symbol: helper/);
+
+  const dataA = compileC(`int g; int main(int a, char **v){ return 0; }`);
+  const dataB = compileC(`int g;`, { start: 'none' });
+  assert.throws(() => linkExecutable([dataA, dataB]), /duplicate bss symbol: g/);
+});
+
+test('Phase 10: kernel image data placement avoids or rejects segment overlap', () => {
+  const source = `
+    int pad[4096];
+    int kmain() {
+      return 0;
+    }
+  `;
+  const obj = compileC(source, { start: 'kernel' });
+
+  assert.throws(() => linkKernelImage([obj], { dataOrigin: 0x100 }), /kernel segments overlap/);
+
+  const image = linkKernelImage([obj]);
+  assert.ok(image.segments[1]!.vaddr >= image.segments[0]!.vaddr + image.segments[0]!.memSize);
 });
 
 test('Phase 10: compiles a tiny guest kernel image that uses port I/O', () => {

@@ -98,6 +98,7 @@ interface Param {
 interface Program {
   structs: Map<string, CType>;
   globals: GlobalDecl[];
+  prototypes: FunctionSig[];
   functions: FuncDecl[];
 }
 
@@ -322,6 +323,7 @@ class Parser {
 
   parseProgram(): Program {
     const globals: GlobalDecl[] = [];
+    const prototypes: FunctionSig[] = [];
     const functions: FuncDecl[] = [];
     while (!this.at('eof')) {
       if (this.matchText('struct') && this.peekText(1) === '{') {
@@ -333,7 +335,10 @@ class Parser {
       const first = this.parseDeclarator(base);
       if (this.matchText('(')) {
         const params = this.parseParams();
-        if (this.matchText(';')) continue;
+        if (this.matchText(';')) {
+          prototypes.push({ name: first.name, returnType: first.type, params });
+          continue;
+        }
         const body = this.parseStmt();
         functions.push({
           kind: 'func',
@@ -348,7 +353,7 @@ class Parser {
       const decls = this.parseDeclTail(first);
       for (const d of decls) globals.push({ kind: 'global', ...d });
     }
-    return { structs: this.structs, globals, functions };
+    return { structs: this.structs, globals, prototypes, functions };
   }
 
   private parseStructDefinition(): CType {
@@ -791,6 +796,9 @@ class Codegen {
 
   compile(): CompiledObject {
     for (const g of this.program.globals) this.globals.set(g.name, g.type);
+    for (const f of this.program.prototypes) {
+      this.functions.set(f.name, { name: f.name, returnType: f.returnType, params: f.params });
+    }
     for (const f of this.program.functions) {
       this.functions.set(f.name, { name: f.name, returnType: f.returnType, params: f.params });
     }
@@ -1469,7 +1477,12 @@ class Codegen {
       if (g.type.kind === 'ptr') {
         const target = this.globalPointerTarget(g.init);
         if (target !== null) {
-          data.push({ name: g.name, bytes: new Uint8Array(4), size: 4, relocs: [{ offset: 0, target }] });
+          data.push({
+            name: g.name,
+            bytes: new Uint8Array(4),
+            size: 4,
+            relocs: [{ offset: 0, target }],
+          });
           continue;
         }
       }
@@ -1485,7 +1498,12 @@ class Codegen {
     if (init.kind !== 'expr') return null;
     const e = init.expr;
     if (e.kind === 'str') return this.internString(e.value);
-    if (e.kind === 'unary' && e.op === '&' && e.expr.kind === 'var' && this.globals.has(e.expr.name)) {
+    if (
+      e.kind === 'unary' &&
+      e.op === '&' &&
+      e.expr.kind === 'var' &&
+      this.globals.has(e.expr.name)
+    ) {
       return e.expr.name;
     }
     if (e.kind === 'var') {

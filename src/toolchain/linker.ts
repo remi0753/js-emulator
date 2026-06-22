@@ -27,6 +27,25 @@ export interface KernelImage {
   flat: Uint8Array;
 }
 
+const SHARED_TEXT_LABELS = new Set([
+  'memcpy',
+  'memcpy_loop',
+  'memcpy_done',
+  'memset',
+  'memset_loop',
+  'memset_done',
+  'strlen',
+  'strlen_loop',
+  'strlen_done',
+  'strcmp',
+  'strcmp_loop',
+  'strcmp_diff',
+  'strcmp_eq',
+  'strcmp_done',
+]);
+
+const SHARED_DATA_SYMBOLS = new Set(['__csp', '__stack']);
+
 export function linkExecutable(objects: CompiledObject[], options: LinkOptions = {}): LinkedImage {
   const textOrigin = options.textOrigin ?? LAYOUT.USER_TEXT;
   const entryName = options.entry ?? '_start';
@@ -71,12 +90,20 @@ export function linkExecutable(objects: CompiledObject[], options: LinkOptions =
 }
 
 export function linkKernelImage(objects: CompiledObject[], options: LinkOptions = {}): KernelImage {
+  const textOrigin = options.textOrigin ?? 0;
+  let dataOrigin = options.dataOrigin;
+  if (dataOrigin === undefined) {
+    const textSource = dedupeText(objects.map((o) => o.text).join('\n'));
+    const textProbe = assemble(textSource, textOrigin, { externals: zeroDataSymbols(objects) });
+    dataOrigin = align(textOrigin + textProbe.size, 0x1000);
+  }
   const linked = linkExecutable(objects, {
-    textOrigin: options.textOrigin ?? 0,
-    dataOrigin: options.dataOrigin ?? 0x8000,
+    textOrigin,
+    dataOrigin,
     entry: options.entry ?? '_start',
   });
   const segments = linked.executable.segments;
+  assertNoOverlap(segments);
   const end = Math.max(...segments.map((s) => s.vaddr + s.memSize));
   const flat = new Uint8Array(end);
   for (const s of segments) flat.set(s.data, s.vaddr);
@@ -98,11 +125,13 @@ function dedupeText(text: string): string {
   for (const line of text.split('\n')) {
     const label = /^([A-Za-z_]\w*):$/.exec(line.trim());
     if (label) {
-      if (seen.has(label[1]!)) {
+      const name = label[1]!;
+      if (seen.has(name)) {
+        if (!SHARED_TEXT_LABELS.has(name)) throw new Error(`link: duplicate text symbol: ${name}`);
         skipping = true;
         continue;
       }
-      seen.add(label[1]!);
+      seen.add(name);
       skipping = false;
       out.push(line);
       continue;
@@ -110,6 +139,20 @@ function dedupeText(text: string): string {
     if (!skipping) out.push(line);
   }
   return out.join('\n');
+}
+
+function assertNoOverlap(segments: KernelImage['segments']): void {
+  const sorted = [...segments].sort((a, b) => a.vaddr - b.vaddr);
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1]!;
+    const cur = sorted[i]!;
+    const prevEnd = prev.vaddr + prev.memSize;
+    if (cur.vaddr < prevEnd) {
+      throw new Error(
+        `link: kernel segments overlap: 0x${prev.vaddr.toString(16)}..0x${prevEnd.toString(16)} and 0x${cur.vaddr.toString(16)}`,
+      );
+    }
+  }
 }
 
 function zeroDataSymbols(objects: CompiledObject[]): Map<string, number> {
@@ -132,12 +175,18 @@ function layoutData(
   const bssSyms: BssSymbol[] = [];
   for (const obj of objects) {
     for (const d of obj.data) {
-      if (seen.has(d.name)) continue;
+      if (seen.has(d.name)) {
+        if (SHARED_DATA_SYMBOLS.has(d.name)) continue;
+        throw new Error(`link: duplicate data symbol: ${d.name}`);
+      }
       seen.add(d.name);
       dataSyms.push(d);
     }
     for (const b of obj.bss) {
-      if (seen.has(b.name)) continue;
+      if (seen.has(b.name)) {
+        if (SHARED_DATA_SYMBOLS.has(b.name)) continue;
+        throw new Error(`link: duplicate bss symbol: ${b.name}`);
+      }
       seen.add(b.name);
       bssSyms.push(b);
     }
@@ -165,7 +214,8 @@ function layoutData(
     data.set(sym.bytes, off);
     for (const reloc of sym.relocs ?? []) {
       const target = symbols.get(reloc.target);
-      if (target === undefined) throw new Error(`link: relocation target not found: ${reloc.target}`);
+      if (target === undefined)
+        throw new Error(`link: relocation target not found: ${reloc.target}`);
       writeWord(data, off + reloc.offset, target);
     }
   }

@@ -208,13 +208,18 @@ subsystems over one at a time.
   `__halt`. It emits guest assembly plus symbol/source-map metadata. The linker
   resolves cross-section symbols and emits the existing executable format with
   separate RX text and RW data/BSS segments, or a flat loadable kernel image.
+  It preserves function-prototype types across object boundaries, rejects
+  duplicate public text/data/BSS symbols instead of silently choosing one, and
+  validates kernel-image segment placement so text and data cannot overlap.
   A freestanding runtime provides `memcpy`, `memset`, `strlen`, and `strcmp`;
   `crt0` initializes the compiler's software stack and calls `main` or `kmain`.
 
   Done: `test/toolchain.test.ts` compiles and runs a non-trivial user program
   using structs, arrays, pointers, loops, globals, strings, runtime helpers, and
-  syscalls, then compiles a tiny guest kernel that writes through port I/O and
-  halts on the hardware-only `Machine`.
+  syscalls, links multiple objects with shared runtime helpers, verifies
+  cross-object pointer-return prototypes and duplicate-symbol failures, then
+  compiles a tiny guest kernel that writes through port I/O and halts on the
+  hardware-only `Machine`.
 
 - **Phase 11** ⬜ boot a minimal guest kernel.
 
