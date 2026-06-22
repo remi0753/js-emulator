@@ -21,6 +21,10 @@ export class BlockDisk implements PortDevice {
   readonly sectors: number;
   private pos = 0; // current byte position for streaming
 
+  // Optional deterministic trace hook (off by default; the Tracer wires it).
+  // `seek` reports the target sector; `read`/`write` report the byte position.
+  onIo: ((op: 'seek' | 'read' | 'write', at: number, value: number) => void) | null = null;
+
   // `backing` is the disk contents; its length must be a multiple of SECTOR_SIZE.
   constructor(backing: Uint8Array) {
     if (backing.length % SECTOR_SIZE !== 0) {
@@ -38,6 +42,7 @@ export class BlockDisk implements PortDevice {
   read(port: number): number {
     if (port === PORT_DATA) {
       const v = this.read32(this.pos);
+      this.onIo?.('read', this.pos, v);
       this.pos += 4;
       return v;
     }
@@ -47,11 +52,14 @@ export class BlockDisk implements PortDevice {
 
   write(port: number, value: number): void {
     if (port === PORT_POS) {
-      this.pos = (value >>> 0) * SECTOR_SIZE;
+      const sector = value >>> 0;
+      this.pos = sector * SECTOR_SIZE;
+      this.onIo?.('seek', this.pos, sector);
       return;
     }
     if (port === PORT_DATA) {
       this.write32(this.pos, value >>> 0);
+      this.onIo?.('write', this.pos, value >>> 0);
       this.pos += 4;
       return;
     }

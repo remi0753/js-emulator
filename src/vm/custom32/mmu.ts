@@ -90,4 +90,30 @@ function fault(reason: 'not-present' | 'protection', present = false): Translate
   return { ok: false, present, reason };
 }
 
+// One present mapping discovered by walking a page directory.
+export interface PageMapping {
+  vaddr: number;
+  paddr: number; // frame base (page offset is 0)
+  flags: number; // low 12 bits of the PTE (P/W/U/COW)
+}
+
+// Walk every present entry of the two-level table rooted at `ptbr` and return the
+// virtual->physical mappings. Hardware-visible inspection only; it never faults.
+// Used for deterministic page-table dumps (Phase 7 tracing).
+export function dumpPageTable(phys: PhysicalMemory, ptbr: number): PageMapping[] {
+  const out: PageMapping[] = [];
+  for (let di = 0; di < ENTRIES_PER_TABLE; di++) {
+    const pde = phys.read32(ptbr + di * 4);
+    if ((pde & PTE.P) === 0) continue;
+    const tableAddr = pde & ADDR_MASK;
+    for (let ti = 0; ti < ENTRIES_PER_TABLE; ti++) {
+      const pte = phys.read32(tableAddr + ti * 4);
+      if ((pte & PTE.P) === 0) continue;
+      const vaddr = ((di << 22) | (ti << 12)) >>> 0;
+      out.push({ vaddr, paddr: pte & ADDR_MASK, flags: pte & 0xfff });
+    }
+  }
+  return out;
+}
+
 export { PAGE_SIZE };

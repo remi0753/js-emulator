@@ -4,7 +4,7 @@
 // trap / fault / interrupt happens run() returns control to the TS kernel, which
 // inspects the state and resumes.
 
-import { FLAG, OPCODE_TABLE, PRIVILEGED } from '../../isa.ts';
+import { FLAG, type Mnemonic, OPCODE_TABLE, PRIVILEGED } from '../../isa.ts';
 import { type PhysicalMemory, WORD } from './memory.ts';
 import { Mmu } from './mmu.ts';
 import type { PortBus } from './ports.ts';
@@ -77,6 +77,12 @@ export class CPU {
   readonly phys: PhysicalMemory;
   readonly ports: PortBus;
   private pendingIrq: number | null = null;
+
+  // Optional deterministic trace hooks (off by default; the Tracer wires them).
+  // onTrace fires once per executed instruction; onTrap fires for every reason
+  // run() returns to the host (syscall, fault, page fault, IRQ, halt, timer).
+  onTrace: ((pc: number, mnemonic: Mnemonic) => void) | null = null;
+  onTrap: ((result: RunResult) => void) | null = null;
 
   constructor(phys: PhysicalMemory, ports: PortBus) {
     this.phys = phys;
@@ -195,7 +201,7 @@ export class CPU {
       if (this.pendingIrq !== null && this.getFlag(FLAG.IF)) {
         const line = this.pendingIrq;
         this.pendingIrq = null;
-        return { reason: 'irq', line };
+        return this.trap({ reason: 'irq', line });
       }
       // Snapshot enough to restart the instruction if it faults part-way. A page
       // fault (e.g. copy-on-write) must re-execute from the start, so the kernel
@@ -204,32 +210,40 @@ export class CPU {
       const sp0 = this.sp;
       try {
         const result = this.step();
-        if (result) return result;
+        if (result) return this.trap(result);
       } catch (e) {
         if (e instanceof PageFault) {
           this.pc = pc0; // restart the faulting instruction after the kernel fixes it
           this.sp = sp0;
-          return {
+          return this.trap({
             reason: 'pagefault',
             vaddr: e.vaddr,
             write: e.write,
             user: e.user,
             present: e.present,
-          };
+          });
         }
         if (e instanceof CpuFault) {
-          return { reason: 'fault', kind: e.kind, message: e.message };
+          return this.trap({ reason: 'fault', kind: e.kind, message: e.message });
         }
         throw e;
       }
     }
-    return { reason: 'timer' };
+    return this.trap({ reason: 'timer' });
+  }
+
+  // Funnel every run() exit through the trap hook so the trace sees it.
+  private trap(r: RunResult): RunResult {
+    this.onTrap?.(r);
+    return r;
   }
 
   private step(): RunResult | undefined {
+    const ip = this.pc; // instruction address (for the trace), before fetch advances pc
     const opcode = this.fetch8();
     const entry = OPCODE_TABLE.get(opcode);
     if (!entry) throw new CpuFault('illegal-opcode', `illegal opcode: 0x${opcode.toString(16)}`);
+    this.onTrace?.(ip, entry.mnemonic);
 
     // Trap if a privileged instruction is executed in USER mode.
     if (this.mode === MODE.USER && PRIVILEGED.has(entry.mnemonic)) {
@@ -389,7 +403,7 @@ export class CPU {
         this.ports.out(r[ops[0]!]!, r[ops[1]!]!);
         break;
       case 'IRET':
-        throw new CpuFault('illegal', 'IRET is not implemented (model B / Phase 7)');
+        throw new CpuFault('illegal', 'IRET is not implemented (model B / Phase 8)');
       case 'HLT':
         return { reason: 'halt' };
     }

@@ -131,17 +131,22 @@ real guest kernel. The main risk is trying to port everything at once. The right
 shape is to first make the VM capable of running a tiny guest kernel, then move
 subsystems over one at a time.
 
-- **Phase 7** ⬜ split the VM from the TypeScript kernel.
+- **Phase 7** ✅ split the VM from the TypeScript kernel.
 
-  Define a narrow `Machine` boundary that owns only hardware state: CPU, physical
-  memory, MMU, port bus, devices, pending interrupts, and reset/load operations.
-  The current `Kernel` remains as a compatibility harness for v2 tests, but new
-  model-B work should boot through the hardware boundary. This phase should also
-  add deterministic VM tracing: instruction trace, trap trace, port I/O trace,
-  page-table dumps, and disk I/O trace.
+  Defined a narrow `Machine` boundary that owns only hardware state: CPU, physical
+  memory, MMU, port bus, devices, pending interrupts, and `load`/`reset`/`run`/
+  `raiseIrq` operations (see `src/vm/custom32/machine.ts`). The `Kernel` remains a
+  compatibility harness — it still constructs/accepts a `Machine` — but model-B
+  work boots straight through the hardware boundary with no kernel. Added
+  deterministic VM tracing (`src/vm/custom32/trace.ts`): an instruction trace, a
+  trap/return trace, a port I/O trace, a disk I/O trace, and page-table dumps
+  (`dumpPageTable` in `mmu.ts`), all wired through optional zero-overhead hooks on
+  the CPU/port bus/disk. Demo `node demo/v2-machine.ts`; tests in
+  `test/machine.test.ts`.
 
-  Done when a test can create a blank machine, load guest bytes at a physical
-  address, run until a trap/halt, and inspect only hardware-visible state.
+  Done: a test creates a blank machine, loads guest bytes at a physical address,
+  runs until a trap/halt, and inspects only hardware-visible state (registers,
+  physical RAM, disk) — no scheduler, process table, or syscall dispatch.
 
 - **Phase 8** ⬜ implement real in-CPU trap and interrupt entry.
 

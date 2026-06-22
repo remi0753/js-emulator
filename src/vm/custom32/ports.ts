@@ -16,6 +16,9 @@ export class PortBus {
   private readers = new Map<number, PortDevice>();
   private writers = new Map<number, PortDevice>();
 
+  // Optional deterministic trace hook (off by default; the Tracer wires it).
+  onIo: ((dir: 'in' | 'out', port: number, value: number) => void) | null = null;
+
   // Assign a device to the port range [base, base+count).
   register(base: number, count: number, device: PortDevice): void {
     for (let p = base; p < base + count; p++) {
@@ -27,13 +30,17 @@ export class PortBus {
   in(port: number): number {
     const dev = this.readers.get(port);
     if (!dev?.read) throw new PortError(`IN from an unwired port: 0x${port.toString(16)}`);
-    return dev.read(port) >>> 0;
+    const value = dev.read(port) >>> 0;
+    this.onIo?.('in', port, value);
+    return value;
   }
 
   out(port: number, value: number): void {
     const dev = this.writers.get(port);
     if (!dev?.write) throw new PortError(`OUT to an unwired port: 0x${port.toString(16)}`);
-    dev.write(port, value >>> 0);
+    const v = value >>> 0;
+    dev.write(port, v);
+    this.onIo?.('out', port, v);
   }
 }
 
