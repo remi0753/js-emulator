@@ -26,6 +26,7 @@ const INITPATH_MAX = 64;
 export interface BootBlock {
   magic: number;
   version: number;
+  signature: number;
   fsBlock: number; // block holding the filesystem superblock (1)
   kernelStart: number; // first block of the raw kernel image (0 = none yet)
   kernelBlocks: number; // length of the kernel image in blocks (0 = none yet)
@@ -37,6 +38,7 @@ export function makeBootBlock(initPath: string, extra: Partial<BootBlock> = {}):
   return {
     magic: BOOT_MAGIC,
     version: BOOT_VERSION,
+    signature: BOOT_SIGNATURE,
     fsBlock: 1,
     kernelStart: 0,
     kernelBlocks: 0,
@@ -59,7 +61,7 @@ export function encodeBootBlock(bb: BootBlock): Uint8Array {
   dv.setUint32(16, bb.kernelBlocks, true);
   dv.setUint32(20, path.length, true);
   for (let i = 0; i < path.length; i++) buf[24 + i] = path.charCodeAt(i) & 0xff;
-  dv.setUint16(BSIZE - 2, BOOT_SIGNATURE, true);
+  dv.setUint16(BSIZE - 2, bb.signature, true);
   return buf;
 }
 
@@ -73,6 +75,7 @@ export function decodeBootBlock(buf: Uint8Array): BootBlock {
   return {
     magic: dv.getUint32(0, true),
     version: dv.getUint32(4, true),
+    signature: dv.getUint16(BSIZE - 2, true),
     fsBlock: dv.getUint32(8, true),
     kernelStart: dv.getUint32(12, true),
     kernelBlocks: dv.getUint32(16, true),

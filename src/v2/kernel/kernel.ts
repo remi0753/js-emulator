@@ -12,7 +12,7 @@ import { Machine } from '../../vm/custom32/machine.ts';
 import { PAGE_SIZE, type PhysicalMemory } from '../../vm/custom32/memory.ts';
 import type { PortBus } from '../../vm/custom32/ports.ts';
 import { FD, LAYOUT, O, PORT, SYS, SYSCALL_INT } from './abi.ts';
-import { BOOT_MAGIC, decodeBootBlock } from './bootblock.ts';
+import { BOOT_MAGIC, BOOT_SIGNATURE, BOOT_VERSION, decodeBootBlock } from './bootblock.ts';
 import { BlockDriver } from './disk.ts';
 import { type Executable, encodeExecutable, flatExecutable, parseExecutable, SEG } from './exec.ts';
 import { Fs, T_DIR } from './fs.ts';
@@ -143,6 +143,18 @@ export class Kernel {
     const bb = decodeBootBlock(this.bio.read(0));
     if (bb.magic !== BOOT_MAGIC) {
       throw new Error('boot: disk is not bootable (no boot block magic in sector 0)');
+    }
+    if (bb.signature !== BOOT_SIGNATURE) {
+      throw new Error('boot: disk is not bootable (bad boot block signature)');
+    }
+    if (bb.version !== BOOT_VERSION) {
+      throw new Error(`boot: unsupported boot block version: ${bb.version}`);
+    }
+    if (bb.fsBlock !== 1) {
+      throw new Error(`boot: unsupported filesystem superblock: ${bb.fsBlock}`);
+    }
+    if (bb.initPath.length === 0) {
+      throw new Error('boot: init path is empty');
     }
     const inum = this.fs.namei(bb.initPath);
     if (inum === 0) throw new Error(`boot: init program not found: ${bb.initPath}`);

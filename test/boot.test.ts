@@ -27,6 +27,7 @@ test('an encoded boot block carries the boot-sector signature in sector 0', () =
   assert.equal(sector.length, 512);
   const sig = sector[510]! | (sector[511]! << 8);
   assert.equal(sig, BOOT_SIGNATURE);
+  assert.equal(decodeBootBlock(sector).signature, BOOT_SIGNATURE);
 });
 
 test('buildDiskImage produces a bootable image: manifest in sector 0, userland on disk', () => {
@@ -65,4 +66,42 @@ test('booting a disk with no boot block fails clearly', () => {
   // A freshly formatted disk (mkfs) has a zeroed sector 0 — not bootable.
   const kernel = new Kernel({ log: () => {} });
   assert.throws(() => kernel.boot(), /not bootable/);
+});
+
+test('boot rejects malformed boot block contract fields', () => {
+  const image = buildDiskImage();
+
+  const badSignature = image.slice();
+  badSignature[510] = 0;
+  badSignature[511] = 0;
+  assert.throws(() => bootImage(badSignature), /signature/);
+
+  const badVersion = image.slice();
+  badVersion.set(encodeBootBlock(makeBootBlock('/bin/init', { version: 999 })), 0);
+  assert.throws(() => bootImage(badVersion), /unsupported boot block version/);
+
+  const badFsBlock = image.slice();
+  badFsBlock.set(encodeBootBlock(makeBootBlock('/bin/init', { fsBlock: 99 })), 0);
+  assert.throws(() => bootImage(badFsBlock), /unsupported filesystem superblock/);
+});
+
+test('boot rejects a manifest that names a missing init program', () => {
+  const image = buildDiskImage({ initPath: '/bin/missing-init' });
+
+  assert.throws(() => bootImage(image), /init program not found/);
+});
+
+test('buildDiskImage seed option preserves defaults and overrides by path', () => {
+  const image = buildDiskImage({ seed: { '/README': 'custom readme\n', '/etc/extra': 'extra\n' } });
+  const kernel = new Kernel({ diskImage: image, log: () => {} });
+
+  const read = (path: string) => {
+    const inum = kernel.fs.namei(path);
+    assert.notEqual(inum, 0, `expected ${path} to exist`);
+    return new TextDecoder().decode(kernel.fs.readFile(inum));
+  };
+
+  assert.equal(read('/README'), 'custom readme\n');
+  assert.equal(read('/etc/motd'), 'jscpu-os v2 — booted from a disk image!\n');
+  assert.equal(read('/etc/extra'), 'extra\n');
 });

@@ -34,7 +34,7 @@ export function buildDiskImage(opts: BuildOptions = {}): Uint8Array {
   const kernel = new Kernel({ diskBlocks: opts.diskBlocks, log: () => {} });
   installUserland(kernel);
 
-  const seed = opts.seed ?? DEFAULT_SEED;
+  const seed = { ...DEFAULT_SEED, ...(opts.seed ?? {}) };
   for (const [path, content] of Object.entries(seed)) kernel.fs.writeFile(path, text(content));
 
   // Write the boot block last; the FS reserves sector 0 and never touches it.
@@ -55,5 +55,5 @@ export function bootImage(
 }
 
 function text(s: string): Uint8Array {
-  return new Uint8Array([...s].map((c) => c.charCodeAt(0)));
+  return new TextEncoder().encode(s);
 }
