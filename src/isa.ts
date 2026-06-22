@@ -69,6 +69,9 @@ export const ISA = {
   RDPFLA: { opcode: 0x48, args: ['reg'] }, // rX = faulting linear address (CR2) of the last page fault
   RDERR: { opcode: 0x49, args: ['reg'] }, // rX = error code of the last trap
   STMR: { opcode: 0x4a, args: ['reg'] }, // arm the in-CPU timer: IRQ0 every rX instructions (0 = off)
+  LPTBR: { opcode: 0x4b, args: ['reg'] }, // PTBR/CR3 = rX (physical page-directory base)
+  PGON: { opcode: 0x4c, args: [] }, // enable paging
+  PGOFF: { opcode: 0x4d, args: [] }, // disable paging
   HLT: { opcode: 0xff, args: [] },
 } as const satisfies Record<string, InstrSpec>;
 
@@ -85,6 +88,9 @@ export const PRIVILEGED: ReadonlySet<Mnemonic> = new Set([
   'RDPFLA',
   'RDERR',
   'STMR',
+  'LPTBR',
+  'PGON',
+  'PGOFF',
 ]);
 
 export type Mnemonic = keyof typeof ISA;

@@ -221,15 +221,23 @@ subsystems over one at a time.
   compiles a tiny guest kernel that writes through port I/O and halts on the
   hardware-only `Machine`.
 
-- **Phase 11** ⬜ boot a minimal guest kernel.
+- **Phase 11** ✅ boot a minimal guest kernel.
 
   Start with the smallest real kernel: serial output, panic, page-table setup,
   trap table setup, a physical frame allocator, and a simple idle loop. It does
   not need processes yet. The purpose is to prove that the VM can run privileged
   guest code that owns the trap path.
 
-  Done when the guest kernel prints through a device, enables paging, handles a
-  timer interrupt, handles a deliberate page fault, and keeps running.
+  Added a compiled guest kernel in `src/v3/guest-kernel.ts`, built by the Phase 10
+  toolchain and run directly on the hardware-only `Machine`. The kernel writes to
+  the serial console, installs its own IDT, builds an identity-mapped page table,
+  enables paging from guest code (`LPTBR`/`PGON`), resolves a deliberate
+  not-present page fault in its page-fault handler, arms the in-CPU timer, handles
+  timer IRQ0 through the guest IDT, and stays in an idle loop. Demo
+  `node demo/v3-guest-kernel.ts`; tests in `test/guest-kernel.test.ts`.
+
+  Done: the guest kernel prints through a device, enables paging, handles a timer
+  interrupt, handles a deliberate page fault, and keeps running.
 
 - **Phase 12** ⬜ move memory management and scheduling into the guest.
 

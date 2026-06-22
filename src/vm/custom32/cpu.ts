@@ -558,6 +558,15 @@ export class CPU {
         this.timerCount = n;
         break;
       }
+      case 'LPTBR':
+        this.ptbr = r[ops[0]!]! >>> 0;
+        break;
+      case 'PGON':
+        this.pagingEnabled = true;
+        break;
+      case 'PGOFF':
+        this.pagingEnabled = false;
+        break;
       case 'HLT':
         return { reason: 'halt' };
     }

@@ -96,6 +96,21 @@ never disagree on operand layout.
 | `EI`/`DI`| —        | set / clear `IF`                                |
 | `HLT`    | —        | stop the CPU (process end / idle)               |
 
+### Privileged VM / trap control
+| Mnemonic | Operands | Effect |
+|----------|----------|--------|
+| `IN` / `OUT` | `rd,rp` / `rp,rs` | port I/O |
+| `LIDT` | `rs` | set the interrupt descriptor table base |
+| `LKSP` | `rs` | set the kernel stack used on USER->KERNEL trap entry |
+| `IRET` | — | return from an in-CPU trap frame |
+| `RDPFLA` | `rd` | read the last page-fault linear address |
+| `RDERR` | `rd` | read the last trap error code |
+| `STMR` | `rs` | arm the in-CPU timer; IRQ0 fires every `rs` instructions |
+| `LPTBR` | `rs` | set the page-directory base (`PTBR`/CR3) |
+| `PGON` / `PGOFF` | — | enable / disable paging |
+
+These instructions are privileged and trap if executed in USER mode.
+
 ## Assembler syntax
 
 - One instruction per line; `;` or `#` starts a comment.

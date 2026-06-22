@@ -1323,6 +1323,19 @@ class Codegen {
         this.emit(`  STMR R1`);
         this.emit(`  MOV R0, 0`);
         break;
+      case '__lptbr':
+        evalIntoRegs(['R1']);
+        this.emit(`  LPTBR R1`);
+        this.emit(`  MOV R0, 0`);
+        break;
+      case '__pgon':
+        this.emit(`  PGON`);
+        this.emit(`  MOV R0, 0`);
+        break;
+      case '__pgoff':
+        this.emit(`  PGOFF`);
+        this.emit(`  MOV R0, 0`);
+        break;
       case '__rdpfla':
         this.emit(`  RDPFLA R0`);
         break;
