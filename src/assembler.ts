@@ -18,6 +18,10 @@ export interface AssembleResult {
   size: number;
 }
 
+export interface AssembleOptions {
+  externals?: ReadonlyMap<string, number> | Record<string, number>;
+}
+
 // Intermediate representation built in pass 1.
 type Item =
   | { kind: 'instr'; addr: number; mnemonic: Mnemonic; operands: string[]; line: number }
@@ -60,7 +64,22 @@ function parseReg(tok: string, line: number): number {
 }
 
 // Resolve the value of an immediate / address. Labels are looked up (pass 2).
-function parseValue(tok: string, labels: Map<string, number>, line: number): number {
+function externalLookup(
+  externals: AssembleOptions['externals'] | undefined,
+  name: string,
+): number | undefined {
+  if (!externals) return undefined;
+  const maybeMap = externals as ReadonlyMap<string, number>;
+  if (typeof maybeMap.get === 'function') return maybeMap.get(name);
+  return (externals as Record<string, number>)[name];
+}
+
+function parseValue(
+  tok: string,
+  labels: Map<string, number>,
+  line: number,
+  externals?: AssembleOptions['externals'],
+): number {
   // char literal 'A'
   const ch = /^'(\\?.)'$/.exec(tok);
   if (ch) {
@@ -76,7 +95,11 @@ function parseValue(tok: string, labels: Map<string, number>, line: number): num
   if (/^[-+]?\d+$/.test(tok)) return Number(tok) >>> 0;
   // label
   const addr = labels.get(tok);
-  if (addr === undefined) throw new AsmError(`undefined label / invalid value: '${tok}'`, line);
+  const external = externalLookup(externals, tok);
+  if (addr === undefined && external === undefined) {
+    throw new AsmError(`undefined label / invalid value: '${tok}'`, line);
+  }
+  if (addr === undefined) return external! >>> 0;
   return addr >>> 0;
 }
 
@@ -105,7 +128,11 @@ export class AsmError extends Error {
 // `origin` is the virtual address the emitted image will be loaded at; labels
 // resolve to `origin + offset` so absolute references (jumps, LOAD/STORE) are
 // correct at runtime. The byte stream itself stays compact (offset 0-based).
-export function assemble(source: string, origin = 0): AssembleResult {
+export function assemble(
+  source: string,
+  origin = 0,
+  options: AssembleOptions = {},
+): AssembleResult {
   const rawLines = source.split('\n');
   const labels = new Map<string, number>();
   const items: Item[] = [];
@@ -137,7 +164,7 @@ export function assemble(source: string, origin = 0): AssembleResult {
       const bytes: number[] = [];
       for (const v of vals) {
         // labels are not allowed here (numbers only, since values may be unresolved).
-        const n = parseValue(v, labels, lineNo) >>> 0;
+        const n = parseValue(v, labels, lineNo, options.externals) >>> 0;
         bytes.push(n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff);
       }
       items.push({ kind: 'data', addr, bytes });
@@ -191,7 +218,7 @@ export function assemble(source: string, origin = 0): AssembleResult {
         bytes[at] = parseReg(tok, item.line);
         at += 1;
       } else {
-        write32(at, parseValue(tok, labels, item.line));
+        write32(at, parseValue(tok, labels, item.line, options.externals));
         at += 4;
       }
     });

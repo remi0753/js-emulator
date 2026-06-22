@@ -190,7 +190,7 @@ subsystems over one at a time.
   nor `spawnFromFile()`; the userland lives on the disk and the manifest names
   init.
 
-- **Phase 10** ⬜ build the guest-kernel toolchain.
+- **Phase 10** ✅ build the guest-kernel toolchain.
 
   Raw assembly is enough for tiny trap handlers, but not for a kernel. Add a
   C-like language or a small systems language targeting the existing ISA. Minimum
@@ -200,8 +200,21 @@ subsystems over one at a time.
   Add a linker that can produce kernel images and user executables with separate
   text/data/bss segments.
 
-  Done when a non-trivial guest program and a tiny guest kernel can be compiled,
-  linked, loaded, and debugged from source maps or symbol tables.
+  Implemented a freestanding C-like compiler and linker in `src/toolchain/`.
+  The compiler supports integers, chars, pointers, arrays, structs, functions,
+  software stack frames, conditionals, loops, global data, string literals,
+  inline assembly statements, and privileged/kernel or syscall intrinsics such
+  as `__out`, `__in`, `__syscall`, `__lidt`, `__lksp`, `__stmr`, `__iret`, and
+  `__halt`. It emits guest assembly plus symbol/source-map metadata. The linker
+  resolves cross-section symbols and emits the existing executable format with
+  separate RX text and RW data/BSS segments, or a flat loadable kernel image.
+  A freestanding runtime provides `memcpy`, `memset`, `strlen`, and `strcmp`;
+  `crt0` initializes the compiler's software stack and calls `main` or `kmain`.
+
+  Done: `test/toolchain.test.ts` compiles and runs a non-trivial user program
+  using structs, arrays, pointers, loops, globals, strings, runtime helpers, and
+  syscalls, then compiles a tiny guest kernel that writes through port I/O and
+  halts on the hardware-only `Machine`.
 
 - **Phase 11** ⬜ boot a minimal guest kernel.
 
