@@ -170,17 +170,25 @@ subsystems over one at a time.
   IRQ — all with no TypeScript scheduler or syscall dispatch. A fault during trap
   delivery (e.g. an unmapped kernel stack) is reported as a double fault.
 
-- **Phase 9** ⬜ define a boot path and disk-image contract.
+- **Phase 9** ✅ define a boot path and disk-image contract.
 
-  Add a small boot ROM or boot sector convention. The VM should load the first
-  stage from the disk image, or load a kernel image specified in a disk manifest,
-  then transfer control to guest kernel entry in KERNEL mode. Define a stable
-  disk layout for kernel image, filesystem, and user programs. Keep the current
-  xv6-like filesystem if useful, but make the image builder a first-class tool
-  rather than incidental demo setup.
+  Added a boot-sector convention: sector 0 (the boot block the FS already
+  reserves) holds a manifest — magic + boot-sector signature, the filesystem
+  superblock location, a reserved raw kernel-image region (`kernelStart`/
+  `kernelBlocks`, empty until model B has a guest kernel to load), and the path of
+  the program to start as init (see `src/v2/kernel/bootblock.ts`). The stable disk
+  layout is `[boot block | superblock | inodes | bitmap | data (/bin/* + files)]`.
+  `Kernel.boot()` reads the manifest and starts the named init — a manifest-driven
+  handoff, not a hard-coded path. The image builder is now first-class:
+  `buildDiskImage()` / `tools/mkimg.ts` (`npm run build:img`) formats the FS,
+  installs userland, seeds files, and writes the boot block; `bootImage()` /
+  `tools/boot.ts` (`npm run boot`) mounts an image and boots it. Tests in
+  `test/boot.test.ts`.
 
-  Done when a single command builds `disk.img`, then a second command boots that
-  image without calling `installUserland()` or `spawnFromFile()` from TypeScript.
+  Done: `node tools/mkimg.ts` builds `disk.img`, then `node tools/boot.ts` boots
+  it to a shell and runs `ls` — the boot path calls neither `installUserland()`
+  nor `spawnFromFile()`; the userland lives on the disk and the manifest names
+  init.
 
 - **Phase 10** ⬜ build the guest-kernel toolchain.
 

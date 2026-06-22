@@ -8,10 +8,11 @@ import { type CPU, type CpuState, MODE, type RunResult } from '../../vm/custom32
 import type { Console } from '../../vm/custom32/devices/console.ts';
 import type { BlockDisk } from '../../vm/custom32/devices/disk.ts';
 import type { Keyboard } from '../../vm/custom32/devices/keyboard.ts';
-import { PAGE_SIZE, type PhysicalMemory } from '../../vm/custom32/memory.ts';
 import { Machine } from '../../vm/custom32/machine.ts';
+import { PAGE_SIZE, type PhysicalMemory } from '../../vm/custom32/memory.ts';
 import type { PortBus } from '../../vm/custom32/ports.ts';
 import { FD, LAYOUT, O, PORT, SYS, SYSCALL_INT } from './abi.ts';
+import { BOOT_MAGIC, decodeBootBlock } from './bootblock.ts';
 import { BlockDriver } from './disk.ts';
 import { type Executable, encodeExecutable, flatExecutable, parseExecutable, SEG } from './exec.ts';
 import { Fs, T_DIR } from './fs.ts';
@@ -132,6 +133,21 @@ export class Kernel {
     const inum = this.fs.namei(path);
     if (inum === 0) throw new Error(`spawnFromFile: no such file: ${path}`);
     return this.spawn(name, parseExecutable(this.fs.readFile(inum)), argv);
+  }
+
+  // Boot from the on-disk boot block (Phase 9): read the manifest in sector 0 and
+  // start the init program it names. This is the manifest-driven handoff — the
+  // host just mounts an image and calls boot(); it does not install userland or
+  // hard-code which program is init. Returns the init process (call run() next).
+  boot(): Process {
+    const bb = decodeBootBlock(this.bio.read(0));
+    if (bb.magic !== BOOT_MAGIC) {
+      throw new Error('boot: disk is not bootable (no boot block magic in sector 0)');
+    }
+    const inum = this.fs.namei(bb.initPath);
+    if (inum === 0) throw new Error(`boot: init program not found: ${bb.initPath}`);
+    this.log(`boot: starting init from ${bb.initPath}`);
+    return this.spawn('init', parseExecutable(this.fs.readFile(inum)));
   }
 
   // The standard fd table for a new process: stdin/stdout/stderr on the console.

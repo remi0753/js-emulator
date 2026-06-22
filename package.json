@@ -6,6 +6,8 @@
   "scripts": {
     "test": "node --test --experimental-strip-types",
     "typecheck": "tsc --noEmit",
+    "build:img": "node tools/mkimg.ts",
+    "boot": "node tools/boot.ts",
     "demo": "node demo/multitask.ts",
     "lint": "biome lint .",
     "format": "biome format --write .",
