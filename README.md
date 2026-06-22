@@ -70,6 +70,9 @@ npm run typecheck  # tsc type check
 - [docs/v1.md](docs/v1.md) — v1 in detail: the CPU/OS boundary, scheduler, isolation
 - [docs/v2.md](docs/v2.md) — v2 design: privilege, paging MMU, traps, port I/O,
   filesystem, shell
+- [docs/ja-implementation-and-vision.md](docs/ja-implementation-and-vision.md) —
+  Japanese deep-dive: current implementation, Linux differences, and the
+  Linux-like guest OS roadmap
 - [docs/isa.md](docs/isa.md) — registers, encoding, instruction set (shared core)
 - [docs/syscalls.md](docs/syscalls.md) — system call ABI
 - [docs/roadmap.md](docs/roadmap.md) — devices, roadmap (v1 → v2 → v3), design decisions
