@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { assemble } from '../src/assembler.ts';
+import { PF_ERR } from '../src/isa.ts';
 import { MODE } from '../src/vm/custom32/cpu.ts';
 import { Machine } from '../src/vm/custom32/machine.ts';
 import { PTE, dirIndex, tableIndex } from '../src/vm/custom32/mmu.ts';
@@ -117,6 +118,10 @@ test('guest kernel: a user page fault is handled in-CPU and the instruction retr
       LOAD R6, pf_count
       INC R6
       STORE R6, pf_count      ; prove the handler ran (and how often)
+      RDPFLA R6
+      STORE R6, seen_pfla
+      RDERR R6
+      STORE R6, seen_err
       LOAD R5, fixup_addr     ; physical (=identity virtual) address of the PTE
       LOAD R6, fixup_val      ; the PTE value with Present set
       STORER R5, R6           ; make the missing page present
@@ -128,6 +133,8 @@ test('guest kernel: a user page fault is handled in-CPU and the instruction retr
       HLT                     ; any syscall = stop the machine
 
     pf_count:   .word 0
+    seen_pfla:  .word 0
+    seen_err:   .word 0
     fixup_addr: .word 0
     fixup_val:  .word 0
   `);
@@ -179,6 +186,8 @@ test('guest kernel: a user page fault is handled in-CPU and the instruction retr
 
   assert.equal(r.reason, 'halt');
   assert.equal(machine.phys.read32(kernel.labels.get('pf_count')!), 1); // faulted once
+  assert.equal(machine.phys.read32(kernel.labels.get('seen_pfla')!), DATA_VA);
+  assert.equal(machine.phys.read32(kernel.labels.get('seen_err')!), PF_ERR.USER);
   assert.equal(machine.cpu.regs[0], 0x1234); // the retried LOAD read the mapped page
 });
 
@@ -309,6 +318,42 @@ test('a fault during trap delivery (unmapped kernel stack) is reported as a doub
 
   assert.equal(r.reason, 'fault');
   assert.equal(r.reason === 'fault' && /double fault/.test(r.message), true);
+});
+
+test('a fault while reading an out-of-range IDT descriptor is reported as a double fault', () => {
+  const machine = new Machine({ physSize: 64 * 1024 });
+  const { bytes } = assemble(`
+    MOV R1, 0xfff0
+    LIDT R1
+    INT 0x80
+    HLT
+  `);
+  machine.load(0, bytes);
+  machine.reset();
+
+  const r = machine.run(100);
+
+  assert.equal(r.reason, 'fault');
+  assert.equal(r.reason === 'fault' && /double fault/.test(r.message), true);
+});
+
+test('the in-CPU timer does not overwrite an already-pending device IRQ', () => {
+  const machine = new Machine({ physSize: 64 * 1024 });
+  const { bytes } = assemble(`
+    MOV R1, 1
+    STMR R1
+    EI
+    HLT
+  `);
+  machine.load(0, bytes);
+  machine.reset();
+  machine.raiseIrq(5);
+
+  const first = machine.run(100);
+  const second = machine.run(100);
+
+  assert.deepEqual(first, { reason: 'irq', line: 5 });
+  assert.deepEqual(second, { reason: 'irq', line: 0 });
 });
 
 // Write an 8-byte IDT gate descriptor: [handler offset, Present].

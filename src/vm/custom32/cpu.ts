@@ -101,7 +101,7 @@ export class CPU {
   readonly mmu: Mmu;
   readonly phys: PhysicalMemory;
   readonly ports: PortBus;
-  private pendingIrq: number | null = null;
+  private pendingIrqs = new Set<number>();
 
   // Optional deterministic trace hooks (off by default; the Tracer wires them).
   // onTrace fires once per executed instruction; onTrap fires for every reason
@@ -140,13 +140,13 @@ export class CPU {
   // Interrupt request from a device. run() returns at the next instruction
   // boundary if IF is set.
   raiseIrq(line: number): void {
-    this.pendingIrq = line;
+    this.pendingIrqs.add(line);
   }
 
   // Clear CPU-local transient hardware state that is not part of a process trap
   // frame. Used by Machine.reset(), not by scheduler context switches.
   resetTransientState(): void {
-    this.pendingIrq = null;
+    this.pendingIrqs.clear();
     this.pfla = 0;
     this.idtr = 0;
     this.ksp = 0;
@@ -237,14 +237,13 @@ export class CPU {
       // Tick the in-CPU timer; on expiry post the timer IRQ (delivered below).
       if (this.timerInterval > 0 && --this.timerCount <= 0) {
         this.timerCount = this.timerInterval;
-        this.pendingIrq = TIMER_IRQ;
+        this.raiseIrq(TIMER_IRQ);
       }
 
       // Check for an interrupt at the instruction boundary (only when IF is set).
       // The saved return address is the next instruction (this.pc).
-      if (this.pendingIrq !== null && this.getFlag(FLAG.IF)) {
-        const line = this.pendingIrq;
-        this.pendingIrq = null;
+      if (this.pendingIrqs.size > 0 && this.getFlag(FLAG.IF)) {
+        const line = this.takePendingIrq();
         const deliver = this.deliver(TRAP.IRQ_BASE + line, this.pc, 0);
         if (deliver === 'host') return this.trap({ reason: 'irq', line });
         if (deliver === 'double') return this.trap(this.doubleFault());
@@ -298,6 +297,13 @@ export class CPU {
     return this.trap({ reason: 'timer' });
   }
 
+  private takePendingIrq(): number {
+    const next = this.pendingIrqs.values().next();
+    if (next.done) throw new Error('takePendingIrq called with no pending IRQ');
+    this.pendingIrqs.delete(next.value);
+    return next.value;
+  }
+
   // Funnel every run() exit through the trap hook so the trace sees it.
   private trap(r: RunResult): RunResult {
     this.onTrap?.(r);
@@ -314,13 +320,21 @@ export class CPU {
   ): 'guest' | 'host' | 'double' {
     if (this.idtr === 0) return 'host';
     const base = this.idtr + vector * IDT_ENTRY_SIZE;
-    const handler = this.phys.read32(base);
-    const flags = this.phys.read32(base + 4);
+    let handler: number;
+    let flags: number;
+    try {
+      handler = this.phys.read32(base);
+      flags = this.phys.read32(base + 4);
+    } catch (e) {
+      if (e instanceof RangeError) return 'double';
+      throw e;
+    }
     if ((flags & IDT_PRESENT) === 0) return 'host';
 
     const oldMode = this.mode;
     const oldFlags = this.flags;
     const oldSp = this.sp;
+    const oldErrorCode = this.errorCode;
     try {
       // Enter the kernel first so the frame pushes use supervisor translation,
       // then switch to the kernel stack on a privilege change (USER->KERNEL).
@@ -332,7 +346,13 @@ export class CPU {
       this.push(oldMode);
       this.push(returnPc);
     } catch (e) {
-      if (e instanceof PageFault || e instanceof CpuFault) return 'double';
+      if (e instanceof PageFault || e instanceof CpuFault || e instanceof RangeError) {
+        this.mode = oldMode;
+        this.flags = oldFlags;
+        this.sp = oldSp;
+        this.errorCode = oldErrorCode;
+        return 'double';
+      }
       throw e;
     }
     this.setFlag(FLAG.IF, false); // mask interrupts on handler entry
