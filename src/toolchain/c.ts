@@ -5,6 +5,12 @@ export interface CompileOptions {
   entry?: string;
   includeRuntime?: boolean;
   cStackSize?: number;
+  // Namespaces this object's private (compiler-generated) labels so several
+  // objects can be linked together without their local labels colliding.
+  // Defaults to a process-unique id; public symbols (functions, globals,
+  // runtime helpers, `_start`) are never namespaced so cross-object references
+  // still resolve.
+  moduleId?: string | number;
 }
 
 export interface CompiledObject {
@@ -21,6 +27,14 @@ export interface DataSymbol {
   name: string;
   bytes: Uint8Array;
   size: number;
+  // Relocations to apply once symbol addresses are known: write the linked
+  // address of `target` into the 4 bytes at `offset` within `bytes`.
+  relocs?: DataReloc[];
+}
+
+export interface DataReloc {
+  offset: number;
+  target: string;
 }
 
 export interface BssSymbol {
@@ -737,6 +751,11 @@ function typeAlign(type: CType): number {
   return type.kind === 'char' ? 1 : 4;
 }
 
+// Stride for pointer arithmetic: the size of the pointed-to element (>= 1).
+function elementSize(type: CType): number {
+  return type.kind === 'ptr' ? Math.max(1, typeSize(type.to)) : 1;
+}
+
 function align(n: number, a: number): number {
   return (n + a - 1) & ~(a - 1);
 }
@@ -746,12 +765,15 @@ function wordBytes(value: number): number[] {
   return [u & 0xff, (u >>> 8) & 0xff, (u >>> 16) & 0xff, (u >>> 24) & 0xff];
 }
 
+let moduleSeq = 0;
+
 class Codegen {
   private out: string[] = [];
   private labelId = 0;
   private globals = new Map<string, CType>();
   private functions = new Map<string, FunctionSig>();
-  private locals = new Map<string, LocalDecl>();
+  private scopes: Map<string, LocalDecl>[] = [];
+  private readonly modulePrefix: string;
   private currentReturn = '';
   private breakStack: string[] = [];
   private continueStack: string[] = [];
@@ -763,6 +785,8 @@ class Codegen {
   constructor(program: Program, options: Required<CompileOptions>) {
     this.program = program;
     this.options = options;
+    const id = options.moduleId === '' ? moduleSeq++ : options.moduleId;
+    this.modulePrefix = `m${id}`;
   }
 
   compile(): CompiledObject {
@@ -811,17 +835,18 @@ class Codegen {
   }
 
   private emitFunction(fn: FuncDecl): void {
-    this.locals = new Map();
+    const paramScope = new Map<string, LocalDecl>();
     const paramBytes = fn.params.length * 4;
     for (let i = 0; i < fn.params.length; i++) {
       const p = fn.params[i]!;
-      this.locals.set(p.name, {
+      paramScope.set(p.name, {
         name: p.name,
         type: p.type,
         init: null,
         offset: -(paramBytes - i * 4),
       });
     }
+    this.scopes = [paramScope];
     const localBytes = this.assignLocalOffsets(fn.body);
     const end = this.newLabel(`${fn.name}_return`);
     this.currentReturn = end;
@@ -851,10 +876,11 @@ class Codegen {
           for (const child of s.stmts) visit(child);
           break;
         case 'decl':
+          // Assign each declaration a distinct slot. Storage never overlaps,
+          // so block scoping (resolved during emission) makes shadowing safe.
           for (const d of s.decls) {
             offset = align(offset, Math.min(typeAlign(d.type), 4));
             d.offset = offset;
-            this.locals.set(d.name, d);
             offset += align(Math.max(1, typeSize(d.type)), 4);
           }
           break;
@@ -880,10 +906,13 @@ class Codegen {
   private emitStmt(stmt: Stmt): void {
     switch (stmt.kind) {
       case 'block':
+        this.scopes.push(new Map());
         for (const s of stmt.stmts) this.emitStmt(s);
+        this.scopes.pop();
         break;
       case 'decl':
         for (const d of stmt.decls) {
+          this.currentScope().set(d.name, d);
           if (d.init) {
             this.emitAddressOfLocal(d);
             this.emit(`  PUSH R0`);
@@ -936,6 +965,8 @@ class Codegen {
         const top = this.newLabel('for');
         const post = this.newLabel('forpost');
         const done = this.newLabel('endfor');
+        // A declaration in the init clause is scoped to the loop only.
+        this.scopes.push(new Map());
         if (stmt.init) {
           if ('stmts' in stmt.init || stmt.init.kind === 'decl') this.emitStmt(stmt.init as Stmt);
           else this.emitExpr(stmt.init as Expr);
@@ -956,6 +987,7 @@ class Codegen {
         this.emit(`${done}:`);
         this.breakStack.pop();
         this.continueStack.pop();
+        this.scopes.pop();
         break;
       }
       case 'break':
@@ -979,13 +1011,7 @@ class Codegen {
         expr.type = { kind: 'int' };
         return expr.type;
       case 'str': {
-        if (!expr.label) {
-          expr.label = this.newLabel('__str');
-          const raw = encoder.encode(expr.value);
-          const bytes = new Uint8Array(raw.length + 1);
-          bytes.set(raw);
-          this.stringLiterals.push({ name: expr.label, bytes, size: bytes.length });
-        }
+        if (!expr.label) expr.label = this.internString(expr.value);
         this.emit(`  MOV R0, ${expr.label}`);
         expr.type = { kind: 'ptr', to: { kind: 'char' } };
         return expr.type;
@@ -1081,17 +1107,41 @@ class Codegen {
   }
 
   private emitBinary(expr: Extract<Expr, { kind: 'binary' }>): CType {
-    this.emitExpr(expr.left);
+    if (expr.op === '&&' || expr.op === '||') return this.emitLogical(expr);
+
+    const lt = this.emitExpr(expr.left);
     this.emit(`  PUSH R0`);
-    this.emitExpr(expr.right);
+    const rt = this.emitExpr(expr.right);
     this.emit(`  POP R1`);
+    // After this point: R1 = left, R0 = right.
+    let resultType: CType = { kind: 'int' };
     switch (expr.op) {
       case '+':
+        // Pointer + integer (or integer + pointer) scales the integer side by
+        // the pointee size, matching C pointer arithmetic.
+        if (lt.kind === 'ptr' && rt.kind !== 'ptr') {
+          this.scaleReg('R0', elementSize(lt));
+          resultType = lt;
+        } else if (rt.kind === 'ptr' && lt.kind !== 'ptr') {
+          this.scaleReg('R1', elementSize(rt));
+          resultType = rt;
+        }
         this.emit(`  ADD R0, R1`);
         break;
       case '-':
-        this.emit(`  SUB R1, R0`);
-        this.emit(`  MOVR R0, R1`);
+        if (lt.kind === 'ptr' && rt.kind === 'ptr') {
+          // Pointer difference: byte distance divided by the pointee size.
+          this.emit(`  SUB R1, R0`);
+          this.emit(`  MOVR R0, R1`);
+          this.scaleDivReg('R0', elementSize(lt));
+        } else {
+          if (lt.kind === 'ptr' && rt.kind !== 'ptr') {
+            this.scaleReg('R0', elementSize(lt));
+            resultType = lt;
+          }
+          this.emit(`  SUB R1, R0`);
+          this.emit(`  MOVR R0, R1`);
+        }
         break;
       case '*':
         this.emit(`  MUL R0, R1`);
@@ -1125,8 +1175,6 @@ class Codegen {
         this.emit(`  MOVR R0, R1`);
         this.emit(`  SHR R0, R2`);
         break;
-      case '&&':
-      case '||':
       case '==':
       case '!=':
       case '<':
@@ -1138,34 +1186,64 @@ class Codegen {
       default:
         this.fail(`unsupported binary operator ${expr.op}`);
     }
+    expr.type = resultType;
+    return resultType;
+  }
+
+  // Short-circuit `&&` / `||`: the right operand is only evaluated when the
+  // left does not already decide the result. The value is normalized to 0/1.
+  private emitLogical(expr: Extract<Expr, { kind: 'binary' }>): CType {
+    const set = this.newLabel('logic_set');
+    const done = this.newLabel('logic_done');
+    this.emitExpr(expr.left);
+    this.emit(`  MOV R7, 0`);
+    this.emit(`  CMP R0, R7`);
+    if (expr.op === '&&') {
+      // left == 0 -> result 0 without touching the right operand.
+      this.emit(`  JZ ${set}`);
+    } else {
+      // left != 0 -> result 1 without touching the right operand.
+      this.emit(`  JNZ ${set}`);
+    }
+    this.emitExpr(expr.right);
+    this.emit(`  MOV R7, 0`);
+    this.emit(`  CMP R0, R7`);
+    if (expr.op === '&&') this.emit(`  JZ ${set}`);
+    else this.emit(`  JNZ ${set}`);
+    this.emit(`  MOV R0, ${expr.op === '&&' ? 1 : 0}`);
+    this.emit(`  JMP ${done}`);
+    this.emit(`${set}:`);
+    this.emit(`  MOV R0, ${expr.op === '&&' ? 0 : 1}`);
+    this.emit(`${done}:`);
     expr.type = { kind: 'int' };
     return expr.type;
+  }
+
+  private scaleReg(reg: string, size: number): void {
+    if (size === 1) return;
+    this.emit(`  MOV R7, ${size}`);
+    this.emit(`  MUL ${reg}, R7`);
+  }
+
+  private scaleDivReg(reg: string, size: number): void {
+    if (size === 1) return;
+    this.emit(`  MOV R7, ${size}`);
+    this.emit(`  DIV ${reg}, R7`);
   }
 
   private emitCompare(op: string): void {
     const yes = this.newLabel('cmp_true');
     const done = this.newLabel('cmp_done');
-    if (op === '&&' || op === '||') {
-      this.emit(`  MOV R7, 0`);
-      this.emit(`  CMP R1, R7`);
-      if (op === '&&') this.emit(`  JZ ${done}`);
-      else this.emit(`  JNZ ${yes}`);
-      this.emit(`  CMP R0, R7`);
-      if (op === '&&') this.emit(`  JNZ ${yes}`);
-      else this.emit(`  JNZ ${yes}`);
-      this.emit(`  JMP ${done}`);
-    } else {
-      this.emit(`  CMP R1, R0`);
-      const jump: Record<string, string> = {
-        '==': 'JZ',
-        '!=': 'JNZ',
-        '<': 'JL',
-        '<=': 'JLE',
-        '>': 'JG',
-        '>=': 'JGE',
-      };
-      this.emit(`  ${jump[op]} ${yes}`);
-    }
+    this.emit(`  CMP R1, R0`);
+    const jump: Record<string, string> = {
+      '==': 'JZ',
+      '!=': 'JNZ',
+      '<': 'JL',
+      '<=': 'JLE',
+      '>': 'JG',
+      '>=': 'JGE',
+    };
+    this.emit(`  ${jump[op]} ${yes}`);
     this.emit(`  MOV R0, 0`);
     this.emit(`  JMP ${done}`);
     this.emit(`${yes}:`);
@@ -1261,7 +1339,7 @@ class Codegen {
   private emitAddressOf(expr: Expr): CType {
     switch (expr.kind) {
       case 'var': {
-        const local = this.locals.get(expr.name);
+        const local = this.lookupLocal(expr.name);
         if (local) {
           this.emitAddressOfLocal(local);
           return local.type;
@@ -1342,11 +1420,23 @@ class Codegen {
   }
 
   private resolveVar(name: string): CType {
-    const local = this.locals.get(name);
+    const local = this.lookupLocal(name);
     if (local) return local.type;
     const global = this.globals.get(name);
     if (global) return global;
     this.fail(`unknown variable ${name}`);
+  }
+
+  private currentScope(): Map<string, LocalDecl> {
+    return this.scopes[this.scopes.length - 1]!;
+  }
+
+  private lookupLocal(name: string): LocalDecl | undefined {
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      const found = this.scopes[i]!.get(name);
+      if (found) return found;
+    }
+    return undefined;
   }
 
   private emitPushValueFromReg(reg: string): void {
@@ -1374,9 +1464,44 @@ class Codegen {
         bss.push({ name: g.name, size: align(size, 4) });
         continue;
       }
+      // A pointer global initialized from a string literal or the address of
+      // another global stores a relocatable address, resolved by the linker.
+      if (g.type.kind === 'ptr') {
+        const target = this.globalPointerTarget(g.init);
+        if (target !== null) {
+          data.push({ name: g.name, bytes: new Uint8Array(4), size: 4, relocs: [{ offset: 0, target }] });
+          continue;
+        }
+      }
       data.push({ name: g.name, bytes: initializerBytes(g.type, g.init), size });
     }
     return { data, bss };
+  }
+
+  // Resolves a pointer global's initializer to the symbol it should point at,
+  // or null when the initializer is an ordinary constant (e.g. `0`).
+  private globalPointerTarget(init: Initializer): string | null {
+    if (init.kind === 'string') return this.internString(init.value);
+    if (init.kind !== 'expr') return null;
+    const e = init.expr;
+    if (e.kind === 'str') return this.internString(e.value);
+    if (e.kind === 'unary' && e.op === '&' && e.expr.kind === 'var' && this.globals.has(e.expr.name)) {
+      return e.expr.name;
+    }
+    if (e.kind === 'var') {
+      const gt = this.globals.get(e.name);
+      if (gt && gt.kind === 'array') return e.name; // array decays to a pointer
+    }
+    return null;
+  }
+
+  private internString(value: string): string {
+    const label = this.newLabel('__str');
+    const raw = encoder.encode(value);
+    const bytes = new Uint8Array(raw.length + 1);
+    bytes.set(raw);
+    this.stringLiterals.push({ name: label, bytes, size: bytes.length });
+    return label;
   }
 
   private emitRuntime(): void {
@@ -1388,7 +1513,7 @@ class Codegen {
   }
 
   private newLabel(prefix: string): string {
-    return `${prefix}_${this.labelId++}`;
+    return `${this.modulePrefix}_${prefix}_${this.labelId++}`;
   }
 
   private fail(message: string): never {
@@ -1410,8 +1535,11 @@ function initializerBytes(type: CType, init: Initializer): Uint8Array {
       return;
     }
     if (value.kind === 'expr') {
-      if (value.expr.kind !== 'num')
-        throw new CompileError('global initializers must be constants');
+      if (value.expr.kind !== 'num') {
+        throw new CompileError(
+          'global initializers must be integer constants, string literals, or addresses of globals',
+        );
+      }
       put(at, value.expr.value, ty);
       return;
     }
@@ -1438,6 +1566,8 @@ export function compileC(source: string, options: CompileOptions = {}): Compiled
     entry: options.entry ?? (options.start === 'kernel' ? 'kmain' : 'main'),
     includeRuntime: options.includeRuntime ?? true,
     cStackSize: options.cStackSize ?? 4096,
+    // '' is the sentinel for "assign a process-unique id at construction".
+    moduleId: options.moduleId ?? '',
   };
   const tokens = new Lexer(source).tokenize();
   const program = new Parser(tokens).parseProgram();

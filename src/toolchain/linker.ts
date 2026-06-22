@@ -30,7 +30,10 @@ export interface KernelImage {
 export function linkExecutable(objects: CompiledObject[], options: LinkOptions = {}): LinkedImage {
   const textOrigin = options.textOrigin ?? LAYOUT.USER_TEXT;
   const entryName = options.entry ?? '_start';
-  const textSource = objects.map((o) => o.text).join('\n');
+  // Objects may each carry crt0 + the runtime helpers (identical, shared
+  // symbols). Drop duplicate label-led blocks so several objects can link
+  // together; each object's private labels are already namespaced.
+  const textSource = dedupeText(objects.map((o) => o.text).join('\n'));
 
   const textProbe = assemble(textSource, textOrigin, { externals: zeroDataSymbols(objects) });
   const dataOrigin = options.dataOrigin ?? align(textOrigin + textProbe.size, 0x1000);
@@ -86,6 +89,29 @@ export function linkKernelImage(objects: CompiledObject[], options: LinkOptions 
   };
 }
 
+// Drops duplicate top-level label blocks (keeping the first), so shared crt0 /
+// runtime helpers emitted by every object appear once in the linked image.
+function dedupeText(text: string): string {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  let skipping = false;
+  for (const line of text.split('\n')) {
+    const label = /^([A-Za-z_]\w*):$/.exec(line.trim());
+    if (label) {
+      if (seen.has(label[1]!)) {
+        skipping = true;
+        continue;
+      }
+      seen.add(label[1]!);
+      skipping = false;
+      out.push(line);
+      continue;
+    }
+    if (!skipping) out.push(line);
+  }
+  return out.join('\n');
+}
+
 function zeroDataSymbols(objects: CompiledObject[]): Map<string, number> {
   const out = new Map<string, number>();
   for (const obj of objects) {
@@ -99,18 +125,31 @@ function layoutData(
   objects: CompiledObject[],
   origin: number,
 ): { data: Uint8Array; memSize: number; symbols: Map<string, number> } {
+  // Deduplicate by name (keep first): shared symbols such as the C software
+  // stack (`__csp` / `__stack`) are emitted by every object.
+  const seen = new Set<string>();
   const dataSyms: DataSymbol[] = [];
   const bssSyms: BssSymbol[] = [];
   for (const obj of objects) {
-    dataSyms.push(...obj.data);
-    bssSyms.push(...obj.bss);
+    for (const d of obj.data) {
+      if (seen.has(d.name)) continue;
+      seen.add(d.name);
+      dataSyms.push(d);
+    }
+    for (const b of obj.bss) {
+      if (seen.has(b.name)) continue;
+      seen.add(b.name);
+      bssSyms.push(b);
+    }
   }
 
   const symbols = new Map<string, number>();
+  const placed: { sym: DataSymbol; off: number }[] = [];
   let dataSize = 0;
   for (const sym of dataSyms) {
     dataSize = align(dataSize, 4);
     symbols.set(sym.name, origin + dataSize);
+    placed.push({ sym, off: dataSize });
     dataSize += align(Math.max(sym.bytes.length, sym.size), 4);
   }
 
@@ -122,13 +161,23 @@ function layoutData(
   }
 
   const data = new Uint8Array(dataSize);
-  let off = 0;
-  for (const sym of dataSyms) {
-    off = align(off, 4);
+  for (const { sym, off } of placed) {
     data.set(sym.bytes, off);
-    off += align(Math.max(sym.bytes.length, sym.size), 4);
+    for (const reloc of sym.relocs ?? []) {
+      const target = symbols.get(reloc.target);
+      if (target === undefined) throw new Error(`link: relocation target not found: ${reloc.target}`);
+      writeWord(data, off + reloc.offset, target);
+    }
   }
   return { data, memSize, symbols };
+}
+
+function writeWord(buf: Uint8Array, at: number, value: number): void {
+  const u = value >>> 0;
+  buf[at] = u & 0xff;
+  buf[at + 1] = (u >>> 8) & 0xff;
+  buf[at + 2] = (u >>> 16) & 0xff;
+  buf[at + 3] = (u >>> 24) & 0xff;
 }
 
 function align(n: number, a: number): number {

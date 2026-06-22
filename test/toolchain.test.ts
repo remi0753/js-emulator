@@ -61,6 +61,79 @@ test('Phase 10: compiles a non-trivial C-like user program to a segmented execut
   assert.deepEqual(logs, ['pid 1 (cprog): exit 12']);
 });
 
+function runExit(body: string): number {
+  const linked = linkExecutable([compileC(`int main(int argc, char **argv){ ${body} }`)]);
+  const kernel = new Kernel({ consoleSink: () => {}, log: () => {} });
+  kernel.spawn('p', linked.executable, ['p']);
+  kernel.run();
+  return kernel.processes.get(1)!.exitCode!;
+}
+
+test('Phase 10: && / || are correct and short-circuit', () => {
+  assert.equal(runExit('return 0 && 5;'), 0);
+  assert.equal(runExit('return 3 && 5;'), 1);
+  assert.equal(runExit('return 3 && 0;'), 0);
+  assert.equal(runExit('return 0 || 0;'), 0);
+  assert.equal(runExit('return 5 || 0;'), 1);
+  assert.equal(runExit('if (0 && 5) { return 7; } return 42;'), 42);
+
+  // The right operand of `&&` must not be evaluated when the left is false:
+  // calling blow() would divide by zero and trap.
+  const sc = `
+    int blow(int x) { int z; z = 0; return x / z; }
+    int main(int a, char **v) { if (0 && blow(1)) { return 7; } return 99; }
+  `;
+  const linked = linkExecutable([compileC(sc)]);
+  const kernel = new Kernel({ consoleSink: () => {}, log: () => {} });
+  kernel.spawn('p', linked.executable, ['p']);
+  kernel.run();
+  assert.equal(kernel.processes.get(1)!.exitCode, 99);
+});
+
+test('Phase 10: pointer arithmetic scales by element size', () => {
+  assert.equal(runExit('int xs[2]; xs[0]=11; xs[1]=22; int *p; p=xs; return *(p+1);'), 22);
+  assert.equal(runExit('char b[3]; b[0]=65; b[1]=66; b[2]=67; char *p; p=b; return *(p+2);'), 67);
+  assert.equal(runExit('int xs[5]; int *a; int *b; a=xs; b=xs+3; return b-a;'), 3);
+});
+
+test('Phase 10: block scopes resolve shadowed locals independently', () => {
+  assert.equal(runExit('int r; r=0; { int x; x=10; r=r+x; } { int x; x=99; r=r+x; } return r;'), 109);
+  assert.equal(runExit('int x; x=1; { int x; x=2; { int x; x=3; } } return x;'), 1);
+  assert.equal(runExit('int s; s=0; for (int i=0;i<4;i=i+1){ s=s+i; } return s;'), 6);
+});
+
+test('Phase 10: pointer globals initialized from string / address relocate', () => {
+  const source = String.raw`
+    char buf[] = "XY\n";
+    char *greeting = "hi\n";
+    char *alias = buf;
+    int main(int a, char **v) {
+      __syscall(1, 1, greeting, 3);
+      __syscall(1, 1, alias, 3);
+      return 0;
+    }
+  `;
+  let out = '';
+  const linked = linkExecutable([compileC(source)]);
+  const kernel = new Kernel({ consoleSink: (s) => (out += s), log: () => {} });
+  kernel.spawn('p', linked.executable, ['p']);
+  kernel.run();
+  assert.equal(out, 'hi\nXY\n');
+});
+
+test('Phase 10: links multiple objects with shared runtime/crt0', () => {
+  const objA = compileC(
+    `int helper(int x); int main(int a, char **v){ return helper(20) + 1; }`,
+    { start: 'user' },
+  );
+  const objB = compileC(`int helper(int x){ int t; t = x; return t * 2; }`, { start: 'none' });
+  const linked = linkExecutable([objA, objB]);
+  const kernel = new Kernel({ consoleSink: () => {}, log: () => {} });
+  kernel.spawn('p', linked.executable, ['p']);
+  kernel.run();
+  assert.equal(kernel.processes.get(1)!.exitCode, 41);
+});
+
 test('Phase 10: compiles a tiny guest kernel image that uses port I/O', () => {
   const source = String.raw`
     int kmain() {

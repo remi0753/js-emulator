@@ -163,7 +163,8 @@ export function assemble(
       const vals = splitOperands(rest);
       const bytes: number[] = [];
       for (const v of vals) {
-        // labels are not allowed here (numbers only, since values may be unresolved).
+        // Resolved in pass 1, so only constants and externals (not in-file
+        // labels, whose addresses are not yet known) are valid here.
         const n = parseValue(v, labels, lineNo, options.externals) >>> 0;
         bytes.push(n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff);
       }
