@@ -92,6 +92,7 @@ test('the shell runs a script of commands from stdin (boot -> sh -> ls)', () => 
 
   // Feed a command script as stdin; the shell reads it line by line and exits at EOF.
   kernel.feedInput('echo boot ok\nls /\ncat /hello.txt\n');
+  kernel.closeInput(); // EOF -> the shell quits after the script
   kernel.spawnFromFile('init', '/bin/init');
   kernel.run();
 
@@ -100,12 +101,14 @@ test('the shell runs a script of commands from stdin (boot -> sh -> ls)', () => 
   assert.ok(out.includes('hello.txt\n'), out); // ls listed it
   assert.ok(out.includes('hi from disk\n'), out); // cat printed it
   assert.ok(out.includes('$ '), out); // the prompt was shown
+  assert.equal(kernel.processes.get(1)!.state, 'zombie'); // init exited at EOF
 });
 
 test('the shell reports an unknown command but keeps running', () => {
   const { kernel, getOut } = makeKernel();
   installUserland(kernel);
   kernel.feedInput('nope\necho still here\n');
+  kernel.closeInput();
   kernel.spawnFromFile('init', '/bin/init');
   kernel.run();
   const out = getOut();

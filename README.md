@@ -20,15 +20,16 @@ show the CPU/OS boundary on its own. Two processes time-slice and interleave:
 A:A  B:B  A:A  B:B  A:A  B:B  A:A  B:B  A:A  B:B   # two processes, time-sliced
 ```
 
-### v2 — a Unix-like OS (in progress) · [docs/v2.md](docs/v2.md)
+### v2 — a Unix-like OS (feature-complete) · [docs/v2.md](docs/v2.md)
 
 The same trick scaled up into a realistic, **xv6-style** OS: genuine
 **privilege separation**, a **paging MMU**, hardware **traps/interrupts**,
 **port-mapped devices**, a **filesystem** on a host-backed disk, and a Unix
-process model (`fork`/`exec`/`wait`/pipes) with a **shell**. The hardware and the
-user/kernel boundary are real; only the kernel's implementation language stays
-the host (TypeScript). **Done when** the kernel boots to a shell and `ls` lists
-the files on the mounted `disk.img`.
+process model (`fork`/`exec`/`wait`/pipes, copy-on-write, blocking I/O) with a
+**shell**. The hardware and the user/kernel boundary are real; only the kernel's
+implementation language stays the host (TypeScript). **It boots to a shell and
+`ls` lists the files on the mounted `disk.img`** — run `node demo/v2-shell.ts`
+(interactive in a real terminal).
 
 ## Layout
 
@@ -39,14 +40,15 @@ src/v1/            v1 — register machine + JS round-robin OS (working demo)
   cpu.ts           register machine: fetch-decode-execute, memory, interrupts
   os.ts            PCB, round-robin scheduler, syscalls, program loader
 src/v2/            v2 — Unix-like OS (in progress)
-  hw/              virtual hardware: cpu (privilege/MMU/traps), memory, mmu, ports, devices (console, disk)
-  kernel/          pmm, vmm, scheduler, syscalls, process model (fork/exec/wait), exec format, block driver, filesystem
+  hw/              virtual hardware: cpu (privilege/MMU/traps), memory, mmu, ports, devices (console, disk, keyboard)
+  kernel/          pmm (refcounts), vmm (COW), scheduler, syscalls, process model (fork/exec/wait), exec format, block driver, filesystem
   userland/        guest programs: init, sh, coreutils (echo, cat, ls)
 demo/multitask.ts  two v1 processes printing interleaved
 demo/v2-preempt.ts user-mode preemptive multitasking (paging + traps)
 demo/v2-fork-exec.ts  fork / exec / wait / exit — the Unix process model
 demo/v2-fs.ts      block disk + on-disk filesystem, exec from disk, persistent disk.img
-demo/v2-shell.ts   boot -> shell -> ls (the v2 acceptance target)
+demo/v2-shell.ts   boot -> shell -> ls (the v2 acceptance target; interactive on a TTY)
+demo/v2-pipe.ts    pipes + blocking I/O (producer | consumer)
 test/              node:test unit tests
 ```
 

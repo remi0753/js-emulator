@@ -7,6 +7,10 @@ import { PAGE_SIZE, type PhysicalMemory } from '../hw/memory.ts';
 
 export class Pmm {
   private free: number[] = [];
+  // Per-frame reference counts. A frame can be shared by several address spaces
+  // (copy-on-write fork), so it is only returned to the free list when the last
+  // reference is dropped.
+  private refs = new Map<number, number>();
   readonly base: number;
   readonly total: number;
 
@@ -25,14 +29,32 @@ export class Pmm {
     return this.free.length;
   }
 
-  // Allocate one frame; returns its physical base address.
+  // Allocate one frame (refcount 1); returns its physical base address.
   alloc(): number {
     const frame = this.free.pop();
     if (frame === undefined) throw new Error('out of physical memory');
+    this.refs.set(frame, 1);
     return frame;
   }
 
+  // Add a reference to a frame (used when a frame becomes shared on COW fork).
+  incref(frame: number): void {
+    this.refs.set(frame, (this.refs.get(frame) ?? 1) + 1);
+  }
+
+  // Current reference count of a frame.
+  refcount(frame: number): number {
+    return this.refs.get(frame) ?? 0;
+  }
+
+  // Drop a reference; the frame is freed only when its last reference goes away.
   free_(frame: number): void {
-    this.free.push(frame);
+    const c = (this.refs.get(frame) ?? 1) - 1;
+    if (c <= 0) {
+      this.refs.delete(frame);
+      this.free.push(frame);
+    } else {
+      this.refs.set(frame, c);
+    }
   }
 }

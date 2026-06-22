@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { assemble } from '../src/assembler.ts';
+import { PTE } from '../src/v2/hw/mmu.ts';
 import { LAYOUT } from '../src/v2/kernel/abi.ts';
 import { type Executable, encodeExecutable, parseExecutable, SEG } from '../src/v2/kernel/exec.ts';
 import { Kernel } from '../src/v2/kernel/kernel.ts';
@@ -641,4 +642,173 @@ test('the filesystem persists across a remount from the disk image', () => {
   const inum = k2.fs.namei('/greeting');
   assert.notEqual(inum, 0);
   assert.equal(String.fromCharCode(...k2.fs.readFile(inum)), 'persisted!');
+});
+
+// --- Phase 6: copy-on-write fork (at the vmm level) ---
+
+test('fork is copy-on-write: frames are shared until written, then copied', () => {
+  const k = new Kernel({ log: () => {} });
+  const V = 0x4000;
+  const pd = k.vmm.createAddressSpace();
+  const frame = k.vmm.mapPage(pd, V, PTE.U | PTE.W);
+  k.phys.bytes[frame] = 1; // the parent's data byte
+
+  const before = k.pmm.freeCount;
+  const child = k.vmm.cowCloneAddressSpace(pd);
+  // The child gets its own page directory + page table, but the data frame is
+  // *shared* (not copied): only 2 frames consumed.
+  assert.equal(before - k.pmm.freeCount, 2);
+
+  // Writing into the child triggers the copy: exactly one more frame.
+  k.vmm.copyout(child, V, new Uint8Array([2]));
+  assert.equal(before - k.pmm.freeCount, 3);
+
+  // The two address spaces are now isolated.
+  const p = k.cpu.mmu.translate(pd, V, { write: false, user: true });
+  const c = k.cpu.mmu.translate(child, V, { write: false, user: true });
+  assert.ok(p.ok && c.ok);
+  assert.equal(k.phys.bytes[p.paddr], 1);
+  assert.equal(k.phys.bytes[c.paddr], 2);
+
+  // No leak: tearing both down returns every frame.
+  k.vmm.freeAddressSpace(child);
+  k.vmm.freeAddressSpace(pd);
+  assert.equal(k.pmm.freeCount, k.pmm.total);
+});
+
+// --- Phase 6: pipes, dup, blocking keyboard input, uptime ---
+
+test('pipe: a child writes, the parent reads through the pipe', () => {
+  const { kernel, getOut } = makeKernel();
+  kernel.spawn(
+    'pipe',
+    image(`
+      MOV R0, 10         ; PIPE(fds)
+      MOV R1, fds0
+      INT 0x80
+      MOV R0, 4          ; FORK
+      INT 0x80
+      MOV R7, 0
+      CMP R0, R7
+      JZ  child
+    parent:
+      LOAD R1, fds1      ; close our copy of the write end
+      MOV  R0, 8
+      INT  0x80
+    p_read:
+      LOAD R1, fds0      ; READ(readfd, buf, 8)
+      MOV  R0, 9
+      MOV  R2, buf
+      MOV  R3, 8
+      INT  0x80
+      CMP  R0, R7
+      JZ   p_done        ; EOF
+      MOVR R3, R0
+      MOV  R0, 1         ; WRITE(stdout, buf, n)
+      MOV  R1, 1
+      MOV  R2, buf
+      INT  0x80
+      JMP  p_read
+    p_done:
+      MOV  R0, 0
+      MOV  R1, 0
+      INT  0x80
+    child:
+      LOAD R1, fds1      ; WRITE(writefd, "hi", 2)
+      MOV  R0, 1
+      MOV  R2, msg
+      MOV  R3, 2
+      INT  0x80
+      LOAD R1, fds1      ; close the write end -> reader sees EOF
+      MOV  R0, 8
+      INT  0x80
+      MOV  R0, 0
+      MOV  R1, 0
+      INT  0x80
+    fds0:
+      .word 0
+    fds1:
+      .word 0
+    buf:
+      .word 0,0
+    msg:
+      .string "hi"
+    `),
+  );
+  kernel.run();
+  assert.equal(getOut(), 'hi');
+});
+
+test('dup: a duplicated fd writes to the same console', () => {
+  const { kernel, getOut } = makeKernel();
+  kernel.spawn(
+    'dup',
+    image(`
+      MOV  R0, 11        ; DUP(1)
+      MOV  R1, 1
+      INT  0x80
+      MOVR R5, R0        ; new fd
+      MOV  R0, 1         ; WRITE(newfd, "OK", 2)
+      MOVR R1, R5
+      MOV  R2, msg
+      MOV  R3, 2
+      INT  0x80
+      MOV  R0, 0
+      MOV  R1, 0
+      INT  0x80
+    msg:
+      .string "OK"
+    `),
+  );
+  kernel.run();
+  assert.equal(getOut(), 'OK');
+});
+
+test('uptime: returns a nonzero tick count', () => {
+  const { kernel } = makeKernel();
+  kernel.spawn(
+    'up',
+    image(`
+      MOV  R0, 12        ; UPTIME
+      INT  0x80
+      MOVR R1, R0        ; exit with the tick count
+      MOV  R0, 0
+      INT  0x80
+    `),
+  );
+  kernel.run();
+  assert.ok(kernel.processes.get(1)!.exitCode! >= 1);
+});
+
+test('read blocks until keyboard input arrives, then resumes', () => {
+  const { kernel, getOut } = makeKernel();
+  kernel.spawn(
+    'getc',
+    image(`
+      MOV  R0, 9         ; READ(stdin, buf, 1) -> blocks (no input yet)
+      MOV  R1, 0
+      MOV  R2, buf
+      MOV  R3, 1
+      INT  0x80
+      MOVR R3, R0
+      MOV  R0, 1         ; echo the byte
+      MOV  R1, 1
+      MOV  R2, buf
+      INT  0x80
+      MOV  R0, 0
+      MOV  R1, 0
+      INT  0x80
+    buf:
+      .word 0
+    `),
+  );
+  kernel.run(); // the process blocks reading stdin
+  assert.equal(getOut(), '');
+  assert.ok(kernel.waitingForInput);
+  assert.equal(kernel.processes.get(1)!.state, 'blocked');
+
+  kernel.feedInput('X'); // a "keypress" wakes the reader
+  kernel.run();
+  assert.equal(getOut(), 'X');
+  assert.equal(kernel.processes.get(1)!.state, 'zombie');
 });

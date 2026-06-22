@@ -197,11 +197,18 @@ export class CPU {
         this.pendingIrq = null;
         return { reason: 'irq', line };
       }
+      // Snapshot enough to restart the instruction if it faults part-way. A page
+      // fault (e.g. copy-on-write) must re-execute from the start, so the kernel
+      // can resolve it and resume transparently.
+      const pc0 = this.pc;
+      const sp0 = this.sp;
       try {
         const result = this.step();
         if (result) return result;
       } catch (e) {
         if (e instanceof PageFault) {
+          this.pc = pc0; // restart the faulting instruction after the kernel fixes it
+          this.sp = sp0;
           return {
             reason: 'pagefault',
             vaddr: e.vaddr,

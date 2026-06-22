@@ -7,6 +7,7 @@
 import { CPU, type CpuState, MODE, type RunResult } from '../hw/cpu.ts';
 import { Console } from '../hw/devices/console.ts';
 import { BlockDisk } from '../hw/devices/disk.ts';
+import { Keyboard } from '../hw/devices/keyboard.ts';
 import { PAGE_SIZE, PhysicalMemory } from '../hw/memory.ts';
 import { PortBus } from '../hw/ports.ts';
 import { FD, LAYOUT, O, PORT, SYS, SYSCALL_INT } from './abi.ts';
@@ -14,7 +15,7 @@ import { BlockDriver } from './disk.ts';
 import { type Executable, encodeExecutable, flatExecutable, parseExecutable, SEG } from './exec.ts';
 import { Fs, T_DIR } from './fs.ts';
 import { Pmm } from './pmm.ts';
-import type { OpenFile, Process } from './process.ts';
+import type { OpenFile, PendingRead, Pipe, Process } from './process.ts';
 import { BadAddress, PTE, Vmm } from './vmm.ts';
 
 const PHYS_SIZE = 16 * 1024 * 1024; // 16 MiB physical RAM
@@ -38,6 +39,7 @@ export class Kernel {
   readonly pmm: Pmm;
   readonly vmm: Vmm;
   readonly console: Console;
+  readonly keyboard: Keyboard;
   readonly disk: BlockDisk;
   readonly bio: BlockDriver;
   readonly fs: Fs;
@@ -45,6 +47,8 @@ export class Kernel {
   readonly processes = new Map<number, Process>();
   private readyQueue: Process[] = [];
   private nextPid = 1;
+  private ticks = 0; // scheduler slices since boot (uptime)
+  private inputWaiters: PendingRead[] = []; // readers blocked on the keyboard
 
   readonly quantum: number;
   private log: (msg: string) => void;
@@ -61,6 +65,11 @@ export class Kernel {
 
     this.console = new Console(opts.consoleSink);
     this.ports.register(PORT.CONSOLE_DATA, 1, this.console);
+
+    // Keyboard (stdin). New input "raises an IRQ" -> wake any blocked readers.
+    this.keyboard = new Keyboard();
+    this.keyboard.onInput = () => this.serviceInputReaders();
+    this.ports.register(PORT.KBD_DATA, 1, this.keyboard);
 
     // Block disk + filesystem. Mount a supplied image, or format a fresh disk.
     this.disk = opts.diskImage
@@ -213,6 +222,9 @@ export class Kernel {
 
   // --- scheduler (timer-driven, preemptive round-robin) ---
 
+  // Run until no process is ready. Processes blocked on input remain parked; the
+  // host wakes them by feeding the keyboard, then calls run() again (this models
+  // a CPU that idles until the next interrupt).
   run(): void {
     while (this.readyQueue.length > 0) {
       const proc = this.readyQueue.shift()!;
@@ -221,9 +233,30 @@ export class Kernel {
       this.cpu.loadState(proc.cpu);
       const r = this.cpu.run(this.quantum);
       this.cpu.saveState(proc.cpu);
+      this.ticks++;
 
       this.dispatch(proc, r);
     }
+  }
+
+  // True while some process is parked waiting for keyboard input (so the host
+  // knows to read more and feed it before calling run() again).
+  get waitingForInput(): boolean {
+    return this.inputWaiters.length > 0;
+  }
+
+  // Are any processes still alive (not zombies)? Used to drive an interactive loop.
+  get hasLiveProcesses(): boolean {
+    for (const p of this.processes.values()) if (p.state !== 'zombie') return true;
+    return false;
+  }
+
+  // Queue keyboard input; wakes readers blocked in read(). `close` signals EOF.
+  feedInput(s: string): void {
+    this.keyboard.feed(s);
+  }
+  closeInput(): void {
+    this.keyboard.close();
   }
 
   private dispatch(proc: Process, r: RunResult): void {
@@ -242,6 +275,12 @@ export class Kernel {
         this.ready(proc);
         break;
       case 'pagefault':
+        // A write to a copy-on-write page is resolved by giving the process its
+        // own copy, then resuming where it faulted.
+        if (r.write && r.present && this.vmm.tryCow(proc.pd, r.vaddr)) {
+          this.ready(proc);
+          break;
+        }
         this.log(
           `pid ${proc.pid} (${proc.name}): page fault @0x${r.vaddr.toString(16)} ` +
             `(${r.present ? 'protection' : 'not-present'}) -> killed`,
@@ -317,7 +356,22 @@ export class Kernel {
         break;
 
       case SYS.READ:
-        regs[0] = this.sysRead(proc, regs[1]!, regs[2]!, regs[3]!);
+        // sysRead readies the process itself, or blocks it pending input.
+        this.sysRead(proc, regs[1]!, regs[2]!, regs[3]!);
+        break;
+
+      case SYS.PIPE:
+        regs[0] = this.sysPipe(proc, regs[1]!);
+        this.ready(proc);
+        break;
+
+      case SYS.DUP:
+        regs[0] = this.sysDup(proc, regs[1]!);
+        this.ready(proc);
+        break;
+
+      case SYS.UPTIME:
+        regs[0] = this.ticks;
         this.ready(proc);
         break;
 
@@ -331,7 +385,7 @@ export class Kernel {
 
   // --- file syscalls ---
 
-  // write(fd, buf, len): console output or a write into a file at its offset.
+  // write(fd, buf, len): console output, a write into a file, or into a pipe.
   private sysWrite(proc: Process, fd: number, buf: number, len: number): number {
     const of = proc.fds[fd];
     if (!of?.writable) return ERR;
@@ -339,6 +393,13 @@ export class Kernel {
       const data = this.vmm.copyin(proc.pd, buf, len);
       if (of.kind === 'console') {
         for (const b of data) this.ports.out(PORT.CONSOLE_DATA, b);
+        return len;
+      }
+      if (of.kind === 'pipe') {
+        const pipe = of.pipe!;
+        if (pipe.readers === 0) return ERR; // broken pipe: nobody will ever read it
+        for (const b of data) pipe.buffer.push(b);
+        this.servicePipeReaders(pipe);
         return len;
       }
       const din = this.fs.readInode(of.inum);
@@ -351,32 +412,121 @@ export class Kernel {
     }
   }
 
-  // read(fd, buf, len): read from a file at its offset into user space. The
-  // console has no input yet (Phase 6), so reading stdin returns 0 (EOF).
-  private sysRead(proc: Process, fd: number, buf: number, len: number): number {
+  // read(fd, buf, len): file/pipe/keyboard read. Files return immediately; the
+  // keyboard and pipes block the process when no data is available yet (the
+  // process is parked and woken when input arrives or all writers close).
+  private sysRead(proc: Process, fd: number, buf: number, len: number): void {
     const of = proc.fds[fd];
-    if (!of?.readable) return ERR;
-    try {
-      if (of.kind === 'console') {
-        // No keyboard yet (Phase 6): return queued input, or 0 (EOF) when empty.
-        const data = this.console.readInput(len);
-        this.vmm.copyout(proc.pd, buf, data);
-        return data.length;
+    if (!of?.readable) {
+      proc.cpu.regs[0] = ERR;
+      this.ready(proc);
+      return;
+    }
+    if (of.kind === 'file') {
+      try {
+        const din = this.fs.readInode(of.inum);
+        const data = this.fs.readi(din, of.offset, len);
+        of.offset += data.length;
+        this.completeRead(proc, buf, data);
+      } catch (e) {
+        if (!(e instanceof BadAddress)) throw e;
+        proc.cpu.regs[0] = ERR;
+        this.ready(proc);
       }
-      const din = this.fs.readInode(of.inum);
-      const data = this.fs.readi(din, of.offset, len);
-      this.vmm.copyout(proc.pd, buf, data);
-      of.offset += data.length;
-      return data.length;
-    } catch (e) {
-      if (e instanceof BadAddress) return ERR;
-      throw e;
+      return;
+    }
+    if (of.kind === 'pipe') {
+      const pipe = of.pipe!;
+      if (pipe.buffer.length > 0 || pipe.writers === 0) {
+        this.completeRead(proc, buf, take(pipe.buffer, len));
+      } else {
+        pipe.readWaiters.push({ proc, buf, len }); // block until a writer feeds it
+        proc.state = 'blocked';
+      }
+      return;
+    }
+    // console / keyboard (stdin)
+    if (this.keyboard.available > 0 || this.keyboard.closed) {
+      this.completeRead(proc, buf, this.keyboard.take(len));
+    } else {
+      this.inputWaiters.push({ proc, buf, len }); // block until a key is pressed
+      proc.state = 'blocked';
     }
   }
 
-  // Queue characters on stdin for processes to read (pre-keyboard input).
-  feedInput(s: string): void {
-    this.console.feedInput(s);
+  // Finish a read: copy the bytes to the user buffer, set R0, and make ready.
+  private completeRead(proc: Process, buf: number, data: Uint8Array): void {
+    try {
+      this.vmm.copyout(proc.pd, buf, data);
+      proc.cpu.regs[0] = data.length;
+    } catch (e) {
+      if (!(e instanceof BadAddress)) throw e;
+      proc.cpu.regs[0] = ERR;
+    }
+    this.ready(proc);
+  }
+
+  // Deliver keyboard input to blocked readers (the keyboard "IRQ handler").
+  private serviceInputReaders(): void {
+    while (this.inputWaiters.length > 0 && (this.keyboard.available > 0 || this.keyboard.closed)) {
+      const w = this.inputWaiters.shift()!;
+      this.completeRead(w.proc, w.buf, this.keyboard.take(w.len));
+    }
+  }
+
+  // Deliver pipe data (or EOF, once all writers have closed) to blocked readers.
+  private servicePipeReaders(pipe: Pipe): void {
+    while (pipe.readWaiters.length > 0 && (pipe.buffer.length > 0 || pipe.writers === 0)) {
+      const w = pipe.readWaiters.shift()!;
+      this.completeRead(w.proc, w.buf, take(pipe.buffer, w.len));
+    }
+  }
+
+  // pipe(int fds[2]): create a pipe and hand back its read and write fds.
+  private sysPipe(proc: Process, ptr: number): number {
+    const rfd = proc.fds.indexOf(null);
+    if (rfd === -1) return ERR;
+    proc.fds[rfd] = { kind: 'pipe', inum: 0, offset: 0, readable: true, writable: false, ref: 1 };
+    const wfd = proc.fds.indexOf(null);
+    if (wfd === -1) {
+      proc.fds[rfd] = null;
+      return ERR;
+    }
+    const pipe: Pipe = { buffer: [], readers: 1, writers: 1, readWaiters: [] };
+    proc.fds[rfd]!.pipe = pipe;
+    proc.fds[wfd] = {
+      kind: 'pipe',
+      inum: 0,
+      offset: 0,
+      readable: false,
+      writable: true,
+      ref: 1,
+      pipe,
+    };
+
+    const out = new Uint8Array(8);
+    writeWord(out.subarray(0, 4), rfd);
+    writeWord(out.subarray(4, 8), wfd);
+    try {
+      this.vmm.copyout(proc.pd, ptr, out);
+    } catch (e) {
+      if (!(e instanceof BadAddress)) throw e;
+      proc.fds[rfd] = null;
+      proc.fds[wfd] = null;
+      return ERR;
+    }
+    return 0;
+  }
+
+  // dup(fd): return the lowest free fd referring to the same open file.
+  private sysDup(proc: Process, fd: number): number {
+    const of = proc.fds[fd];
+    if (!of) return ERR;
+    const nfd = proc.fds.indexOf(null);
+    if (nfd === -1) return ERR;
+    of.ref++;
+    proc.fds[nfd] = of;
+    return nfd;
   }
 
   // open(path, flags): resolve (optionally create) a file and install an fd.
@@ -414,9 +564,22 @@ export class Kernel {
   private sysClose(proc: Process, fd: number): number {
     const of = proc.fds[fd];
     if (!of) return ERR;
-    of.ref--;
+    this.closeFile(of);
     proc.fds[fd] = null;
     return 0;
+  }
+
+  // Drop one reference to an open file. When the last reference goes away, a pipe
+  // end closes: closing the write end wakes blocked readers with EOF.
+  private closeFile(of: OpenFile): void {
+    of.ref--;
+    if (of.ref > 0 || of.kind !== 'pipe' || !of.pipe) return;
+    if (of.writable) {
+      of.pipe.writers--;
+      if (of.pipe.writers === 0) this.servicePipeReaders(of.pipe);
+    } else {
+      of.pipe.readers--;
+    }
   }
 
   // --- process model: fork / exec / wait / exit ---
@@ -424,7 +587,7 @@ export class Kernel {
   // Duplicate `parent` into a new process with a copied address space. Both
   // resume just after the trapping INT; the caller wires up the return values.
   private fork(parent: Process): Process {
-    const pd = this.vmm.cloneAddressSpace(parent.pd);
+    const pd = this.vmm.cowCloneAddressSpace(parent.pd);
     const src = parent.cpu;
     const cpu: CpuState = {
       regs: src.regs.slice(), // independent register file
@@ -555,10 +718,10 @@ export class Kernel {
       this.vmm.freeAddressSpace(proc.pd);
       proc.pd = 0;
     }
-    // Release every open file descriptor.
+    // Release every open file descriptor (pipe ends close, waking EOF readers).
     for (let fd = 0; fd < proc.fds.length; fd++) {
       const of = proc.fds[fd];
-      if (of) of.ref--;
+      if (of) this.closeFile(of);
       proc.fds[fd] = null;
     }
     proc.state = 'zombie';
@@ -588,6 +751,11 @@ export class Kernel {
     proc.state = 'ready';
     this.readyQueue.push(proc);
   }
+}
+
+// Pop up to `n` bytes from the front of a byte array into a Uint8Array.
+function take(buffer: number[], n: number): Uint8Array {
+  return new Uint8Array(buffer.splice(0, Math.min(n, buffer.length)));
 }
 
 // Write a 32-bit little-endian value into a 4-byte buffer.

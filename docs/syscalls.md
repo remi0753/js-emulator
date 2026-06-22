@@ -42,7 +42,10 @@ Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 | 6 | `WAIT`   | R1 = status ptr (0 = ignore)  | reap a child; R0 = child pid (status written to ptr), -1 if none |
 | 7 | `OPEN`   | R1 = path ptr, R2 = flags     | open/create a file; R0 = fd / -1                            |
 | 8 | `CLOSE`  | R1 = fd                       | close a descriptor; R0 = 0 / -1                            |
-| 9 | `READ`   | R1 = fd, R2 = buf, R3 = len   | read into user space; R0 = bytes read (0 = EOF) / -1       |
+| 9 | `READ`   | R1 = fd, R2 = buf, R3 = len   | read into user space; R0 = bytes read (0 = EOF) / -1; **blocks** on stdin/pipe |
+| 10| `PIPE`   | R1 = int[2] ptr               | create a pipe; writes [readfd, writefd]; R0 = 0 / -1       |
+| 11| `DUP`    | R1 = fd                       | duplicate fd to the lowest free fd; R0 = new fd / -1       |
+| 12| `UPTIME` | —                             | R0 = scheduler ticks since boot                            |
 
 `WRITE` (call 1) writes to any writable fd: the console (fd 1/2) or a file opened
 for writing. `open` flags (`O.*` in abi.ts): `RDONLY=0`, `WRONLY=1`, `RDWR=2`,
@@ -66,9 +69,23 @@ for writing. `open` flags (`O.*` in abi.ts): `RDONLY=0`, `WRONLY=1`, `RDWR=2`,
 - `exec` takes an `argv` vector (R2): a user array of string pointers terminated by
   NULL. The kernel copies the strings onto the new program's stack and starts it
   with **argc in R0** and the **argv pointer in R1**. R2 = 0 means no arguments.
-- `read` on stdin (fd 0) returns characters previously queued with the kernel's
-  `feedInput` (the live keyboard arrives in Phase 6); an empty queue reads as 0
-  (EOF), which is how the shell knows to quit.
+
+### Blocking I/O, pipes & COW fork (Phase 6)
+
+- `read` on **stdin** blocks the process until a key is pressed (the keyboard
+  device raises an interrupt that wakes blocked readers); at end-of-input it
+  returns 0 (EOF). `read` on a **pipe** blocks until a writer provides data, or
+  returns 0 once every write end is closed.
+- `pipe` returns a read fd and a write fd over an in-kernel byte FIFO; `dup`
+  duplicates a descriptor (both used to wire `cmd1 | cmd2`). `fork` shares pipe
+  ends with the child (reference-counted), so a pipe stays open until *all* of its
+  ends close.
+- `fork` is **copy-on-write**: parent and child share their pages read-only and a
+  page is copied only when one side writes to it (resolved by a page-fault
+  handler), so forking is cheap and memory is shared until modified.
+- The scheduler's `run()` returns when no process is ready; processes blocked on
+  input stay parked until the host feeds the keyboard (`feedInput`) and calls
+  `run()` again — exactly how a CPU idles until the next interrupt.
 
 ### Process model (Phase 3)
 

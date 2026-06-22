@@ -11,6 +11,7 @@ export const PTE = {
   P: 1 << 0, // present
   W: 1 << 1, // writable
   U: 1 << 2, // user-accessible
+  COW: 1 << 9, // software bit: copy-on-write (page is shared read-only; copy on write)
 } as const;
 
 export const ENTRIES_PER_TABLE = 1024;

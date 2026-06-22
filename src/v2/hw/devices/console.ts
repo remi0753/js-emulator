@@ -10,10 +10,6 @@ export class Console implements PortDevice {
   output = '';
   private sink: (s: string) => void;
 
-  // Pending input bytes (stdin). Until the keyboard arrives (Phase 6), input is
-  // pre-fed by the host; a read past the end returns 0 (EOF).
-  private inputQueue: number[] = [];
-
   constructor(sink: (s: string) => void = (s) => process.stdout.write(s)) {
     this.sink = sink;
   }
@@ -22,19 +18,5 @@ export class Console implements PortDevice {
     const ch = String.fromCharCode(value & 0xff);
     this.output += ch;
     this.sink(ch);
-  }
-
-  // Queue characters to be delivered to readers of stdin.
-  feedInput(s: string): void {
-    for (let i = 0; i < s.length; i++) this.inputQueue.push(s.charCodeAt(i) & 0xff);
-  }
-
-  get inputAvailable(): number {
-    return this.inputQueue.length;
-  }
-
-  // Pop up to `n` queued input bytes (fewer if the queue runs out).
-  readInput(n: number): Uint8Array {
-    return new Uint8Array(this.inputQueue.splice(0, n));
   }
 }

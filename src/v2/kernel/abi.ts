@@ -17,6 +17,9 @@ export const SYS = {
   OPEN: 7, // R1 = path, R2 = flags (see O.*) -> R0 = fd / -1
   CLOSE: 8, // R1 = fd -> R0 = 0 / -1
   READ: 9, // R1 = fd, R2 = buf, R3 = len -> R0 = bytes read (0 = EOF) / -1
+  PIPE: 10, // R1 = int[2] ptr (filled with [readfd, writefd]) -> R0 = 0 / -1
+  DUP: 11, // R1 = fd -> R0 = new fd (lowest free) / -1
+  UPTIME: 12, // -> R0 = scheduler ticks since boot
 } as const;
 
 // File descriptors wired up in Phase 2 (real fd table comes with the FS).
@@ -28,6 +31,7 @@ export const PORT = {
   DISK_DATA: 0x1f0, // read/write one 32-bit word at the disk position; auto-advances
   DISK_POS: 0x1f2, // set the disk access position (in sectors)
   DISK_SECTORS: 0x1f7, // read: number of sectors on the disk
+  KBD_DATA: 0x60, // read: next input byte from the keyboard (0 if empty)
 } as const;
 
 // open() flags (R2 of the OPEN syscall).

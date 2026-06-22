@@ -49,8 +49,12 @@ descriptors, `fork`/`exec`, and userland.
   `node demo/v2-shell.ts`). **This reaches the v2 acceptance target: boot → shell
   → `ls` lists the disk.** Commands are fed on stdin (pre-keyboard); **pipes** move
   to Phase 6 since they need the same blocking I/O as the keyboard.
-- **Phase 6** ⬜ polish: keyboard input + blocking I/O, **pipes** (`pipe`/`dup`),
-  more syscalls, copy-on-write `fork`.
+- **Phase 6** ✅ polish: a **keyboard** device with **blocking I/O** (read blocks
+  until a key is pressed), **pipes** (`pipe`/`dup`) with blocking, **copy-on-write
+  `fork`** (shared read-only frames, COW page-fault handler, frame refcounts), and
+  more syscalls (`uptime`). See `src/v2/hw/devices/keyboard.ts`, COW in
+  `src/v2/kernel/{pmm,vmm}.ts`; demos `node demo/v2-pipe.ts`, interactive
+  `node demo/v2-shell.ts`. **v2 is feature-complete.**
 
 ### v3 — self-hosting (model B): the kernel becomes guest code
 
