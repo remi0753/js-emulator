@@ -40,7 +40,10 @@ src/v1/            v1 — register machine + JS round-robin OS (working demo)
   os.ts            PCB, round-robin scheduler, syscalls, program loader
 src/v2/            v2 — Unix-like OS (in progress)
   hw/              virtual hardware: cpu (privilege/MMU/traps), memory, mmu, ports
+  kernel/          pmm, vmm, scheduler, syscalls, process model (fork/exec/wait), exec format
 demo/multitask.ts  two v1 processes printing interleaved
+demo/v2-preempt.ts user-mode preemptive multitasking (paging + traps)
+demo/v2-fork-exec.ts  fork / exec / wait / exit — the Unix process model
 test/              node:test unit tests
 ```
 

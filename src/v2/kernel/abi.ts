@@ -11,6 +11,9 @@ export const SYS = {
   WRITE: 1, // R1 = fd, R2 = buf (user vaddr), R3 = len -> R0 = bytes written
   YIELD: 2, // give up the CPU
   GETPID: 3, // -> R0 = pid
+  FORK: 4, // duplicate the process -> R0 = child pid (parent) / 0 (child) / -1 (error)
+  EXEC: 5, // R1 = path (user vaddr, NUL-terminated) -> replaces the image; -1 on error
+  WAIT: 6, // R1 = status ptr (user vaddr, 0 = ignore) -> R0 = reaped child pid / -1
 } as const;
 
 // File descriptors wired up in Phase 2 (real fd table comes with the FS).

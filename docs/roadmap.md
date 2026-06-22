@@ -36,8 +36,9 @@ descriptors, `fork`/`exec`, and userland.
 - **Phase 2** ✅ TS kernel core on the virtual HW: physical & virtual memory
   managers, timer-driven preemptive scheduler, syscall dispatch, console driver;
   user-mode programs syscall and get preempted (see `src/v2/kernel/`).
-- **Phase 3** ⬜ process model: `fork`/`exec`/`wait`/`exit`, ELF-like loader,
-  multiple user programs.
+- **Phase 3** ✅ process model: `fork`/`exec`/`wait`/`exit`, ELF-like loader,
+  multiple user programs (see `src/v2/kernel/exec.ts` + the process syscalls in
+  `kernel.ts`; demo `node demo/v2-fork-exec.ts`).
 - **Phase 4** ⬜ storage: block driver over `disk.img`, on-disk FS, VFS, file
   descriptors, `open`/`read`/`write`/`close`, exec from the FS.
 - **Phase 5** ⬜ userland: `init`, a shell, a few coreutils, pipes.
