@@ -3,7 +3,7 @@
 // Frames are 4 KiB. A simple free list of frame base addresses; alloc() pops one
 // and free() pushes it back. The low region below `base` is left reserved.
 
-import { PAGE_SIZE, type PhysicalMemory } from '../hw/memory.ts';
+import { PAGE_SIZE, type PhysicalMemory } from '../../vm/custom32/memory.ts';
 
 export class Pmm {
   private free: number[] = [];

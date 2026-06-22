@@ -1,8 +1,15 @@
 // Virtual memory manager (v2): builds per-process address spaces and copies
 // data across the user/kernel boundary using the MMU, exactly like a real kernel.
 
-import { PAGE_SIZE, type PhysicalMemory } from '../hw/memory.ts';
-import { dirIndex, ENTRIES_PER_TABLE, type Mmu, PTE, pageBase, tableIndex } from '../hw/mmu.ts';
+import { PAGE_SIZE, type PhysicalMemory } from '../../vm/custom32/memory.ts';
+import {
+  dirIndex,
+  ENTRIES_PER_TABLE,
+  type Mmu,
+  PTE,
+  pageBase,
+  tableIndex,
+} from '../../vm/custom32/mmu.ts';
 import type { Pmm } from './pmm.ts';
 
 // Thrown when a user-supplied pointer doesn't translate (bad syscall argument).

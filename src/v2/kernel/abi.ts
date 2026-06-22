@@ -1,8 +1,10 @@
 // Kernel ABI and layout constants (v2).
 
 import { SYSCALL_INT } from '../../isa.ts';
+import { PORT } from '../../vm/custom32/platform.ts';
 
 export { SYSCALL_INT };
+export { PORT };
 
 // syscall numbers (passed in R0; return value comes back in R0).
 // Args are in R1, R2, R3. Invoked with `INT 0x80`.
@@ -24,15 +26,6 @@ export const SYS = {
 
 // File descriptors wired up in Phase 2 (real fd table comes with the FS).
 export const FD = { STDIN: 0, STDOUT: 1, STDERR: 2 } as const;
-
-// Device port numbers on the port bus.
-export const PORT = {
-  CONSOLE_DATA: 0x3f8, // write a byte here to emit one character (COM1-ish)
-  DISK_DATA: 0x1f0, // read/write one 32-bit word at the disk position; auto-advances
-  DISK_POS: 0x1f2, // set the disk access position (in sectors)
-  DISK_SECTORS: 0x1f7, // read: number of sectors on the disk
-  KBD_DATA: 0x60, // read: next input byte from the keyboard (0 if empty)
-} as const;
 
 // open() flags (R2 of the OPEN syscall).
 export const O = {

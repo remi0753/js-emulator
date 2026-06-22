@@ -39,8 +39,8 @@ src/assembler.ts   assembly text -> bytecode (two-pass, label resolution)
 src/v1/            v1 — register machine + JS round-robin OS (working demo)
   cpu.ts           register machine: fetch-decode-execute, memory, interrupts
   os.ts            PCB, round-robin scheduler, syscalls, program loader
+src/vm/custom32/   virtual hardware boundary: machine, cpu, memory, mmu, ports, devices
 src/v2/            v2 — Unix-like OS (in progress)
-  hw/              virtual hardware: cpu (privilege/MMU/traps), memory, mmu, ports, devices (console, disk, keyboard)
   kernel/          pmm (refcounts), vmm (COW), scheduler, syscalls, process model (fork/exec/wait), exec format, block driver, filesystem
   userland/        guest programs: init, sh, coreutils (echo, cat, ls)
 demo/multitask.ts  two v1 processes printing interleaved

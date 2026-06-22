@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { assemble } from '../src/assembler.ts';
-import { PTE } from '../src/v2/hw/mmu.ts';
+import { PTE } from '../src/vm/custom32/mmu.ts';
 import { LAYOUT } from '../src/v2/kernel/abi.ts';
 import { type Executable, encodeExecutable, parseExecutable, SEG } from '../src/v2/kernel/exec.ts';
 import { Kernel } from '../src/v2/kernel/kernel.ts';
+import { Machine } from '../src/vm/custom32/machine.ts';
 
 function bytes(s: string): Uint8Array {
   return new Uint8Array([...s].map((c) => c.charCodeAt(0)));
@@ -21,6 +22,29 @@ function makeKernel(quantum = 1000) {
   const kernel = new Kernel({ quantum, consoleSink: (s) => (out += s), log: () => {} });
   return { kernel, getOut: () => out };
 }
+
+test('kernel can run on an injected custom32 machine', () => {
+  let out = '';
+  const machine = new Machine({ consoleSink: (s) => (out += s) });
+  const kernel = new Kernel({ machine, log: () => {} });
+  kernel.spawn(
+    'hello',
+    image(`
+      MOV R0, 1
+      MOV R1, 1
+      MOV R2, msg
+      MOV R3, 1
+      INT 0x80
+      MOV R0, 0
+      INT 0x80
+    msg:
+      .string "M"
+    `),
+  );
+  kernel.run();
+  assert.equal(kernel.machine, machine);
+  assert.equal(out, 'M');
+});
 
 test('a user-mode program writes via syscall and exits', () => {
   const { kernel, getOut } = makeKernel();

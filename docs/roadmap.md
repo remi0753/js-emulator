@@ -59,7 +59,7 @@ descriptors, `fork`/`exec`, and userland.
   `kernel.ts`; demo `node demo/v2-fork-exec.ts`).
 - **Phase 4** ✅ storage: block driver over `disk.img`, on-disk FS (superblock,
   inodes, block bitmap, direct + indirect blocks, directories), file descriptors,
-  `open`/`read`/`write`/`close`, exec from the FS (see `src/v2/hw/devices/disk.ts`,
+  `open`/`read`/`write`/`close`, exec from the FS (see `src/vm/custom32/devices/disk.ts`,
   `src/v2/kernel/{disk,fs}.ts`; demo `node demo/v2-fs.ts`).
 - **Phase 5** ✅ userland: `init`, a shell, and coreutils (`echo`, `cat`, `ls`),
   all hand-written guest assembly; `exec` delivers `argv`; byte load/store (`LB`/
@@ -70,7 +70,7 @@ descriptors, `fork`/`exec`, and userland.
 - **Phase 6** ✅ polish: a **keyboard** device with **blocking I/O** (read blocks
   until a key is pressed), **pipes** (`pipe`/`dup`) with blocking, **copy-on-write
   `fork`** (shared read-only frames, COW page-fault handler, frame refcounts), and
-  more syscalls (`uptime`). See `src/v2/hw/devices/keyboard.ts`, COW in
+  more syscalls (`uptime`). See `src/vm/custom32/devices/keyboard.ts`, COW in
   `src/v2/kernel/{pmm,vmm}.ts`; demos `node demo/v2-pipe.ts`, interactive
   `node demo/v2-shell.ts`. **v2 is feature-complete.**
 

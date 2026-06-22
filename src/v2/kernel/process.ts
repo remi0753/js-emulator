@@ -1,7 +1,7 @@
 // Process abstraction (v2). Each process has its own address space (page
 // directory) and a saved CPU state used as its trap frame across context switches.
 
-import type { CpuState } from '../hw/cpu.ts';
+import type { CpuState } from '../../vm/custom32/cpu.ts';
 
 // A reader parked on a resource (a pipe or the keyboard) until data is available.
 export interface PendingRead {

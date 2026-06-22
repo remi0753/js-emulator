@@ -1,8 +1,8 @@
 // Block driver (v2). Reads and writes whole 512-byte blocks by driving the disk
 // device through the port bus — the same ports the guest would use.
 
-import { SECTOR_SIZE } from '../hw/devices/disk.ts';
-import type { PortBus } from '../hw/ports.ts';
+import { SECTOR_SIZE } from '../../vm/custom32/devices/disk.ts';
+import type { PortBus } from '../../vm/custom32/ports.ts';
 import { PORT } from './abi.ts';
 
 export const BSIZE = SECTOR_SIZE; // filesystem block size == disk sector size

@@ -4,12 +4,13 @@
 // scheduler, syscall dispatch, and device drivers. User programs run as guest
 // bytecode in USER mode; they enter the kernel only via trap / fault / IRQ.
 
-import { CPU, type CpuState, MODE, type RunResult } from '../hw/cpu.ts';
-import { Console } from '../hw/devices/console.ts';
-import { BlockDisk } from '../hw/devices/disk.ts';
-import { Keyboard } from '../hw/devices/keyboard.ts';
-import { PAGE_SIZE, PhysicalMemory } from '../hw/memory.ts';
-import { PortBus } from '../hw/ports.ts';
+import { type CPU, type CpuState, MODE, type RunResult } from '../../vm/custom32/cpu.ts';
+import type { Console } from '../../vm/custom32/devices/console.ts';
+import type { BlockDisk } from '../../vm/custom32/devices/disk.ts';
+import type { Keyboard } from '../../vm/custom32/devices/keyboard.ts';
+import { PAGE_SIZE, type PhysicalMemory } from '../../vm/custom32/memory.ts';
+import { Machine } from '../../vm/custom32/machine.ts';
+import type { PortBus } from '../../vm/custom32/ports.ts';
 import { FD, LAYOUT, O, PORT, SYS, SYSCALL_INT } from './abi.ts';
 import { BlockDriver } from './disk.ts';
 import { type Executable, encodeExecutable, flatExecutable, parseExecutable, SEG } from './exec.ts';
@@ -18,13 +19,12 @@ import { Pmm } from './pmm.ts';
 import type { OpenFile, PendingRead, Pipe, Process } from './process.ts';
 import { BadAddress, PTE, Vmm } from './vmm.ts';
 
-const PHYS_SIZE = 16 * 1024 * 1024; // 16 MiB physical RAM
 const PMM_BASE = 1 * 1024 * 1024; // manage frames from 1 MiB up (low memory reserved)
 const ERR = 0xffffffff; // syscall error return (-1 unsigned)
-const DEFAULT_DISK_BLOCKS = 2048; // 1 MiB fresh disk when no image is supplied
 const NFD = 16; // open files per process
 
 export interface KernelOptions {
+  machine?: Machine; // hardware boundary; omitted for the legacy v2 demos/tests
   quantum?: number; // instructions per time slice
   consoleSink?: (s: string) => void; // where console output goes (tests capture it)
   log?: (msg: string) => void; // kernel log
@@ -33,6 +33,7 @@ export interface KernelOptions {
 }
 
 export class Kernel {
+  readonly machine: Machine;
   readonly phys: PhysicalMemory;
   readonly ports: PortBus;
   readonly cpu: CPU;
@@ -57,27 +58,28 @@ export class Kernel {
     this.quantum = opts.quantum ?? 1000;
     this.log = opts.log ?? (() => {});
 
-    this.phys = new PhysicalMemory(PHYS_SIZE);
-    this.ports = new PortBus();
-    this.cpu = new CPU(this.phys, this.ports);
+    this.machine =
+      opts.machine ??
+      new Machine({
+        consoleSink: opts.consoleSink,
+        diskImage: opts.diskImage,
+        diskBlocks: opts.diskBlocks,
+      });
+
+    this.phys = this.machine.phys;
+    this.ports = this.machine.ports;
+    this.cpu = this.machine.cpu;
+    this.console = this.machine.console;
+    this.keyboard = this.machine.keyboard;
+    this.disk = this.machine.disk;
+
     this.pmm = new Pmm(this.phys, PMM_BASE);
     this.vmm = new Vmm(this.phys, this.cpu.mmu, this.pmm);
 
-    this.console = new Console(opts.consoleSink);
-    this.ports.register(PORT.CONSOLE_DATA, 1, this.console);
-
     // Keyboard (stdin). New input "raises an IRQ" -> wake any blocked readers.
-    this.keyboard = new Keyboard();
     this.keyboard.onInput = () => this.serviceInputReaders();
-    this.ports.register(PORT.KBD_DATA, 1, this.keyboard);
 
     // Block disk + filesystem. Mount a supplied image, or format a fresh disk.
-    this.disk = opts.diskImage
-      ? new BlockDisk(opts.diskImage)
-      : BlockDisk.blank(opts.diskBlocks ?? DEFAULT_DISK_BLOCKS);
-    this.ports.register(PORT.DISK_DATA, 1, this.disk);
-    this.ports.register(PORT.DISK_POS, 1, this.disk);
-    this.ports.register(PORT.DISK_SECTORS, 1, this.disk);
     this.bio = new BlockDriver(this.ports);
     this.fs = new Fs(this.bio);
     if (opts.diskImage) this.fs.mount();
