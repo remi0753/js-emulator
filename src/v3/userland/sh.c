@@ -1,0 +1,168 @@
+// sh: a small shell. Reads a line from stdin, splits it on spaces into argv,
+// and runs it. Supports one pipeline stage: `cmd1 args | cmd2 args`. Commands
+// are run by fork + exec; the shell waits for them. End of input (read returns
+// 0) ends the shell. No prompt is printed (it runs non-interactively here).
+
+char line[128];
+char *args[20];
+char pathbuf[64];
+
+// exec a command, searching /bin when the name contains no '/'. Returns only on
+// failure (exec replaces the image on success).
+void exec_cmd(char **av) {
+  char *cmd;
+  int i;
+  cmd = av[0];
+  i = 0;
+  while (cmd[i] != 0) {
+    if (cmd[i] == '/') {
+      exec(cmd, av);
+      return;
+    }
+    i = i + 1;
+  }
+  pathbuf[0] = '/';
+  pathbuf[1] = 'b';
+  pathbuf[2] = 'i';
+  pathbuf[3] = 'n';
+  pathbuf[4] = '/';
+  i = 0;
+  while (cmd[i] != 0 && i < 58) {
+    pathbuf[5 + i] = cmd[i];
+    i = i + 1;
+  }
+  pathbuf[5 + i] = 0;
+  exec(pathbuf, av);
+}
+
+// Read one line into `line` (NUL-terminated, newline stripped). Returns the
+// length, or -1 at end of input.
+int readline() {
+  int i;
+  int n;
+  char c;
+  i = 0;
+  n = read(0, &c, 1);
+  if (n <= 0) {
+    line[0] = 0;
+    return -1;
+  }
+  while (n > 0) {
+    if (c == '\n') {
+      break;
+    }
+    if (i < 127) {
+      line[i] = c;
+      i = i + 1;
+    }
+    n = read(0, &c, 1);
+  }
+  line[i] = 0;
+  return i;
+}
+
+// Split `line` in place into `args` (NUL-terminating each token). Returns argc.
+int tokenize() {
+  int i;
+  int argc;
+  i = 0;
+  argc = 0;
+  while (line[i] != 0) {
+    while (line[i] == ' ') {
+      i = i + 1;
+    }
+    if (line[i] == 0) {
+      break;
+    }
+    if (argc < 19) {
+      args[argc] = line + i;
+      argc = argc + 1;
+    }
+    while (line[i] != 0 && line[i] != ' ') {
+      i = i + 1;
+    }
+    if (line[i] == ' ') {
+      line[i] = 0;
+      i = i + 1;
+    }
+  }
+  args[argc] = 0;
+  return argc;
+}
+
+void run_single(char **av) {
+  int pid;
+  pid = fork();
+  if (pid == 0) {
+    exec_cmd(av);
+    write(2, "sh: exec failed\n", 16);
+    exit(1);
+  }
+  wait();
+}
+
+// cmd1 | cmd2: wire cmd1's stdout to cmd2's stdin through a pipe. The
+// close(fd)/dup() dance relies on dup() returning the lowest free descriptor.
+void run_pipe(char **av1, char **av2) {
+  int fds[2];
+  int pid1;
+  int pid2;
+  pipe(fds);
+  pid1 = fork();
+  if (pid1 == 0) {
+    close(1);
+    dup(fds[1]); // -> fd 1 (stdout to pipe write end)
+    close(fds[0]);
+    close(fds[1]);
+    exec_cmd(av1);
+    exit(1);
+  }
+  pid2 = fork();
+  if (pid2 == 0) {
+    close(0);
+    dup(fds[0]); // -> fd 0 (stdin from pipe read end)
+    close(fds[0]);
+    close(fds[1]);
+    exec_cmd(av2);
+    exit(1);
+  }
+  close(fds[0]);
+  close(fds[1]);
+  wait();
+  wait();
+}
+
+int main(int argc, char **argv) {
+  int n;
+  int i;
+  int nargs;
+  int pipe_at;
+  while (1) {
+    n = readline();
+    if (n < 0) {
+      break;
+    }
+    if (n == 0) {
+      continue;
+    }
+    nargs = tokenize();
+    if (nargs == 0) {
+      continue;
+    }
+    pipe_at = -1;
+    i = 0;
+    while (i < nargs) {
+      if (args[i][0] == '|' && args[i][1] == 0) {
+        pipe_at = i;
+      }
+      i = i + 1;
+    }
+    if (pipe_at < 0) {
+      run_single(args);
+    } else {
+      args[pipe_at] = 0;
+      run_pipe(args, args + pipe_at + 1);
+    }
+  }
+  return 0;
+}

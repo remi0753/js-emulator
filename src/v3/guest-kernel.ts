@@ -2,13 +2,13 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { assemble } from '../assembler.ts';
-import { FLAG, IDT_ENTRY_SIZE, IDT_PRESENT, SYSCALL_INT, TIMER_IRQ, TRAP } from '../isa.ts';
+import { ARG_SIZE, FLAG, IDT_ENTRY_SIZE, IDT_PRESENT, SYSCALL_INT, TIMER_IRQ, TRAP } from '../isa.ts';
 import { SYS } from '../v2/kernel/abi.ts';
 import { BOOT_MAGIC, encodeBootBlock, makeBootBlock } from '../v2/kernel/bootblock.ts';
 import { BlockDriver } from '../v2/kernel/disk.ts';
-import { DIRSIZ, Fs, FSMAGIC, NDIRECT, ROOTINO, T_FILE } from '../v2/kernel/fs.ts';
+import { DIRSIZ, Fs, FSMAGIC, NDIRECT, ROOTINO, T_DIR, T_FILE } from '../v2/kernel/fs.ts';
 import { compileC } from '../toolchain/c.ts';
-import { type KernelImage, linkKernelImage } from '../toolchain/linker.ts';
+import { type KernelImage, linkExecutable, linkKernelImage } from '../toolchain/linker.ts';
 import { MODE } from '../vm/custom32/cpu.ts';
 import { BlockDisk, SECTOR_SIZE } from '../vm/custom32/devices/disk.ts';
 import { PORT } from '../vm/custom32/platform.ts';
@@ -25,11 +25,12 @@ import { PortBus } from '../vm/custom32/ports.ts';
 
 type Defines = Record<string, number | string>;
 
-const kernelSource = (name: string): string =>
-  readFileSync(fileURLToPath(new URL(`./kernel/${name}`, import.meta.url)), 'utf8');
+const sourceFile = (subpath: string): string =>
+  readFileSync(fileURLToPath(new URL(`./${subpath}`, import.meta.url)), 'utf8');
 
-function loadKernelSource(name: string, defines: Defines): string {
-  let source = kernelSource(name);
+// Substitute every CFG_* token in a source file with its defined literal,
+// failing loudly on any leftover token (a typo or a missing define).
+function substituteDefines(source: string, defines: Defines, label: string): string {
   // Replace longest names first so no token is a prefix of another mid-edit.
   for (const key of Object.keys(defines).sort((a, b) => b.length - a.length)) {
     const value = defines[key]!;
@@ -37,9 +38,13 @@ function loadKernelSource(name: string, defines: Defines): string {
   }
   const leftover = /\bCFG_[A-Z0-9_]+\b/.exec(source);
   if (leftover) {
-    throw new Error(`guest kernel ${name}: unsubstituted config token ${leftover[0]}`);
+    throw new Error(`guest source ${label}: unsubstituted config token ${leftover[0]}`);
   }
   return source;
+}
+
+function loadKernelSource(name: string, defines: Defines): string {
+  return substituteDefines(sourceFile(`kernel/${name}`), defines, name);
 }
 
 // ---------------------------------------------------------------------------
@@ -578,6 +583,200 @@ export function buildPhase14KernelImage(): KernelImage {
   if (image.flat.length > PHASE14_KERNEL_LAYOUT.idt) {
     throw new Error(
       `Phase 14 kernel image overlaps reserved IDT/page-table region: image end 0x${image.flat.length.toString(16)}, IDT 0x${PHASE14_KERNEL_LAYOUT.idt.toString(16)}`,
+    );
+  }
+  return image;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 15: a compiled userland on the guest OS. The kernel gains executable
+// loading (header + multi-page image), argv passing, a unified file-descriptor
+// table, and pipe/dup; the userland (init, sh, echo, cat, ls) is compiled C
+// linked against a small libc and installed on the disk image. Sources:
+// ./kernel/phase15.c and ./userland/*.c.
+// ---------------------------------------------------------------------------
+
+const PHASE15_NFD = 16; // open files per process
+const PHASE15_NPIPE = 8; // concurrent pipes
+const PHASE15_PIPESZ = 512; // bytes buffered per pipe
+const PHASE15_MAXARG = 16; // argv entries copied by exec
+const PHASE15_ARGBUF = 512; // bytes of argv strings staged by exec
+const PHASE15_DINODE_SIZE = 64;
+const PHASE15_IPB = SECTOR_SIZE / PHASE15_DINODE_SIZE;
+
+// 'PX15' little-endian: the guest executable header magic (magic, entry, memSize).
+const PHASE15_EXEC_MAGIC = 0x35315850;
+
+// User virtual layout for compiled programs: the image loads contiguously from
+// USER_LOAD_BASE (text, then data+bss across as many pages as needed); a
+// separate stack page sits at the top of the user range and carries argv.
+export const PHASE15_KERNEL_LAYOUT = {
+  ...PHASE12_KERNEL_LAYOUT,
+  userLoadBase: 0x400000, // program image base (page-directory entry 1)
+  userStackPage: 0x7ff000, // hardware/argv stack page
+  userStackTop: 0x800000, // top of the user stack (exclusive)
+  userBase: 0x400000, // syscall buffer bound-check: low
+  userEnd: 0x800000, // syscall buffer bound-check: high (exclusive)
+} as const;
+
+export const PHASE15_MOTD = 'welcome to jscpu-os phase 15\n';
+
+// Syscall numbers shared between the libc and the kernel.
+function phase15SyscallDefines(): Defines {
+  return {
+    CFG_SYS_EXIT: SYS.EXIT,
+    CFG_SYS_WRITE: SYS.WRITE,
+    CFG_SYS_READ: SYS.READ,
+    CFG_SYS_YIELD: SYS.YIELD,
+    CFG_SYS_GETPID: SYS.GETPID,
+    CFG_SYS_FORK: SYS.FORK,
+    CFG_SYS_EXEC: SYS.EXEC,
+    CFG_SYS_WAIT: SYS.WAIT,
+    CFG_SYS_OPEN: SYS.OPEN,
+    CFG_SYS_CLOSE: SYS.CLOSE,
+    CFG_SYS_PIPE: SYS.PIPE,
+    CFG_SYS_DUP: SYS.DUP,
+  };
+}
+
+const PHASE15_LIBC_SOURCE = substituteDefines(
+  sourceFile('userland/libc.c'),
+  phase15SyscallDefines(),
+  'libc.c',
+);
+
+// Compile and link a userland C program against the libc into a flat guest
+// executable: a 12-byte header (magic, entry, memSize) followed by the text+data
+// image. The kernel maps memSize bytes of pages from USER_LOAD_BASE, copies the
+// image in, and the bss tail stays zero.
+function buildUserExecutable(name: string, programSource: string): Uint8Array {
+  const base = PHASE15_KERNEL_LAYOUT.userLoadBase;
+  const libc = compileC(PHASE15_LIBC_SOURCE, { start: 'none', moduleId: `${name}_libc` });
+  const prog = compileC(programSource, { start: 'user', moduleId: name, cStackSize: 4096 });
+  const linked = linkExecutable([prog, libc], { textOrigin: base });
+
+  const [textSeg, dataSeg] = linked.executable.segments;
+  if (!textSeg || !dataSeg) throw new Error(`buildUserExecutable: ${name} missing segments`);
+  const fileImageLen = dataSeg.vaddr - base + dataSeg.data.length;
+  const memSize = dataSeg.vaddr - base + dataSeg.memSize; // includes the bss tail
+  const image = new Uint8Array(fileImageLen);
+  image.set(textSeg.data, textSeg.vaddr - base);
+  image.set(dataSeg.data, dataSeg.vaddr - base);
+
+  const out = new Uint8Array(12 + fileImageLen);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, PHASE15_EXEC_MAGIC, true);
+  dv.setUint32(4, linked.entry, true);
+  dv.setUint32(8, memSize, true);
+  out.set(image, 12);
+  return out;
+}
+
+// Build a bootable Phase 15 disk image: a formatted FS with the compiled
+// userland installed under /bin, a seed /etc/motd, and a boot manifest naming
+// /bin/init.
+export function buildPhase15DiskImage(): Uint8Array {
+  const disk = BlockDisk.blank(1024); // 1024 * 512 = 512 KiB
+  const ports = new PortBus();
+  ports.register(PORT.DISK_DATA, 1, disk);
+  ports.register(PORT.DISK_POS, 1, disk);
+  ports.register(PORT.DISK_SECTORS, 1, disk);
+
+  const driver = new BlockDriver(ports);
+  const fs = new Fs(driver);
+  fs.mkfs();
+  fs.writeFile('/bin/init', buildUserExecutable('init', sourceFile('userland/init.c')));
+  fs.writeFile('/bin/sh', buildUserExecutable('sh', sourceFile('userland/sh.c')));
+  fs.writeFile('/bin/echo', buildUserExecutable('echo', sourceFile('userland/echo.c')));
+  fs.writeFile('/bin/cat', buildUserExecutable('cat', sourceFile('userland/cat.c')));
+  fs.writeFile('/bin/ls', buildUserExecutable('ls', sourceFile('userland/ls.c')));
+  fs.writeFile('/etc/motd', new TextEncoder().encode(PHASE15_MOTD));
+
+  driver.write(0, encodeBootBlock(makeBootBlock('/bin/init')));
+  return disk.data;
+}
+
+function phase15Defines(): Defines {
+  const L = PHASE15_KERNEL_LAYOUT;
+  return {
+    ...phase15SyscallDefines(),
+    CFG_CONSOLE_DATA: PORT.CONSOLE_DATA,
+    CFG_KBD_DATA: PORT.KBD_DATA,
+    CFG_DISK_POS: PORT.DISK_POS,
+    CFG_DISK_DATA: PORT.DISK_DATA,
+    CFG_PTE_KERNEL: PTE_KERNEL,
+    CFG_PTE_USER: PTE_USER,
+    CFG_MAX_PROC: PHASE12_MAX_PROC,
+    CFG_PROC_REG_COUNT: PHASE12_MAX_PROC * 8,
+    CFG_NFD: PHASE15_NFD,
+    CFG_FD_TABLE_LEN: PHASE12_MAX_PROC * PHASE15_NFD,
+    CFG_NPIPE: PHASE15_NPIPE,
+    CFG_PIPESZ: PHASE15_PIPESZ,
+    CFG_PIPE_BUF_LEN: PHASE15_NPIPE * PHASE15_PIPESZ,
+    CFG_MAXARG: PHASE15_MAXARG,
+    CFG_ARGBUF_LEN: PHASE15_ARGBUF,
+    CFG_FRAME_POOL_BASE: L.framePoolBase,
+    CFG_FRAME_POOL_END: L.framePoolEnd,
+    CFG_KERNEL_PT: L.kernelPageTable,
+    CFG_USER_LOAD_BASE: L.userLoadBase,
+    CFG_USER_STACK_PAGE: L.userStackPage,
+    CFG_USER_STACK_TOP: L.userStackTop,
+    CFG_USER_BASE: L.userBase,
+    CFG_USER_END: L.userEnd,
+    CFG_IDT: L.idt,
+    CFG_IDT_ENTRY_SIZE: IDT_ENTRY_SIZE,
+    CFG_IDT_PRESENT: IDT_PRESENT,
+    CFG_TIMER_VECTOR: TRAP.IRQ_BASE + TIMER_IRQ,
+    CFG_PAGEFAULT_VECTOR: TRAP.PAGEFAULT,
+    CFG_SYSCALL_VECTOR: SYSCALL_INT,
+    CFG_SYSCALL_INSTR_SIZE: 1 + ARG_SIZE.imm, // INT imm: opcode + 4-byte immediate
+    CFG_KSTACK_TOP: L.kstackTop,
+    CFG_TIMER_PERIOD: L.timerPeriod,
+    CFG_FLAG_IF: FLAG.IF,
+    CFG_MODE_USER: MODE.USER,
+    CFG_ST_UNUSED: PHASE13_STATE.unused,
+    CFG_ST_RUNNABLE: PHASE13_STATE.runnable,
+    CFG_ST_ZOMBIE: PHASE13_STATE.zombie,
+    CFG_ST_BLOCKED: PHASE13_STATE.blocked,
+    CFG_ST_PIPEWAIT: PHASE15_PIPEWAIT,
+    CFG_FT_NONE: PHASE15_FT.none,
+    CFG_FT_CONS: PHASE15_FT.console,
+    CFG_FT_KBD: PHASE15_FT.keyboard,
+    CFG_FT_FILE: PHASE15_FT.file,
+    CFG_FT_PIPE: PHASE15_FT.pipe,
+    CFG_NBUF: PHASE14_NBUF,
+    CFG_BUF_DATA_LEN: PHASE14_NBUF * SECTOR_SIZE,
+    CFG_INITPATH_LEN: 64,
+    CFG_FS_MAGIC: FSMAGIC,
+    CFG_BOOT_MAGIC: BOOT_MAGIC,
+    CFG_EXEC_MAGIC: PHASE15_EXEC_MAGIC,
+    CFG_IPB: PHASE15_IPB,
+    CFG_DINODE_SIZE: PHASE15_DINODE_SIZE,
+    CFG_NDIRECT: NDIRECT,
+    CFG_DIRSIZ: DIRSIZ,
+    CFG_ROOTINO: ROOTINO,
+    CFG_T_FILE: T_FILE,
+    CFG_T_DIR: T_DIR,
+  };
+}
+
+// Process states reuse Phase 13's plus a pipe-wait state; fd types are local.
+const PHASE15_PIPEWAIT = 4;
+const PHASE15_FT = { none: 0, console: 1, keyboard: 2, file: 3, pipe: 4 } as const;
+
+export const PHASE15_GUEST_KERNEL_SOURCE = loadKernelSource('phase15.c', phase15Defines());
+
+export function buildPhase15KernelImage(): KernelImage {
+  const image = linkKernelImage([
+    compileC(PHASE15_GUEST_KERNEL_SOURCE, {
+      start: 'kernel',
+      cStackSize: 8192,
+      moduleId: 'phase15',
+    }),
+  ]);
+  if (image.flat.length > PHASE15_KERNEL_LAYOUT.idt) {
+    throw new Error(
+      `Phase 15 kernel image overlaps reserved IDT/page-table region: image end 0x${image.flat.length.toString(16)}, IDT 0x${PHASE15_KERNEL_LAYOUT.idt.toString(16)}`,
     );
   }
   return image;

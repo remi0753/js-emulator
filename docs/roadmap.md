@@ -327,16 +327,32 @@ subsystems over one at a time.
   `/bin/hello` (also loaded from the FS) and waits for it — TypeScript only
   models the disk device and delivers traps.
 
-- **Phase 15** ⬜ rebuild userland for the guest OS.
+- **Phase 15** ✅ rebuild userland for the guest OS.
 
-  Replace hand-written assembly programs with compiled userland where practical:
-  libc-style syscall stubs, `init`, shell, `echo`, `cat`, `ls`, and pipe-aware
-  command execution. Preserve the assembly programs as low-level regression
-  tests, but make normal userland part of the disk-image build.
+  Replaced the hand-written assembly userland with compiled C. A small **libc**
+  (`src/v3/userland/libc.c`) provides syscall stubs (`write`/`read`/`open`/
+  `close`/`fork`/`exec`/`wait`/`exit`/`getpid`/`pipe`/`dup`) over the `INT 0x80`
+  ABI, and `init`, `sh`, `echo`, `cat`, and `ls` are compiled C linked against
+  it. To support a real userland the Phase 15 guest kernel (source in
+  `src/v3/kernel/phase15.c`) adds: **executable loading** from a flat header
+  (magic / entry / memSize) plus a multi-page text+data+bss image (not a single
+  code page); **argv passing** (`exec(path, argv)` copies the argument strings
+  and `argv[]` array onto the new process's user stack and enters
+  `main(argc, argv)`); a **unified file-descriptor table** where each fd is the
+  console, the keyboard, an open file, or a pipe end; and **`pipe`/`dup`** with a
+  blocking pipe (readers block and re-run the syscall when woken, with
+  reference-counted ends for EOF). The shell forks/execs commands (searching
+  `/bin`), waits for them, and wires `cmd | cmd` with `pipe` + the
+  `close`/`dup`-to-lowest-fd idiom. The userland is compiled and installed onto
+  the disk image at build time; the v2 assembly programs remain as low-level
+  regression tests (`test/userland.test.ts`). Demo `node demo/v3-phase15.ts`;
+  tests in `test/guest-phase15.test.ts`.
 
-  Done when a fresh disk image contains compiled `/bin/init`, `/bin/sh`, and
-  utilities, and the shell can run `ls /`, `cat file`, `echo hi`, and
-  `cat file | cat`.
+  Done: a freshly built disk image contains compiled `/bin/init`, `/bin/sh`,
+  `/bin/echo`, `/bin/cat`, and `/bin/ls`; booting it reaches the shell, which
+  runs `ls /`, `cat /etc/motd`, `echo hi`, and the pipeline
+  `cat /etc/motd | cat` — all compiled C executing on the guest with no
+  TypeScript userland.
 
 - **Phase 16** ⬜ expand devices behind stable guest drivers.
 
