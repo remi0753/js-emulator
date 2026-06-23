@@ -300,16 +300,32 @@ subsystems over one at a time.
   prints — `fork`, `exec`, `wait`, and `print` all run with no TypeScript
   syscall dispatch (TypeScript only delivers the trap).
 
-- **Phase 14** ⬜ move storage and the filesystem into the guest.
+- **Phase 14** ✅ move storage and the filesystem into the guest.
 
-  Keep the existing block-disk device protocol initially. Port the block driver
-  and filesystem code into the guest kernel, including path lookup, inode/block
-  allocation, file descriptors, and executable loading. Add a buffer cache before
-  adding more complex devices; it will be needed for performance and correctness
-  once concurrent processes access the disk.
+  Extended the Phase 13 guest kernel (source in `src/v3/kernel/phase14.c`, built
+  via `src/v3/guest-kernel.ts`) with a read path for the on-disk filesystem,
+  handled entirely in guest code over the unchanged block-disk port protocol. A
+  guest **PIO block driver** reads 512-byte blocks through the disk ports; a
+  small **FIFO buffer cache** sits in front of it. On top of that the kernel
+  ports the xv6-flavored FS read path: superblock **mount**, **inode** reads,
+  **block mapping** (`bmap`: direct + single-indirect), file reads (`readi`),
+  **directory lookup**, and absolute **path resolution** (`namei`). Processes
+  get **per-process file descriptors** with `open`/`read`/`close` syscalls
+  (inherited across `fork`, preserved across `exec`), extending the Phase 13
+  ABI. **Executable loading** comes from the filesystem: both `exec` and the
+  boot path resolve a path, read the file, and load it into a fresh address
+  space. At boot the kernel mounts the disk, reads the boot block's manifest to
+  learn which program is init (honoring the Phase 9 handoff), loads that file,
+  and runs it — no embedded user image. The Phase 14 disk image is built with
+  the existing `Fs`/`BlockDriver` against a `BlockDisk`, installing flat
+  assembled `/bin/init` and `/bin/hello` plus a seed `/etc/motd`. Demo
+  `node demo/v3-phase14.ts`; tests in `test/guest-phase14.test.ts`.
 
-  Done when the guest kernel mounts the disk image, loads `/bin/init` from the
-  filesystem, and `exec`s it from guest code.
+  Done: the guest kernel mounts the disk image, loads `/bin/init` from the
+  filesystem and `exec`s it from guest code; init opens, reads, and prints
+  `/etc/motd` through file descriptors, then forks a child that `exec`s
+  `/bin/hello` (also loaded from the FS) and waits for it — TypeScript only
+  models the disk device and delivers traps.
 
 - **Phase 15** ⬜ rebuild userland for the guest OS.
 

@@ -26,7 +26,7 @@ const BPB = BSIZE * 8; // bits (blocks) per bitmap block
 export const DIRSIZ = 14;
 const DIRENT_SIZE = 16; // u16 inum + 14-byte name
 
-const FSMAGIC = 0x10203040;
+export const FSMAGIC = 0x10203040;
 
 // Inode types.
 export const T_DIR = 1;

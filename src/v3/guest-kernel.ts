@@ -4,10 +4,15 @@ import { fileURLToPath } from 'node:url';
 import { assemble } from '../assembler.ts';
 import { FLAG, IDT_ENTRY_SIZE, IDT_PRESENT, SYSCALL_INT, TIMER_IRQ, TRAP } from '../isa.ts';
 import { SYS } from '../v2/kernel/abi.ts';
+import { BOOT_MAGIC, encodeBootBlock, makeBootBlock } from '../v2/kernel/bootblock.ts';
+import { BlockDriver } from '../v2/kernel/disk.ts';
+import { DIRSIZ, Fs, FSMAGIC, NDIRECT, ROOTINO, T_FILE } from '../v2/kernel/fs.ts';
 import { compileC } from '../toolchain/c.ts';
 import { type KernelImage, linkKernelImage } from '../toolchain/linker.ts';
 import { MODE } from '../vm/custom32/cpu.ts';
+import { BlockDisk, SECTOR_SIZE } from '../vm/custom32/devices/disk.ts';
 import { PORT } from '../vm/custom32/platform.ts';
+import { PortBus } from '../vm/custom32/ports.ts';
 
 // The guest kernels are written in real source files under ./kernel/*.c. They
 // stay a single source of truth for the memory layout and ISA constants by
@@ -354,6 +359,225 @@ export function buildPhase13KernelImage(): KernelImage {
   if (image.flat.length > PHASE13_KERNEL_LAYOUT.idt) {
     throw new Error(
       `Phase 13 kernel image overlaps reserved IDT/page-table region: image end 0x${image.flat.length.toString(16)}, IDT 0x${PHASE13_KERNEL_LAYOUT.idt.toString(16)}`,
+    );
+  }
+  return image;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 14: storage + filesystem inside the guest. The kernel drives the block
+// disk over the port bus, caches blocks, mounts the on-disk FS, resolves paths,
+// reads files, exposes per-process file descriptors (open/read/close), and
+// loads executables from the filesystem -- including init at boot. TypeScript
+// only models the disk device and delivers traps. Source: ./kernel/phase14.c.
+// ---------------------------------------------------------------------------
+
+const PHASE14_NBUF = 16; // buffer-cache slots
+const PHASE14_NFD = 16; // open files per process
+
+// On-disk dinode size and inodes-per-block mirror the private layout in
+// src/v2/kernel/fs.ts (DINODE_SIZE / IPB); the FS block size is the sector size.
+const PHASE14_DINODE_SIZE = 64;
+const PHASE14_IPB = SECTOR_SIZE / PHASE14_DINODE_SIZE;
+
+export const PHASE14_KERNEL_LAYOUT = PHASE12_KERNEL_LAYOUT;
+
+// Files written into the Phase 14 disk image. init reads and prints /etc/motd,
+// then forks a child that execs /bin/hello; /bin/hello prints and exits.
+const PHASE14_INIT_PATH = '/bin/init';
+export const PHASE14_MOTD = 'welcome to jscpu-os phase 14\n';
+const PHASE14_HELLO_MSG = 'hello from /bin/hello\n';
+const PHASE14_DONE_MSG = 'init: done\n';
+export const PHASE14_HELLO_EXIT_CODE = 0;
+
+// init (program at /bin/init): open + read + print /etc/motd through file
+// descriptors, then fork a child that execs /bin/hello, wait for it, and exit.
+// The 64-byte read scratch lives in the user data page (CFG_USER_DATA).
+const PHASE14_INIT_PROG = `
+  MOV R0, ${SYS.OPEN}
+  MOV R1, path_motd
+  MOV R2, 0
+  INT ${SYSCALL_INT}
+  MOVR R6, R0              ; R6 = fd
+mread:
+  MOV R0, ${SYS.READ}
+  MOVR R1, R6
+  MOV R2, ${PHASE12_KERNEL_LAYOUT.userData}
+  MOV R3, 64
+  INT ${SYSCALL_INT}
+  MOV R7, 0
+  CMP R0, R7
+  JZ mclose
+  MOVR R4, R0             ; R4 = bytes read (WRITE clobbers R0)
+  MOV R0, ${SYS.WRITE}
+  MOV R1, 1
+  MOV R2, ${PHASE12_KERNEL_LAYOUT.userData}
+  MOVR R3, R4
+  INT ${SYSCALL_INT}
+  JMP mread
+mclose:
+  MOV R0, ${SYS.CLOSE}
+  MOVR R1, R6
+  INT ${SYSCALL_INT}
+  MOV R0, ${SYS.FORK}
+  INT ${SYSCALL_INT}
+  MOV R7, 0
+  CMP R0, R7
+  JZ do_child
+parent_branch:
+  MOV R0, ${SYS.WAIT}
+  MOV R1, 0
+  INT ${SYSCALL_INT}
+  MOV R0, ${SYS.WRITE}
+  MOV R1, 1
+  MOV R2, m_done
+  MOV R3, ${PHASE14_DONE_MSG.length}
+  INT ${SYSCALL_INT}
+  MOV R0, ${SYS.EXIT}
+  MOV R1, 0
+  INT ${SYSCALL_INT}
+do_child:
+  MOV R0, ${SYS.EXEC}
+  MOV R1, path_hello
+  INT ${SYSCALL_INT}
+  MOV R0, ${SYS.EXIT}
+  MOV R1, 1
+  INT ${SYSCALL_INT}
+path_motd:
+  .string "/etc/motd"
+path_hello:
+  .string "/bin/hello"
+m_done:
+  .string "${PHASE14_DONE_MSG.replace(/\n/g, '\\n')}"
+`;
+
+// /bin/hello: print a line and exit cleanly.
+const PHASE14_HELLO_PROG = `
+  MOV R0, ${SYS.WRITE}
+  MOV R1, 1
+  MOV R2, hmsg
+  MOV R3, ${PHASE14_HELLO_MSG.length}
+  INT ${SYSCALL_INT}
+  MOV R0, ${SYS.EXIT}
+  MOV R1, ${PHASE14_HELLO_EXIT_CODE}
+  INT ${SYSCALL_INT}
+hmsg:
+  .string "${PHASE14_HELLO_MSG.replace(/\n/g, '\\n')}"
+`;
+
+export const PHASE14_EXPECTED_OUTPUT =
+  'phase14: boot\n' +
+  `phase14: exec ${PHASE14_INIT_PATH}\n` +
+  PHASE14_MOTD +
+  PHASE14_HELLO_MSG +
+  PHASE14_DONE_MSG +
+  'phase14: all processes exited\n';
+
+function phase14Assemble(name: string, source: string): Uint8Array {
+  const { bytes } = assemble(source, PHASE14_KERNEL_LAYOUT.userCode);
+  if (bytes.length > PAGE_BYTES) {
+    throw new Error(
+      `Phase 14 program ${name} is ${bytes.length} bytes, but the loader maps one ${PAGE_BYTES}-byte code page`,
+    );
+  }
+  return bytes;
+}
+
+// Build a bootable Phase 14 disk image with a formatted FS, the compiled-down
+// userland (flat assembled programs), a seed file, and a boot manifest. The
+// guest kernel reads this image back through the disk ports.
+export function buildPhase14DiskImage(): Uint8Array {
+  const disk = BlockDisk.blank(512); // 512 * 512 = 256 KiB
+  const ports = new PortBus();
+  ports.register(PORT.DISK_DATA, 1, disk);
+  ports.register(PORT.DISK_POS, 1, disk);
+  ports.register(PORT.DISK_SECTORS, 1, disk);
+
+  const driver = new BlockDriver(ports);
+  const fs = new Fs(driver);
+  fs.mkfs();
+  fs.writeFile(PHASE14_INIT_PATH, phase14Assemble('init', PHASE14_INIT_PROG));
+  fs.writeFile('/bin/hello', phase14Assemble('hello', PHASE14_HELLO_PROG));
+  fs.writeFile('/etc/motd', new TextEncoder().encode(PHASE14_MOTD));
+
+  // The FS reserves sector 0; write the boot manifest there last (block 0).
+  driver.write(0, encodeBootBlock(makeBootBlock(PHASE14_INIT_PATH)));
+  return disk.data;
+}
+
+function phase14Defines(): Defines {
+  const L = PHASE14_KERNEL_LAYOUT;
+  return {
+    CFG_CONSOLE_DATA: PORT.CONSOLE_DATA,
+    CFG_KBD_DATA: PORT.KBD_DATA,
+    CFG_DISK_POS: PORT.DISK_POS,
+    CFG_DISK_DATA: PORT.DISK_DATA,
+    CFG_PTE_KERNEL: PTE_KERNEL,
+    CFG_PTE_USER: PTE_USER,
+    CFG_MAX_PROC: PHASE12_MAX_PROC,
+    CFG_PROC_REG_COUNT: PHASE12_MAX_PROC * 8,
+    CFG_NFD: PHASE14_NFD,
+    CFG_FD_TABLE_LEN: PHASE12_MAX_PROC * PHASE14_NFD,
+    CFG_FRAME_POOL_BASE: L.framePoolBase,
+    CFG_FRAME_POOL_END: L.framePoolEnd,
+    CFG_KERNEL_PT: L.kernelPageTable,
+    CFG_USER_CODE: L.userCode,
+    CFG_USER_DATA: L.userData,
+    CFG_USER_STACK_PAGE: L.userStackPage,
+    CFG_USER_STACK_TOP: L.userStackTop,
+    CFG_USER_BASE: L.userCode,
+    CFG_USER_END: L.userStackTop,
+    CFG_IDT: L.idt,
+    CFG_IDT_ENTRY_SIZE: IDT_ENTRY_SIZE,
+    CFG_IDT_PRESENT: IDT_PRESENT,
+    CFG_TIMER_VECTOR: TRAP.IRQ_BASE + TIMER_IRQ,
+    CFG_PAGEFAULT_VECTOR: TRAP.PAGEFAULT,
+    CFG_SYSCALL_VECTOR: SYSCALL_INT,
+    CFG_KSTACK_TOP: L.kstackTop,
+    CFG_TIMER_PERIOD: L.timerPeriod,
+    CFG_FLAG_IF: FLAG.IF,
+    CFG_MODE_USER: MODE.USER,
+    CFG_ST_UNUSED: PHASE13_STATE.unused,
+    CFG_ST_RUNNABLE: PHASE13_STATE.runnable,
+    CFG_ST_ZOMBIE: PHASE13_STATE.zombie,
+    CFG_ST_BLOCKED: PHASE13_STATE.blocked,
+    CFG_SYS_EXIT: SYS.EXIT,
+    CFG_SYS_WRITE: SYS.WRITE,
+    CFG_SYS_READ: SYS.READ,
+    CFG_SYS_YIELD: SYS.YIELD,
+    CFG_SYS_GETPID: SYS.GETPID,
+    CFG_SYS_FORK: SYS.FORK,
+    CFG_SYS_EXEC: SYS.EXEC,
+    CFG_SYS_WAIT: SYS.WAIT,
+    CFG_SYS_OPEN: SYS.OPEN,
+    CFG_SYS_CLOSE: SYS.CLOSE,
+    CFG_NBUF: PHASE14_NBUF,
+    CFG_BUF_DATA_LEN: PHASE14_NBUF * SECTOR_SIZE,
+    CFG_INITPATH_LEN: 64,
+    CFG_FS_MAGIC: FSMAGIC,
+    CFG_BOOT_MAGIC: BOOT_MAGIC,
+    CFG_IPB: PHASE14_IPB,
+    CFG_DINODE_SIZE: PHASE14_DINODE_SIZE,
+    CFG_NDIRECT: NDIRECT,
+    CFG_DIRSIZ: DIRSIZ,
+    CFG_ROOTINO: ROOTINO,
+    CFG_T_FILE: T_FILE,
+  };
+}
+
+export const PHASE14_GUEST_KERNEL_SOURCE = loadKernelSource('phase14.c', phase14Defines());
+
+export function buildPhase14KernelImage(): KernelImage {
+  const image = linkKernelImage([
+    compileC(PHASE14_GUEST_KERNEL_SOURCE, {
+      start: 'kernel',
+      cStackSize: 8192,
+      moduleId: 'phase14',
+    }),
+  ]);
+  if (image.flat.length > PHASE14_KERNEL_LAYOUT.idt) {
+    throw new Error(
+      `Phase 14 kernel image overlaps reserved IDT/page-table region: image end 0x${image.flat.length.toString(16)}, IDT 0x${PHASE14_KERNEL_LAYOUT.idt.toString(16)}`,
     );
   }
   return image;
