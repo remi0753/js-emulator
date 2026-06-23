@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { assemble } from '../assembler.ts';
-import { FLAG, IDT_ENTRY_SIZE, IDT_PRESENT, TIMER_IRQ, TRAP } from '../isa.ts';
+import { FLAG, IDT_ENTRY_SIZE, IDT_PRESENT, SYSCALL_INT, TIMER_IRQ, TRAP } from '../isa.ts';
+import { SYS } from '../v2/kernel/abi.ts';
 import { compileC } from '../toolchain/c.ts';
 import { type KernelImage, linkKernelImage } from '../toolchain/linker.ts';
 import { MODE } from '../vm/custom32/cpu.ts';
@@ -184,6 +185,175 @@ export function buildPhase12KernelImage(): KernelImage {
   if (image.flat.length > PHASE12_KERNEL_LAYOUT.idt) {
     throw new Error(
       `Phase 12 kernel image overlaps reserved IDT/page-table region: image end 0x${image.flat.length.toString(16)}, IDT 0x${PHASE12_KERNEL_LAYOUT.idt.toString(16)}`,
+    );
+  }
+  return image;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 13: syscalls + process lifecycle inside the guest. The kernel handles
+// the INT 0x80 syscall ABI (exit/write/read/yield/getpid/fork/exec/wait) and a
+// runnable/zombie/blocked process lifecycle entirely in guest code; TypeScript
+// only delivers the trap. Source: ./kernel/phase13.c.
+// ---------------------------------------------------------------------------
+
+// Process states (kept here so the kernel source reads with named CFG_ST_*
+// tokens rather than bare integers).
+const PHASE13_STATE = {
+  unused: 0,
+  runnable: 1,
+  zombie: 2,
+  blocked: 3,
+} as const;
+
+// The Phase 13 layout reuses Phase 12's; only the kbd port and user-range
+// bounds (for safe copies out of user memory) are added.
+export const PHASE13_KERNEL_LAYOUT = PHASE12_KERNEL_LAYOUT;
+
+// Replace a JS newline with the assembler's `\n` escape so a message stays on a
+// single .string line (assemble() splits the source on real newlines first).
+const asmString = (s: string): string => s.replace(/\n/g, '\\n');
+
+// init (program 0): print a banner, fork a child, wait for it, then print and
+// exit. The child branch execs program 1. Exercises getpid/write/fork/wait/
+// exec/exit. fork's return is tested with CMP/JZ because IRET restores the
+// user's flags rather than setting them from R0.
+const PHASE13_INIT_MSG = 'init: start\n';
+const PHASE13_DONE_MSG = 'init: child exited\n';
+const PHASE13_PROG0 = `
+  MOV R0, ${SYS.GETPID}
+  INT ${SYSCALL_INT}
+  MOV R0, ${SYS.WRITE}
+  MOV R1, 1
+  MOV R2, m_start
+  MOV R3, ${PHASE13_INIT_MSG.length}
+  INT ${SYSCALL_INT}
+  MOV R0, ${SYS.FORK}
+  INT ${SYSCALL_INT}
+  MOV R7, 0
+  CMP R0, R7
+  JZ child_branch
+parent_branch:
+  MOV R0, ${SYS.WAIT}
+  MOV R1, 0
+  INT ${SYSCALL_INT}
+  MOV R0, ${SYS.WRITE}
+  MOV R1, 1
+  MOV R2, m_done
+  MOV R3, ${PHASE13_DONE_MSG.length}
+  INT ${SYSCALL_INT}
+  MOV R0, ${SYS.EXIT}
+  MOV R1, 0
+  INT ${SYSCALL_INT}
+child_branch:
+  MOV R0, ${SYS.EXEC}
+  MOV R1, 1
+  INT ${SYSCALL_INT}
+  MOV R0, ${SYS.EXIT}
+  MOV R1, 1
+  INT ${SYSCALL_INT}
+m_start:
+  .string "${asmString(PHASE13_INIT_MSG)}"
+m_done:
+  .string "${asmString(PHASE13_DONE_MSG)}"
+`;
+
+// child (program 1): print a line and exit with a distinctive code.
+export const PHASE13_CHILD_EXIT_CODE = 7;
+const PHASE13_CHILD_MSG = 'child: hello\n';
+const PHASE13_PROG1 = `
+  MOV R0, ${SYS.WRITE}
+  MOV R1, 1
+  MOV R2, c_msg
+  MOV R3, ${PHASE13_CHILD_MSG.length}
+  INT ${SYSCALL_INT}
+  MOV R0, ${SYS.EXIT}
+  MOV R1, ${PHASE13_CHILD_EXIT_CODE}
+  INT ${SYSCALL_INT}
+c_msg:
+  .string "${asmString(PHASE13_CHILD_MSG)}"
+`;
+
+export const PHASE13_EXPECTED_OUTPUT =
+  'phase13: boot\n' +
+  'phase13: enter user\n' +
+  PHASE13_INIT_MSG +
+  PHASE13_CHILD_MSG +
+  PHASE13_DONE_MSG +
+  'phase13: all processes exited\n';
+
+function phase13UserProgram(name: string, source: string): { len: number; bytes: string } {
+  const { bytes } = assemble(source, PHASE13_KERNEL_LAYOUT.userCode);
+  if (bytes.length > PAGE_BYTES) {
+    throw new Error(
+      `Phase 13 program ${name} is ${bytes.length} bytes, but the loader maps one ${PAGE_BYTES}-byte code page`,
+    );
+  }
+  return { len: bytes.length, bytes: `{${Array.from(bytes).join(', ')}}` };
+}
+
+function phase13Defines(): Defines {
+  const L = PHASE13_KERNEL_LAYOUT;
+  const prog0 = phase13UserProgram('init', PHASE13_PROG0);
+  const prog1 = phase13UserProgram('child', PHASE13_PROG1);
+  return {
+    CFG_CONSOLE_DATA: PORT.CONSOLE_DATA,
+    CFG_KBD_DATA: PORT.KBD_DATA,
+    CFG_PTE_KERNEL: PTE_KERNEL,
+    CFG_PTE_USER: PTE_USER,
+    CFG_MAX_PROC: PHASE12_MAX_PROC,
+    CFG_PROC_REG_COUNT: PHASE12_MAX_PROC * 8,
+    CFG_FRAME_POOL_BASE: L.framePoolBase,
+    CFG_FRAME_POOL_END: L.framePoolEnd,
+    CFG_KERNEL_PT: L.kernelPageTable,
+    CFG_USER_CODE: L.userCode,
+    CFG_USER_DATA: L.userData,
+    CFG_USER_STACK_PAGE: L.userStackPage,
+    CFG_USER_STACK_TOP: L.userStackTop,
+    CFG_USER_BASE: L.userCode,
+    CFG_USER_END: L.userStackTop,
+    CFG_IDT: L.idt,
+    CFG_IDT_ENTRY_SIZE: IDT_ENTRY_SIZE,
+    CFG_IDT_PRESENT: IDT_PRESENT,
+    CFG_TIMER_VECTOR: TRAP.IRQ_BASE + TIMER_IRQ,
+    CFG_PAGEFAULT_VECTOR: TRAP.PAGEFAULT,
+    CFG_SYSCALL_VECTOR: SYSCALL_INT,
+    CFG_KSTACK_TOP: L.kstackTop,
+    CFG_TIMER_PERIOD: L.timerPeriod,
+    CFG_FLAG_IF: FLAG.IF,
+    CFG_MODE_USER: MODE.USER,
+    CFG_ST_UNUSED: PHASE13_STATE.unused,
+    CFG_ST_RUNNABLE: PHASE13_STATE.runnable,
+    CFG_ST_ZOMBIE: PHASE13_STATE.zombie,
+    CFG_ST_BLOCKED: PHASE13_STATE.blocked,
+    CFG_SYS_EXIT: SYS.EXIT,
+    CFG_SYS_WRITE: SYS.WRITE,
+    CFG_SYS_READ: SYS.READ,
+    CFG_SYS_YIELD: SYS.YIELD,
+    CFG_SYS_GETPID: SYS.GETPID,
+    CFG_SYS_FORK: SYS.FORK,
+    CFG_SYS_EXEC: SYS.EXEC,
+    CFG_SYS_WAIT: SYS.WAIT,
+    CFG_PROG0_LEN: prog0.len,
+    CFG_PROG0_BYTES: prog0.bytes,
+    CFG_PROG1_LEN: prog1.len,
+    CFG_PROG1_BYTES: prog1.bytes,
+  };
+}
+
+export const PHASE13_GUEST_KERNEL_SOURCE = loadKernelSource('phase13.c', phase13Defines());
+
+export function buildPhase13KernelImage(): KernelImage {
+  const image = linkKernelImage([
+    compileC(PHASE13_GUEST_KERNEL_SOURCE, {
+      start: 'kernel',
+      cStackSize: 8192,
+      moduleId: 'phase13',
+    }),
+  ]);
+  if (image.flat.length > PHASE13_KERNEL_LAYOUT.idt) {
+    throw new Error(
+      `Phase 13 kernel image overlaps reserved IDT/page-table region: image end 0x${image.flat.length.toString(16)}, IDT 0x${PHASE13_KERNEL_LAYOUT.idt.toString(16)}`,
     );
   }
   return image;

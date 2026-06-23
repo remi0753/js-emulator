@@ -274,15 +274,31 @@ subsystems over one at a time.
   guest-handled timer interrupt; TypeScript only ever reads opaque physical
   memory.
 
-- **Phase 13** ⬜ move syscalls and process lifecycle into the guest.
+- **Phase 13** ✅ move syscalls and process lifecycle into the guest.
 
-  Implement the syscall ABI in the guest kernel: `exit`, `write`, `read`,
-  `yield`, `getpid`, `fork`, `exec`, `wait`, and later `pipe`/`dup`. The CPU
-  should only deliver `INT 0x80`; the guest kernel must decode registers, copy
-  user memory safely, update process state, and return with `IRET`.
+  Extended the Phase 12 guest kernel (source in `src/v3/kernel/phase13.c`, built
+  via `src/v3/guest-kernel.ts`) with the full syscall ABI handled entirely in
+  guest code: `exit`, `write`, `read`, `yield`, `getpid`, `fork`, `exec`, and
+  `wait`. The CPU only ever delivers `INT 0x80` (a new IDT vector alongside the
+  timer and page-fault gates); the guest **syscall handler** stub spills the
+  caller's registers/trap frame into the current PCB, and a C dispatcher decodes
+  `R0` (number) / `R1`–`R3` (args), reads user memory safely (bound-checked to
+  the user range, read directly because the caller's page directory is still
+  live), updates process state, sets the `R0` return value, and `IRET`s. A real
+  process **lifecycle** (runnable / zombie / blocked) backs `exit`/`wait`:
+  `exit` turns a process into a zombie and wakes a blocked parent; `wait` reaps
+  a zombie child or blocks until one exits; `fork` returns 0 to the child and
+  the child pid to the parent; `exec` rebuilds the caller's address space from a
+  second embedded image. The scheduler round-robins only runnable processes and
+  halts the VM once all have exited. Address-space frees (exec's old image, a
+  reaped child) happen only after switching `ptbr`, so the kernel never frees
+  the page directory it is translating through. Demo `node demo/v3-phase13.ts`;
+  tests in `test/guest-phase13.test.ts`.
 
-  Done when a guest user program can `fork`, `exec`, `wait`, and print without
-  any TypeScript syscall dispatch.
+  Done: a guest user program (`init`) forks a child, the child `exec`s a second
+  image and prints through the `write` syscall, and `init` `wait`s for it and
+  prints — `fork`, `exec`, `wait`, and `print` all run with no TypeScript
+  syscall dispatch (TypeScript only delivers the trap).
 
 - **Phase 14** ⬜ move storage and the filesystem into the guest.
 
