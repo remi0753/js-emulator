@@ -228,8 +228,9 @@ subsystems over one at a time.
   not need processes yet. The purpose is to prove that the VM can run privileged
   guest code that owns the trap path.
 
-  Added a compiled guest kernel in `src/v3/guest-kernel.ts`, built by the Phase 10
-  toolchain and run directly on the hardware-only `Machine`. The kernel writes to
+  Added a compiled guest kernel (source in `src/v3/kernel/phase11.c`, built via
+  `src/v3/guest-kernel.ts`) using the Phase 10 toolchain and run directly on the
+  hardware-only `Machine`. The kernel writes to
   the serial console, has a `panic` that reports and halts, installs its own IDT
   (every vector points at a default panic handler before the timer/page-fault
   gates overwrite theirs, so it owns the whole trap path), builds an
@@ -246,9 +247,12 @@ subsystems over one at a time.
 
 - **Phase 12** ✅ move memory management and scheduling into the guest.
 
-  Extended the Phase 11 guest kernel (`src/v3/guest-kernel.ts`,
-  `buildPhase12KernelImage`) with a memory manager and scheduler that run
-  entirely in guest code. A free-list **PMM** (frames threaded through their own
+  Extended the Phase 11 guest kernel (source in `src/v3/kernel/phase12.c`, built
+  via `src/v3/guest-kernel.ts`) with a memory manager and scheduler that run
+  entirely in guest code. The guest kernels now live in real `.c` source files;
+  `guest-kernel.ts` keeps the memory-layout/ISA constants as the single source
+  of truth and substitutes them into the `CFG_*` tokens in those files at build
+  time (a tiny no-macro/no-include preprocessor). A free-list **PMM** (frames threaded through their own
   free pages) replaces the bump allocator. The **VMM** builds a per-process page
   directory whose entry 0 shares one identity-mapped kernel page table (so kernel
   code/data/stacks/frame-pool keep their addresses in every address space) and
