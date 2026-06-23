@@ -354,16 +354,30 @@ subsystems over one at a time.
   `cat /etc/motd | cat` — all compiled C executing on the guest with no
   TypeScript userland.
 
-- **Phase 16** ⬜ expand devices behind stable guest drivers.
+- **Phase 16** ✅ expand devices behind stable guest drivers.
 
-  Add devices only after the guest kernel has a clear driver boundary. Suggested
-  order: serial console, PIT/timer, keyboard, PIO disk, framebuffer, mouse, RTC,
-  virtio-like block, virtio-like net, and optional host bridge devices. Prefer
-  simple deterministic devices first; add DMA and asynchronous behavior only when
-  the guest has the memory and interrupt infrastructure to test them.
+  Established the device-extension pattern (a hardware device model on the port
+  bus, a guest driver function, and a syscall that exposes it) and used it to add
+  two simple, deterministic devices on top of the existing serial/timer/keyboard/
+  PIO-disk set. A **real-time clock** (`src/vm/custom32/devices/rtc.ts`) is a
+  read-only port returning the wall-clock time as a Unix timestamp; its source is
+  injectable (`Machine`'s `rtcTime`) so tests are deterministic. A **power
+  controller** (`src/vm/custom32/devices/power.ts`) is a write-only port: writing
+  `POWER_OFF` asserts a power-off line that the `Machine` wires to a new
+  `cpu.powerOff()`, so `run()` stops cleanly at the next instruction boundary —
+  a real software power-off instead of halting only when nothing is runnable. The
+  Phase 16 guest kernel (source `src/v3/kernel/phase16.c`) adds the matching
+  drivers and two syscalls (`time`/`shutdown`), the libc gains `time()`/
+  `shutdown()` wrappers, and the userland gains compiled `/bin/date` (prints the
+  RTC time) and `/bin/shutdown` (powers off). Demo `node demo/v3-phase16.ts`;
+  hardware-level tests in `test/devices.test.ts`, guest-driver + integration
+  tests in `test/guest-phase16.test.ts`.
 
-  Done when each new device has a hardware-level test, a guest driver test, and
-  at least one integration demo that boots from disk and exercises it.
+  Done: each new device has a hardware-level test (the RTC returns the configured
+  time; an `OUT` of `POWER_OFF` halts the CPU), a guest driver test, and an
+  integration demo that boots the compiled userland from disk, runs `/bin/date`
+  to read the RTC, and runs `/bin/shutdown` to power the machine off through the
+  power device — all compiled C driving the new hardware on the guest.
 
 ### v4 — Linux-like kernel and userland behavior
 

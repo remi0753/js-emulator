@@ -21,6 +21,8 @@ export const SYS = {
   PIPE: 10, // R1 = int[2] ptr (filled with [readfd, writefd]) -> R0 = 0 / -1
   DUP: 11, // R1 = fd -> R0 = new fd (lowest free) / -1
   UPTIME: 12, // -> R0 = scheduler ticks since boot
+  TIME: 13, // -> R0 = current wall-clock time (Unix seconds) from the RTC device
+  SHUTDOWN: 14, // power the machine off cleanly (does not return)
 } as const;
 
 // File descriptors wired up in Phase 2 (real fd table comes with the FS).

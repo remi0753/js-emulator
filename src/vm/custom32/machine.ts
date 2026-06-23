@@ -10,6 +10,8 @@ import { CPU, type CpuState, MODE, NUM_REGS, type RunResult } from './cpu.ts';
 import { Console } from './devices/console.ts';
 import { BlockDisk } from './devices/disk.ts';
 import { Keyboard } from './devices/keyboard.ts';
+import { Power } from './devices/power.ts';
+import { Rtc } from './devices/rtc.ts';
 import { PhysicalMemory } from './memory.ts';
 import { PORT } from './platform.ts';
 import { PortBus } from './ports.ts';
@@ -23,6 +25,9 @@ export interface MachineOptions {
   consoleSink?: (s: string) => void;
   diskImage?: Uint8Array;
   diskBlocks?: number;
+  // RTC clock source: a fixed Unix timestamp (seconds) for deterministic tests,
+  // or a function returning one. Defaults to the host wall clock.
+  rtcTime?: number | (() => number);
   // Attach a deterministic tracer at construction. `true` traces every stream;
   // pass an object to select streams. Available afterwards as `machine.tracer`.
   trace?: boolean | TraceOptions;
@@ -35,6 +40,8 @@ export class Machine {
   readonly console: Console;
   readonly keyboard: Keyboard;
   readonly disk: BlockDisk;
+  readonly rtc: Rtc;
+  readonly power: Power;
   readonly tracer: Tracer | null;
 
   constructor(opts: MachineOptions = {}) {
@@ -54,6 +61,13 @@ export class Machine {
     this.ports.register(PORT.DISK_DATA, 1, this.disk);
     this.ports.register(PORT.DISK_POS, 1, this.disk);
     this.ports.register(PORT.DISK_SECTORS, 1, this.disk);
+
+    this.rtc = new Rtc(opts.rtcTime);
+    this.ports.register(PORT.RTC_DATA, 1, this.rtc);
+
+    this.power = new Power();
+    this.power.onPowerOff = () => this.cpu.powerOff();
+    this.ports.register(PORT.POWER, 1, this.power);
 
     this.tracer = opts.trace ? new Tracer(typeof opts.trace === 'object' ? opts.trace : {}) : null;
     this.tracer?.attach(this);

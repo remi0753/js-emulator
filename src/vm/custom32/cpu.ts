@@ -97,6 +97,7 @@ export class CPU {
   errorCode = 0; // error code of the most recent trap (readable via RDERR)
   private timerInterval = 0; // in-CPU timer period in instructions; 0 = disabled
   private timerCount = 0; // instructions remaining until the next timer IRQ
+  private poweredOff = false; // a power device asserted power-off; run() stops
 
   readonly mmu: Mmu;
   readonly phys: PhysicalMemory;
@@ -143,6 +144,12 @@ export class CPU {
     this.pendingIrqs.add(line);
   }
 
+  // Assert the power-off line (a power device calls this). run() stops at the
+  // next instruction boundary and reports a halt, like a HLT.
+  powerOff(): void {
+    this.poweredOff = true;
+  }
+
   // Clear CPU-local transient hardware state that is not part of a process trap
   // frame. Used by Machine.reset(), not by scheduler context switches.
   resetTransientState(): void {
@@ -153,6 +160,7 @@ export class CPU {
     this.errorCode = 0;
     this.timerInterval = 0;
     this.timerCount = 0;
+    this.poweredOff = false;
   }
 
   // --- memory access with address translation ---
@@ -234,6 +242,10 @@ export class CPU {
 
   run(maxCycles: number): RunResult {
     for (let cycle = 0; cycle < maxCycles; cycle++) {
+      // A power device asserted power-off (e.g. via an OUT in the previous step):
+      // stop the machine cleanly before executing any further instruction.
+      if (this.poweredOff) return this.trap({ reason: 'halt' });
+
       // Tick the in-CPU timer; on expiry post the timer IRQ (delivered below).
       if (this.timerInterval > 0 && --this.timerCount <= 0) {
         this.timerCount = this.timerInterval;

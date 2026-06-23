@@ -49,3 +49,13 @@ int dup(int fd) {
 void exit(int code) {
   __syscall(CFG_SYS_EXIT, code, 0, 0);
 }
+
+// Current wall-clock time in whole seconds (Unix epoch), from the RTC device.
+int time() {
+  return __syscall(CFG_SYS_TIME, 0, 0, 0);
+}
+
+// Power the machine off cleanly. Does not return.
+void shutdown() {
+  __syscall(CFG_SYS_SHUTDOWN, 0, 0, 0);
+}

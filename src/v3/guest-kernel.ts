@@ -11,6 +11,7 @@ import { compileC } from '../toolchain/c.ts';
 import { type KernelImage, linkExecutable, linkKernelImage } from '../toolchain/linker.ts';
 import { MODE } from '../vm/custom32/cpu.ts';
 import { BlockDisk, SECTOR_SIZE } from '../vm/custom32/devices/disk.ts';
+import { POWER_OFF } from '../vm/custom32/devices/power.ts';
 import { PORT } from '../vm/custom32/platform.ts';
 import { PortBus } from '../vm/custom32/ports.ts';
 
@@ -636,6 +637,10 @@ function phase15SyscallDefines(): Defines {
     CFG_SYS_CLOSE: SYS.CLOSE,
     CFG_SYS_PIPE: SYS.PIPE,
     CFG_SYS_DUP: SYS.DUP,
+    // Phase 16 device syscalls; the libc wrappers compile in every phase, but
+    // only the Phase 16 kernel implements them.
+    CFG_SYS_TIME: SYS.TIME,
+    CFG_SYS_SHUTDOWN: SYS.SHUTDOWN,
   };
 }
 
@@ -777,6 +782,73 @@ export function buildPhase15KernelImage(): KernelImage {
   if (image.flat.length > PHASE15_KERNEL_LAYOUT.idt) {
     throw new Error(
       `Phase 15 kernel image overlaps reserved IDT/page-table region: image end 0x${image.flat.length.toString(16)}, IDT 0x${PHASE15_KERNEL_LAYOUT.idt.toString(16)}`,
+    );
+  }
+  return image;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 16: expand devices behind stable guest drivers. The kernel gains two
+// device drivers -- an RTC read driver (the time() syscall) and a power-off
+// write driver (the shutdown() syscall) -- and the userland gains /bin/date and
+// /bin/shutdown that exercise them. Everything else carries over from Phase 15.
+// Sources: ./kernel/phase16.c and ./userland/*.c.
+// ---------------------------------------------------------------------------
+
+// Same virtual-memory and boot layout as Phase 15; only new device ports are
+// added on top.
+export const PHASE16_KERNEL_LAYOUT = PHASE15_KERNEL_LAYOUT;
+
+export const PHASE16_MOTD = 'welcome to jscpu-os phase 16\n';
+
+// Build a bootable Phase 16 disk image: the Phase 15 compiled userland plus
+// /bin/date and /bin/shutdown, a seed /etc/motd, and a boot manifest naming
+// /bin/init. buildUserExecutable reuses the Phase 15 loader layout/libc.
+export function buildPhase16DiskImage(): Uint8Array {
+  const disk = BlockDisk.blank(1024); // 1024 * 512 = 512 KiB
+  const ports = new PortBus();
+  ports.register(PORT.DISK_DATA, 1, disk);
+  ports.register(PORT.DISK_POS, 1, disk);
+  ports.register(PORT.DISK_SECTORS, 1, disk);
+
+  const driver = new BlockDriver(ports);
+  const fs = new Fs(driver);
+  fs.mkfs();
+  fs.writeFile('/bin/init', buildUserExecutable('init', sourceFile('userland/init.c')));
+  fs.writeFile('/bin/sh', buildUserExecutable('sh', sourceFile('userland/sh.c')));
+  fs.writeFile('/bin/echo', buildUserExecutable('echo', sourceFile('userland/echo.c')));
+  fs.writeFile('/bin/cat', buildUserExecutable('cat', sourceFile('userland/cat.c')));
+  fs.writeFile('/bin/ls', buildUserExecutable('ls', sourceFile('userland/ls.c')));
+  fs.writeFile('/bin/date', buildUserExecutable('date', sourceFile('userland/date.c')));
+  fs.writeFile('/bin/shutdown', buildUserExecutable('shutdown', sourceFile('userland/shutdown.c')));
+  fs.writeFile('/etc/motd', new TextEncoder().encode(PHASE16_MOTD));
+
+  driver.write(0, encodeBootBlock(makeBootBlock('/bin/init')));
+  return disk.data;
+}
+
+function phase16Defines(): Defines {
+  return {
+    ...phase15Defines(),
+    CFG_RTC_DATA: PORT.RTC_DATA,
+    CFG_POWER: PORT.POWER,
+    CFG_POWER_OFF: POWER_OFF,
+  };
+}
+
+export const PHASE16_GUEST_KERNEL_SOURCE = loadKernelSource('phase16.c', phase16Defines());
+
+export function buildPhase16KernelImage(): KernelImage {
+  const image = linkKernelImage([
+    compileC(PHASE16_GUEST_KERNEL_SOURCE, {
+      start: 'kernel',
+      cStackSize: 8192,
+      moduleId: 'phase16',
+    }),
+  ]);
+  if (image.flat.length > PHASE16_KERNEL_LAYOUT.idt) {
+    throw new Error(
+      `Phase 16 kernel image overlaps reserved IDT/page-table region: image end 0x${image.flat.length.toString(16)}, IDT 0x${PHASE16_KERNEL_LAYOUT.idt.toString(16)}`,
     );
   }
   return image;
