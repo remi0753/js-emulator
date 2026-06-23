@@ -244,15 +244,31 @@ subsystems over one at a time.
   Done: the guest kernel prints through a device, enables paging, handles a timer
   interrupt, handles a deliberate page fault, and keeps running.
 
-- **Phase 12** ⬜ move memory management and scheduling into the guest.
+- **Phase 12** ✅ move memory management and scheduling into the guest.
 
-  Port or rewrite PMM/VMM inside the guest kernel. Then add process structures,
-  per-process page tables, context switching, user-mode entry, timer-driven
-  preemption, `fork` without COW first, then COW once the page fault path is
-  stable. TypeScript should not know about process state except as opaque memory.
+  Extended the Phase 11 guest kernel (`src/v3/guest-kernel.ts`,
+  `buildPhase12KernelImage`) with a memory manager and scheduler that run
+  entirely in guest code. A free-list **PMM** (frames threaded through their own
+  free pages) replaces the bump allocator. The **VMM** builds a per-process page
+  directory whose entry 0 shares one identity-mapped kernel page table (so kernel
+  code/data/stacks/frame-pool keep their addresses in every address space) and
+  whose user range is private; `map_page` allocates page tables on demand.
+  Process state lives in opaque guest memory (flat per-process arrays of
+  registers/pc/sp/flags/mode/ptbr); `setup_process` builds an address space and
+  loads the user image, and `fork_process` duplicates an address space by copying
+  frames (**fork without COW**). User mode is entered by building a trap frame and
+  `IRET`ing into it. The guest **timer IRQ handler** spills the interrupted
+  registers and trap frame into the current PCB, round-robins to the next
+  process, reloads its context, and switches `ptbr` (`__lptbr`) before `IRET` —
+  a full context switch with no TypeScript scheduler. The timer period is sized
+  above the handler cost so user code makes progress between ticks. Demo
+  `node demo/v3-phase12.ts`; tests in `test/guest-phase12.test.ts`.
 
-  Done when two guest user processes run in isolated address spaces and are
-  preempted by guest-handled timer interrupts.
+  Done: three guest user processes (two independent plus a fork of the first) run
+  in isolated address spaces — same user virtual addresses, distinct physical
+  frames and page directories — and are preempted and round-robined purely by the
+  guest-handled timer interrupt; TypeScript only ever reads opaque physical
+  memory.
 
 - **Phase 13** ⬜ move syscalls and process lifecycle into the guest.
 
