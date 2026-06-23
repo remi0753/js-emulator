@@ -9,6 +9,7 @@
     "build:img": "node tools/mkimg.ts",
     "boot": "node tools/boot.ts",
     "demo": "node demo/multitask.ts",
+    "demo:v3": "node demo/v3.ts",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "check": "biome check --write ."

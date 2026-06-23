@@ -1,9 +1,7 @@
-// Phase 16: expand devices behind stable guest drivers.
+// Current guest kernel.
 //
-// Builds on the Phase 15 guest kernel (the compiled userland, executable
-// loading, argv passing, the unified fd table, pipes, plus everything from the
-// earlier phases). Phase 16 adds two new hardware devices and the guest drivers
-// that own them, each behind a syscall the userland can call:
+// Provides the compiled userland, executable loading, argv passing, a unified
+// fd table, pipes, filesystems, processes, virtual memory, and guest drivers.
 //
 //   * a real-time clock (RTC): the time() syscall reads the current wall-clock
 //     time (Unix seconds) from the RTC device port, and
@@ -110,14 +108,14 @@ void serial_write(char *s) {
 }
 
 void panic(char *msg) {
-  serial_write("phase16: PANIC: ");
+  serial_write("kernel: PANIC: ");
   serial_write(msg);
   serial_putc('\n');
   __di();
   __halt();
 }
 
-// --- RTC + power drivers (Phase 16) ---
+// --- RTC + power drivers ---
 
 // Read the wall-clock time (Unix seconds) from the RTC device port.
 int rtc_time() {
@@ -1031,7 +1029,7 @@ void switch_to_next() {
       i = i + 1;
     }
     if (blocked == 0) {
-      serial_write("phase16: all processes exited\n");
+      serial_write("kernel: all processes exited\n");
       __halt();
     }
     __stmr(0);
@@ -1417,7 +1415,7 @@ void on_syscall() {
   } else if (num == CFG_SYS_TIME) {
     proc_regs[caller * 8 + 0] = rtc_time();
   } else if (num == CFG_SYS_SHUTDOWN) {
-    serial_write("phase16: shutdown\n");
+    serial_write("kernel: shutdown\n");
     power_off(); // the machine stops at the next instruction boundary
   } else {
     proc_regs[caller * 8 + 0] = -1;
@@ -1448,15 +1446,15 @@ void set_user_idt_entry(int vector, int handler) {
 
 void capture_handlers() {
   asm("
-    MOV R1, phase16_default_handler
+    MOV R1, kernel_default_handler
     STORE R1, default_handler_addr
-    MOV R1, phase16_timer_handler
+    MOV R1, kernel_timer_handler
     STORE R1, timer_handler_addr
-    MOV R1, phase16_pf_handler
+    MOV R1, kernel_pf_handler
     STORE R1, pf_handler_addr
-    MOV R1, phase16_syscall_handler
+    MOV R1, kernel_syscall_handler
     STORE R1, syscall_handler_addr
-    MOV R1, phase16_keyboard_handler
+    MOV R1, kernel_keyboard_handler
     STORE R1, keyboard_handler_addr
   ");
 }
@@ -1499,9 +1497,9 @@ void read_initpath() {
 
 int kmain() {
   asm("
-    JMP phase16_handlers_done
+    JMP kernel_handlers_done
 
-  phase16_timer_handler:
+  kernel_timer_handler:
     STORE R0, sctx_r0
     STORE R1, sctx_r1
     STORE R2, sctx_r2
@@ -1519,9 +1517,9 @@ int kmain() {
     POP R0
     STORE R0, sctx_sp
     CALL on_timer
-    JMP phase16_resume
+    JMP kernel_resume
 
-  phase16_syscall_handler:
+  kernel_syscall_handler:
     STORE R0, sctx_r0
     STORE R1, sctx_r1
     STORE R2, sctx_r2
@@ -1539,9 +1537,9 @@ int kmain() {
     POP R0
     STORE R0, sctx_sp
     CALL on_syscall
-    JMP phase16_resume
+    JMP kernel_resume
 
-  phase16_keyboard_handler:
+  kernel_keyboard_handler:
     PUSH R0
     PUSH R1
     PUSH R2
@@ -1561,7 +1559,7 @@ int kmain() {
     POP R0
     IRET
 
-  phase16_resume:
+  kernel_resume:
     LOAD R0, sctx_sp
     PUSH R0
     LOAD R0, sctx_flags
@@ -1580,16 +1578,16 @@ int kmain() {
     LOAD R0, sctx_r0
     IRET
 
-  phase16_pf_handler:
+  kernel_pf_handler:
     CALL on_page_fault
 
-  phase16_default_handler:
+  kernel_default_handler:
     CALL on_default_trap
 
-  phase16_handlers_done:
+  kernel_handlers_done:
   ");
 
-  serial_write("phase16: boot\n");
+  serial_write("kernel: boot\n");
   setup_traps();
   pmm_init();
   build_kernel_pt();
@@ -1597,7 +1595,7 @@ int kmain() {
   fs_mount();
   read_initpath();
 
-  serial_write("phase16: exec ");
+  serial_write("kernel: exec ");
   serial_write(initpath);
   serial_putc('\n');
   setup_process_boot(initpath);
@@ -1610,6 +1608,6 @@ int kmain() {
 
   // Hand the CPU to init; from here the kernel only runs inside trap handlers
   // (the timer and INT 0x80), driving the compiled userland in guest code.
-  asm("JMP phase16_resume");
+  asm("JMP kernel_resume");
   return 0;
 }

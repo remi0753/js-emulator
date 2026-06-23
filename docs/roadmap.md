@@ -223,14 +223,19 @@ subsystems over one at a time.
 
 - **Phase 11** ✅ boot a minimal guest kernel.
 
+  Phases 11–16 describe historical milestones, not parallel maintained
+  implementations. Their completed source snapshots remain available in Git
+  history. The maintained implementation is `src/v3/kernel/kernel.c`, built by
+  `src/v3/guest-kernel.ts`; current regression tests are organized by subsystem
+  rather than phase.
+
   Start with the smallest real kernel: serial output, panic, page-table setup,
   trap table setup, a physical frame allocator, and a simple idle loop. It does
   not need processes yet. The purpose is to prove that the VM can run privileged
   guest code that owns the trap path.
 
-  Added a compiled guest kernel (source in `src/v3/kernel/phase11.c`, built via
-  `src/v3/guest-kernel.ts`) using the Phase 10 toolchain and run directly on the
-  hardware-only `Machine`. The kernel writes to
+  Added a compiled guest kernel using the Phase 10 toolchain and ran it directly
+  on the hardware-only `Machine`. The kernel writes to
   the serial console, has a `panic` that reports and halts, installs its own IDT
   (every vector points at a default panic handler before the timer/page-fault
   gates overwrite theirs, so it owns the whole trap path), builds an
@@ -239,17 +244,15 @@ subsystems over one at a time.
   address (`RDPFLA`), allocates a frame, maps the page, and lets the CPU retry the
   access; it also arms the in-CPU timer, handles timer IRQ0 through the guest IDT,
   and stays in an idle loop. The trap stubs are assembly that save the
-  caller-clobbered registers and call into C handlers. Demo
-  `node demo/v3-guest-kernel.ts`; tests in `test/guest-kernel.test.ts`.
+  caller-clobbered registers and call into C handlers.
 
   Done: the guest kernel prints through a device, enables paging, handles a timer
   interrupt, handles a deliberate page fault, and keeps running.
 
 - **Phase 12** ✅ move memory management and scheduling into the guest.
 
-  Extended the Phase 11 guest kernel (source in `src/v3/kernel/phase12.c`, built
-  via `src/v3/guest-kernel.ts`) with a memory manager and scheduler that run
-  entirely in guest code. The guest kernels now live in real `.c` source files;
+  Extended the Phase 11 guest kernel with a memory manager and scheduler that run
+  entirely in guest code. The guest kernel lives in a real `.c` source file;
   `guest-kernel.ts` keeps the memory-layout/ISA constants as the single source
   of truth and substitutes them into the `CFG_*` tokens in those files at build
   time (a tiny no-macro/no-include preprocessor). A free-list **PMM** (frames threaded through their own
@@ -265,8 +268,7 @@ subsystems over one at a time.
   registers and trap frame into the current PCB, round-robins to the next
   process, reloads its context, and switches `ptbr` (`__lptbr`) before `IRET` —
   a full context switch with no TypeScript scheduler. The timer period is sized
-  above the handler cost so user code makes progress between ticks. Demo
-  `node demo/v3-phase12.ts`; tests in `test/guest-phase12.test.ts`.
+  above the handler cost so user code makes progress between ticks.
 
   Done: three guest user processes (two independent plus a fork of the first) run
   in isolated address spaces — same user virtual addresses, distinct physical
@@ -276,9 +278,8 @@ subsystems over one at a time.
 
 - **Phase 13** ✅ move syscalls and process lifecycle into the guest.
 
-  Extended the Phase 12 guest kernel (source in `src/v3/kernel/phase13.c`, built
-  via `src/v3/guest-kernel.ts`) with the full syscall ABI handled entirely in
-  guest code: `exit`, `write`, `read`, `yield`, `getpid`, `fork`, `exec`, and
+  Extended the Phase 12 guest kernel with the full syscall ABI handled entirely
+  in guest code: `exit`, `write`, `read`, `yield`, `getpid`, `fork`, `exec`, and
   `wait`. The CPU only ever delivers `INT 0x80` (a new IDT vector alongside the
   timer and page-fault gates); the guest **syscall handler** stub spills the
   caller's registers/trap frame into the current PCB, and a C dispatcher decodes
@@ -292,8 +293,7 @@ subsystems over one at a time.
   second embedded image. The scheduler round-robins only runnable processes and
   halts the VM once all have exited. Address-space frees (exec's old image, a
   reaped child) happen only after switching `ptbr`, so the kernel never frees
-  the page directory it is translating through. Demo `node demo/v3-phase13.ts`;
-  tests in `test/guest-phase13.test.ts`.
+  the page directory it is translating through.
 
   Done: a guest user program (`init`) forks a child, the child `exec`s a second
   image and prints through the `write` syscall, and `init` `wait`s for it and
@@ -302,8 +302,7 @@ subsystems over one at a time.
 
 - **Phase 14** ✅ move storage and the filesystem into the guest.
 
-  Extended the Phase 13 guest kernel (source in `src/v3/kernel/phase14.c`, built
-  via `src/v3/guest-kernel.ts`) with a read path for the on-disk filesystem,
+  Extended the Phase 13 guest kernel with a read path for the on-disk filesystem,
   handled entirely in guest code over the unchanged block-disk port protocol. A
   guest **PIO block driver** reads 512-byte blocks through the disk ports; a
   small **FIFO buffer cache** sits in front of it. On top of that the kernel
@@ -318,8 +317,7 @@ subsystems over one at a time.
   learn which program is init (honoring the Phase 9 handoff), loads that file,
   and runs it — no embedded user image. The Phase 14 disk image is built with
   the existing `Fs`/`BlockDriver` against a `BlockDisk`, installing flat
-  assembled `/bin/init` and `/bin/hello` plus a seed `/etc/motd`. Demo
-  `node demo/v3-phase14.ts`; tests in `test/guest-phase14.test.ts`.
+  assembled `/bin/init` and `/bin/hello` plus a seed `/etc/motd`.
 
   Done: the guest kernel mounts the disk image, loads `/bin/init` from the
   filesystem and `exec`s it from guest code; init opens, reads, and prints
@@ -333,8 +331,8 @@ subsystems over one at a time.
   (`src/v3/userland/libc.c`) provides syscall stubs (`write`/`read`/`open`/
   `close`/`fork`/`exec`/`wait`/`exit`/`getpid`/`pipe`/`dup`) over the `INT 0x80`
   ABI, and `init`, `sh`, `echo`, `cat`, and `ls` are compiled C linked against
-  it. To support a real userland the Phase 15 guest kernel (source in
-  `src/v3/kernel/phase15.c`) adds: **executable loading** from a flat header
+  it. To support a real userland the guest kernel adds: **executable loading**
+  from a flat header
   (magic / entry / memSize) plus a multi-page text+data+bss image (not a single
   code page); **argv passing** (`exec(path, argv)` copies the argument strings
   and `argv[]` array onto the new process's user stack and enters
@@ -345,8 +343,8 @@ subsystems over one at a time.
   `/bin`), waits for them, and wires `cmd | cmd` with `pipe` + the
   `close`/`dup`-to-lowest-fd idiom. The userland is compiled and installed onto
   the disk image at build time; the v2 assembly programs remain as low-level
-  regression tests (`test/userland.test.ts`). Demo `node demo/v3-phase15.ts`;
-  tests in `test/guest-phase15.test.ts`.
+  regression tests (`test/userland.test.ts`). Current end-to-end coverage is in
+  `test/guest-userland.test.ts`.
 
   Done: a freshly built disk image contains compiled `/bin/init`, `/bin/sh`,
   `/bin/echo`, `/bin/cat`, and `/bin/ls`; booting it reaches the shell, which
@@ -365,13 +363,13 @@ subsystems over one at a time.
   controller** (`src/vm/custom32/devices/power.ts`) is a write-only port: writing
   `POWER_OFF` asserts a power-off line that the `Machine` wires to a new
   `cpu.powerOff()`, so `run()` stops cleanly at the next instruction boundary —
-  a real software power-off instead of halting only when nothing is runnable. The
-  Phase 16 guest kernel (source `src/v3/kernel/phase16.c`) adds the matching
-  drivers and two syscalls (`time`/`shutdown`), the libc gains `time()`/
+  a real software power-off instead of halting only when nothing is runnable.
+  The guest kernel adds the matching drivers and two syscalls
+  (`time`/`shutdown`), the libc gains `time()`/
   `shutdown()` wrappers, and the userland gains compiled `/bin/date` (prints the
-  RTC time) and `/bin/shutdown` (powers off). Demo `node demo/v3-phase16.ts`;
+  RTC time) and `/bin/shutdown` (powers off). Demo `node demo/v3.ts`;
   hardware-level tests in `test/devices.test.ts`, guest-driver + integration
-  tests in `test/guest-phase16.test.ts`.
+  tests in `test/guest-devices.test.ts`.
 
   The guest syscall boundary validates user mappings and permissions before
   access, `exec` failures return to the caller without panicking, software
