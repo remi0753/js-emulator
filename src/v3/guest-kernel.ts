@@ -5,6 +5,7 @@ import { assemble } from '../assembler.ts';
 import { FLAG, IDT_ENTRY_SIZE, IDT_PRESENT, TIMER_IRQ, TRAP } from '../isa.ts';
 import { compileC } from '../toolchain/c.ts';
 import { type KernelImage, linkKernelImage } from '../toolchain/linker.ts';
+import { MODE } from '../vm/custom32/cpu.ts';
 import { PORT } from '../vm/custom32/platform.ts';
 
 // The guest kernels are written in real source files under ./kernel/*.c. They
@@ -92,6 +93,10 @@ export function buildPhase11KernelImage(): KernelImage {
 
 const PTE_KERNEL = 3; // present + writable (no user bit): kernel-only page
 const PTE_USER = 7; // present + writable + user-accessible: user page
+const PAGE_BYTES = 4096;
+const PHASE12_MAX_PROC = 8;
+
+export const PHASE12_FORK_SENTINEL = 0x1234abcd;
 
 export const PHASE12_KERNEL_LAYOUT = {
   // Kernel structures, all inside the identity-mapped low region (0..4 MiB) so
@@ -133,10 +138,17 @@ uloop:
 function phase12Defines(): Defines {
   const L = PHASE12_KERNEL_LAYOUT;
   const userBytes = assemble(PHASE12_USER_PROGRAM, L.userCode).bytes;
+  if (userBytes.length > PAGE_BYTES) {
+    throw new Error(
+      `Phase 12 user program is ${userBytes.length} bytes, but the loader maps one ${PAGE_BYTES}-byte code page`,
+    );
+  }
   return {
     CFG_CONSOLE_DATA: PORT.CONSOLE_DATA,
     CFG_PTE_KERNEL: PTE_KERNEL,
     CFG_PTE_USER: PTE_USER,
+    CFG_MAX_PROC: PHASE12_MAX_PROC,
+    CFG_PROC_REG_COUNT: PHASE12_MAX_PROC * 8,
     CFG_FRAME_POOL_BASE: L.framePoolBase,
     CFG_FRAME_POOL_END: L.framePoolEnd,
     CFG_KERNEL_PT: L.kernelPageTable,
@@ -152,6 +164,8 @@ function phase12Defines(): Defines {
     CFG_KSTACK_TOP: L.kstackTop,
     CFG_TIMER_PERIOD: L.timerPeriod,
     CFG_FLAG_IF: FLAG.IF,
+    CFG_MODE_USER: MODE.USER,
+    CFG_FORK_SENTINEL: PHASE12_FORK_SENTINEL,
     CFG_USER_PROGRAM_LEN: userBytes.length,
     CFG_USER_PROGRAM_BYTES: `{${Array.from(userBytes).join(', ')}}`,
   };
@@ -160,11 +174,17 @@ function phase12Defines(): Defines {
 export const PHASE12_GUEST_KERNEL_SOURCE = loadKernelSource('phase12.c', phase12Defines());
 
 export function buildPhase12KernelImage(): KernelImage {
-  return linkKernelImage([
+  const image = linkKernelImage([
     compileC(PHASE12_GUEST_KERNEL_SOURCE, {
       start: 'kernel',
       cStackSize: 8192,
       moduleId: 'phase12',
     }),
   ]);
+  if (image.flat.length > PHASE12_KERNEL_LAYOUT.idt) {
+    throw new Error(
+      `Phase 12 kernel image overlaps reserved IDT/page-table region: image end 0x${image.flat.length.toString(16)}, IDT 0x${PHASE12_KERNEL_LAYOUT.idt.toString(16)}`,
+    );
+  }
+  return image;
 }

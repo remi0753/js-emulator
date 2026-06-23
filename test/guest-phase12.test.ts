@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { IDT_ENTRY_SIZE, IDT_PRESENT, TIMER_IRQ, TRAP } from '../src/isa.ts';
-import { buildPhase12KernelImage, PHASE12_KERNEL_LAYOUT } from '../src/v3/guest-kernel.ts';
+import {
+  buildPhase12KernelImage,
+  PHASE12_FORK_SENTINEL,
+  PHASE12_KERNEL_LAYOUT,
+} from '../src/v3/guest-kernel.ts';
 import { Machine } from '../src/vm/custom32/machine.ts';
 
 test('Phase 12: guest kernel runs isolated user processes preempted by guest timer IRQs', () => {
@@ -20,6 +24,7 @@ test('Phase 12: guest kernel runs isolated user processes preempted by guest tim
 
   // The run only ever returns to the host when the cycle budget runs out: the
   // kernel never halts, it round-robins the user processes inside the timer IRQ.
+  assert.ok(image.flat.length <= PHASE12_KERNEL_LAYOUT.idt);
   assert.equal(r.reason, 'timer');
   assert.equal(machine.cpu.pagingEnabled, true);
   assert.equal(out, 'phase12: boot\nphase12: procs\nphase12: enter user\n');
@@ -55,6 +60,9 @@ test('Phase 12: guest kernel runs isolated user processes preempted by guest tim
   assert.equal(tags[0], 0xa1);
   assert.equal(tags[1], 0xb2);
   assert.equal(tags[2], 0xa1);
+  assert.equal(machine.phys.read32(frames[0]! + 8), PHASE12_FORK_SENTINEL);
+  assert.equal(machine.phys.read32(frames[1]! + 8), 0);
+  assert.equal(machine.phys.read32(frames[2]! + 8), PHASE12_FORK_SENTINEL);
 
   // Each user data page really maps to the frame recorded for that process:
   // walk the live page table the way the MMU does.

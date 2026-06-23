@@ -21,14 +21,14 @@ int page_fault_addr;
 
 // Per-process state, stored as flat arrays so the assembly trap stub can also
 // reach the live trap registers through fixed global labels (sctx_*).
-int proc_used[8];
-int proc_ptbr[8];
-int proc_regs[64]; // proc * 8 + register number
-int proc_pc[8];
-int proc_sp[8];
-int proc_flags[8];
-int proc_mode[8];
-int proc_data_frame[8]; // physical frame backing each process's user data page
+int proc_used[CFG_MAX_PROC];
+int proc_ptbr[CFG_MAX_PROC];
+int proc_regs[CFG_PROC_REG_COUNT]; // proc * 8 + register number
+int proc_pc[CFG_MAX_PROC];
+int proc_sp[CFG_MAX_PROC];
+int proc_flags[CFG_MAX_PROC];
+int proc_mode[CFG_MAX_PROC];
+int proc_data_frame[CFG_MAX_PROC]; // physical frame backing each process's user data page
 
 // Trap-frame scratch shared with the assembly context-switch stub.
 int sctx_r0; int sctx_r1; int sctx_r2; int sctx_r3;
@@ -204,7 +204,7 @@ void set_initial_context(int idx, int tag) {
   proc_regs[idx * 8 + 0] = tag; // R0 = tag, read by the user program at entry
   proc_pc[idx] = CFG_USER_CODE;
   proc_sp[idx] = CFG_USER_STACK_TOP;
-  proc_mode[idx] = 1;           // USER
+  proc_mode[idx] = CFG_MODE_USER;
   proc_flags[idx] = CFG_FLAG_IF; // interrupts enabled so the timer can preempt
 }
 
@@ -214,6 +214,9 @@ int setup_process(int tag) {
   int code;
   int data;
   int stack;
+  if (nproc >= CFG_MAX_PROC) {
+    panic("too many processes");
+  }
   idx = nproc;
   nproc = nproc + 1;
   pd = new_address_space();
@@ -238,6 +241,12 @@ int fork_process(int parent) {
   int idx;
   int pd;
   int i;
+  if (parent < 0 || parent >= nproc || proc_used[parent] == 0) {
+    panic("bad fork parent");
+  }
+  if (nproc >= CFG_MAX_PROC) {
+    panic("too many processes");
+  }
   idx = nproc;
   nproc = nproc + 1;
   pd = new_address_space();
@@ -297,6 +306,12 @@ void load_ctx(int i) {
 // into sctx_*. Save it, round-robin to the next process, load its state, and
 // switch the live page directory; the stub then IRETs into that process.
 void on_timer() {
+  if (nproc <= 0) {
+    panic("no runnable process");
+  }
+  if (sctx_mode != CFG_MODE_USER) {
+    panic("timer outside user");
+  }
   ticks = ticks + 1;
   save_ctx(current);
   current = (current + 1) % nproc;
@@ -348,6 +363,9 @@ void setup_traps() {
 }
 
 int kmain() {
+  int p0;
+  int *p0_data;
+
   asm("
     JMP phase12_handlers_done
 
@@ -403,9 +421,11 @@ int kmain() {
   build_kernel_pt();
 
   // Two independent processes plus a fork of the first: three isolated spaces.
-  setup_process(0xa1);
+  p0 = setup_process(0xa1);
+  p0_data = proc_data_frame[p0];
+  p0_data[2] = CFG_FORK_SENTINEL;
   setup_process(0xb2);
-  fork_process(0);
+  fork_process(p0);
   serial_write("phase12: procs\n");
 
   __stmr(CFG_TIMER_PERIOD);
