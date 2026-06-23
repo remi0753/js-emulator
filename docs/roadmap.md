@@ -373,6 +373,11 @@ subsystems over one at a time.
   hardware-level tests in `test/devices.test.ts`, guest-driver + integration
   tests in `test/guest-phase16.test.ts`.
 
+  The guest syscall boundary validates user mappings and permissions before
+  access, `exec` failures return to the caller without panicking, software
+  interrupts honor user-callable IDT gates, keyboard and pipe waits idle until
+  an IRQ/readiness change, and short pipe writes are retried by userland.
+
   Done: each new device has a hardware-level test (the RTC returns the configured
   time; an `OUT` of `POWER_OFF` halts the CPU), a guest driver test, and an
   integration demo that boots the compiled userland from disk, runs `/bin/date`

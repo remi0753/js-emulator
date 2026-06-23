@@ -158,6 +158,11 @@ test('Phase 10: duplicate public symbols are link errors', () => {
   const dataA = compileC(`int g; int main(int a, char **v){ return 0; }`);
   const dataB = compileC(`int g;`, { start: 'none' });
   assert.throws(() => linkExecutable([dataA, dataB]), /duplicate bss symbol: g/);
+
+  const runtimeCollision = compileC(
+    `int memcpy(int d, int s, int n){ return 7; } int main(int a, char **v){ return 0; }`,
+  );
+  assert.throws(() => linkExecutable([runtimeCollision]), /duplicate text symbol: memcpy/);
 });
 
 test('Phase 10: kernel image data placement avoids or rejects segment overlap', () => {

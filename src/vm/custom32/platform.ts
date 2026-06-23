@@ -9,6 +9,7 @@ export const PORT = {
   DISK_POS: 0x1f2, // set the disk access position (in sectors)
   DISK_SECTORS: 0x1f7, // read: number of sectors on the disk
   KBD_DATA: 0x60, // read: next input byte from the keyboard (0 if empty)
+  KBD_STATUS: 0x64, // read: bit 0 = data available, bit 1 = input closed/EOF
   RTC_DATA: 0x70, // read: current wall-clock time as a Unix timestamp (seconds)
   POWER: 0x604, // write: power control; POWER_OFF shuts the machine down (ACPI-ish)
 } as const;

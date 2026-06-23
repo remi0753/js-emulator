@@ -71,6 +71,7 @@ int default_handler_addr;
 int timer_handler_addr;
 int pf_handler_addr;
 int syscall_handler_addr;
+int keyboard_handler_addr;
 
 // Mounted-filesystem geometry (read from the superblock at boot).
 int fs_size;
@@ -166,6 +167,43 @@ void write8_at(int addr, int v) {
   p[0] = v;
 }
 
+int user_access_ok(int proc, int addr, int len, int write) {
+  int *pd;
+  int pde;
+  int *pt;
+  int pte;
+  int page;
+  int last;
+  if (len < 0 || addr < CFG_USER_BASE || addr > CFG_USER_END) {
+    return 0;
+  }
+  if (len > CFG_USER_END - addr) {
+    return 0;
+  }
+  if (len == 0) {
+    return 1;
+  }
+  page = addr & 0xfffff000;
+  last = (addr + len - 1) & 0xfffff000;
+  pd = proc_ptbr[proc];
+  while (page <= last) {
+    pde = pd[(page >> 22) & 0x3ff];
+    if ((pde & 5) != 5) {
+      return 0;
+    }
+    pt = pde & 0xfffff000;
+    pte = pt[(page >> 12) & 0x3ff];
+    if ((pte & 5) != 5) {
+      return 0;
+    }
+    if (write != 0 && (pte & 2) == 0) {
+      return 0;
+    }
+    page = page + 4096;
+  }
+  return 1;
+}
+
 // --- physical frame allocator: a free list threaded through the free frames ---
 
 void free_frame(int frame) {
@@ -185,6 +223,20 @@ int alloc_frame() {
   p = frame;
   free_list = p[0];
   return frame;
+}
+
+int free_frame_count() {
+  int n;
+  int frame;
+  int *p;
+  n = 0;
+  frame = free_list;
+  while (frame != 0) {
+    n = n + 1;
+    p = frame;
+    frame = p[0];
+  }
+  return n;
 }
 
 void pmm_init() {
@@ -660,17 +712,26 @@ int alloc_proc() {
 }
 
 // Copy a NUL-terminated path from user memory into the kpath kernel buffer.
-void copy_path_in(int upath) {
+int copy_path_in(int proc, int upath) {
   int i;
   int c;
   i = 0;
-  c = read8_at(upath);
-  while (c != 0 && i < CFG_INITPATH_LEN - 1) {
+  while (i < CFG_INITPATH_LEN) {
+    if (user_access_ok(proc, upath + i, 1, 0) == 0) {
+      return -1;
+    }
+    c = read8_at(upath + i);
+    if (c == 0) {
+      kpath[i] = 0;
+      return 0;
+    }
+    if (i == CFG_INITPATH_LEN - 1) {
+      return -1;
+    }
     kpath[i] = c;
     i = i + 1;
-    c = read8_at(upath + i);
   }
-  kpath[i] = 0;
+  return -1;
 }
 
 // Stage a single argument (used at boot: argv = { path }).
@@ -690,7 +751,7 @@ void build_args_single(int kstr) {
 }
 
 // Stage argv copied from a user char*[] (NULL-terminated) into argbuf.
-void build_args_from_user(int uargv) {
+int build_args_from_user(int proc, int uargv) {
   int argc;
   int total;
   int ptr;
@@ -700,27 +761,49 @@ void build_args_from_user(int uargv) {
   total = 0;
   if (uargv != 0) {
     while (argc < CFG_MAXARG) {
+      if (user_access_ok(proc, uargv + argc * 4, 4, 0) == 0) {
+        return -1;
+      }
       ptr = read32_at(uargv + argc * 4);
       if (ptr == 0) {
         break;
       }
+      if (total >= CFG_ARGBUF_LEN) {
+        return -1;
+      }
       arg_off[argc] = total;
       j = 0;
+      if (user_access_ok(proc, ptr, 1, 0) == 0) {
+        return -1;
+      }
       c = read8_at(ptr);
       while (c != 0) {
-        if (total < CFG_ARGBUF_LEN - 1) {
-          argbuf[total] = c;
-          total = total + 1;
+        if (total >= CFG_ARGBUF_LEN - 1) {
+          return -1;
         }
+        argbuf[total] = c;
+        total = total + 1;
         j = j + 1;
+        if (user_access_ok(proc, ptr + j, 1, 0) == 0) {
+          return -1;
+        }
         c = read8_at(ptr + j);
       }
       argbuf[total] = 0;
       total = total + 1;
       argc = argc + 1;
     }
+    if (argc == CFG_MAXARG) {
+      if (user_access_ok(proc, uargv + argc * 4, 4, 0) == 0) {
+        return -1;
+      }
+      if (read32_at(uargv + argc * 4) != 0) {
+        return -1;
+      }
+    }
   }
   g_argc = argc;
+  return 0;
 }
 
 // Load an executable into a fresh address space: read the header, map enough
@@ -735,18 +818,32 @@ int load_exec_image(int pd, int path) {
   int frame;
   inum = namei(path);
   if (inum == 0) {
-    panic("exec: file not found");
+    return -1;
   }
   if (inode_type(inum) != CFG_T_FILE) {
-    panic("exec: not a regular file");
+    return -1;
   }
-  readi(inum, 0, 12, exec_hdr);
+  if (inode_size(inum) < 12 || readi(inum, 0, 12, exec_hdr) != 12) {
+    return -1;
+  }
   if (read32_at(exec_hdr) != CFG_EXEC_MAGIC) {
-    panic("exec: bad executable magic");
+    return -1;
   }
   entry = read32_at(exec_hdr + 4);
   memsz = read32_at(exec_hdr + 8);
+  if (memsz <= 0 || memsz > CFG_USER_STACK_PAGE - CFG_USER_LOAD_BASE) {
+    return -1;
+  }
+  if (inode_size(inum) - 12 > memsz) {
+    return -1;
+  }
+  if (entry < CFG_USER_LOAD_BASE || entry >= CFG_USER_LOAD_BASE + memsz) {
+    return -1;
+  }
   npages = (memsz + 4095) / 4096;
+  if (npages + 2 > free_frame_count()) {
+    return -1;
+  }
   i = 0;
   while (i < npages) {
     frame = alloc_frame();
@@ -762,7 +859,7 @@ int load_exec_image(int pd, int path) {
 // Build the user stack page and lay out argv on it: strings near the top, then a
 // NULL-terminated argv[] pointer array. Sets the new process's R0 = argc,
 // R1 = argv, and the hardware sp just below the argv array.
-void setup_user_args(int idx, int pd) {
+int setup_user_args(int idx, int pd) {
   int sframe;
   int total;
   int strbase;
@@ -787,7 +884,7 @@ void setup_user_args(int idx, int pd) {
   }
   argvaddr = (strbase - (g_argc + 1) * 4) & 0xfffffffc;
   if (argvaddr <= CFG_USER_STACK_PAGE) {
-    panic("exec: arguments too large");
+    return -1;
   }
   i = 0;
   while (i < g_argc) {
@@ -805,27 +902,41 @@ void setup_user_args(int idx, int pd) {
     i = i + 1;
   }
   proc_sp[idx] = argvaddr; // hardware stack grows down, below the args
+  return 0;
 }
 
 // Build a new address space for slot idx running the program at `path` (a kernel
 // address) with the argv currently staged in argbuf. Does not touch fds.
-void spawn(int idx, int path) {
+int spawn(int idx, int path) {
   int pd;
   int entry;
+  if (free_list == 0) {
+    return -1;
+  }
   pd = new_address_space();
   entry = load_exec_image(pd, path);
-  setup_user_args(idx, pd);
+  if (entry < 0) {
+    free_space(pd);
+    return -1;
+  }
+  if (setup_user_args(idx, pd) < 0) {
+    free_space(pd);
+    return -1;
+  }
   proc_ptbr[idx] = pd;
   proc_pc[idx] = entry;
   proc_mode[idx] = CFG_MODE_USER;
   proc_flags[idx] = CFG_FLAG_IF;
+  return 0;
 }
 
 int setup_process_boot(int path) {
   int idx;
   idx = alloc_proc();
   build_args_single(path);
-  spawn(idx, path);
+  if (spawn(idx, path) < 0) {
+    panic("boot: invalid init executable");
+  }
   proc_parent[idx] = -1;
   proc_state[idx] = CFG_ST_RUNNABLE;
   init_fds(idx);
@@ -908,10 +1019,28 @@ int schedule() {
 void switch_to_next() {
   int next;
   next = schedule();
-  if (next < 0) {
-    serial_write("phase16: all processes exited\n");
+  while (next < 0) {
+    int i;
+    int blocked;
+    i = 0;
+    blocked = 0;
+    while (i < nproc) {
+      if (proc_state[i] == CFG_ST_BLOCKED || proc_state[i] == CFG_ST_PIPEWAIT) {
+        blocked = 1;
+      }
+      i = i + 1;
+    }
+    if (blocked == 0) {
+      serial_write("phase16: all processes exited\n");
+      __halt();
+    }
+    __stmr(0);
+    __ei();
     __halt();
+    __di();
+    next = schedule();
   }
+  __stmr(CFG_TIMER_PERIOD);
   current = next;
 }
 
@@ -952,7 +1081,7 @@ int sys_write(int caller, int fd, int buf, int len) {
   if (len < 0) {
     return -1;
   }
-  if (buf < CFG_USER_BASE || buf + len > CFG_USER_END) {
+  if (user_access_ok(caller, buf, len, 0) == 0) {
     return -1;
   }
   if (fd < 0 || fd >= CFG_NFD) {
@@ -974,6 +1103,13 @@ int sys_write(int caller, int fd, int buf, int len) {
     if (pipe_nread[pp] == 0) {
       return -1; // broken pipe: no readers
     }
+    if (pipe_count[pp] == CFG_PIPESZ) {
+      g_blocked = 1;
+      proc_pc[caller] = proc_pc[caller] - CFG_SYSCALL_INSTR_SIZE;
+      proc_state[caller] = CFG_ST_PIPEWAIT;
+      switch_to_next();
+      return 0;
+    }
     n = pipe_write_bytes(pp, buf, len);
     wake_pipe_waiters();
     return n;
@@ -993,7 +1129,7 @@ int sys_read(int caller, int fd, int buf, int len) {
   if (len < 0) {
     return -1;
   }
-  if (buf < CFG_USER_BASE || buf + len > CFG_USER_END) {
+  if (user_access_ok(caller, buf, len, 1) == 0) {
     return -1;
   }
   if (fd < 0 || fd >= CFG_NFD) {
@@ -1007,7 +1143,14 @@ int sys_read(int caller, int fd, int buf, int len) {
     }
     ch = __in(CFG_KBD_DATA);
     if (ch == 0) {
-      return 0; // no input available (treated as EOF here)
+      if ((__in(CFG_KBD_STATUS) & 2) != 0) {
+        return 0;
+      }
+      g_blocked = 1;
+      proc_pc[caller] = proc_pc[caller] - CFG_SYSCALL_INSTR_SIZE;
+      proc_state[caller] = CFG_ST_PIPEWAIT;
+      switch_to_next();
+      return 0;
     }
     write8_at(buf, ch);
     return 1;
@@ -1044,10 +1187,9 @@ int sys_open(int caller, int upath, int flags) {
   int t;
   int fd;
   int base;
-  if (upath < CFG_USER_BASE || upath >= CFG_USER_END) {
+  if (copy_path_in(caller, upath) < 0) {
     return -1;
   }
-  copy_path_in(upath);
   inum = namei(kpath);
   if (inum == 0) {
     return -1;
@@ -1084,7 +1226,7 @@ int sys_pipe(int caller, int ufds) {
   int rfd;
   int wfd;
   int base;
-  if (ufds < CFG_USER_BASE || ufds + 8 > CFG_USER_END) {
+  if (user_access_ok(caller, ufds, 8, 1) == 0) {
     return -1;
   }
   pp = alloc_pipe();
@@ -1159,10 +1301,19 @@ int do_fork(int parent) {
 
 int do_exec(int idx, int upath, int uargv) {
   int old_pd;
-  copy_path_in(upath);
-  build_args_from_user(uargv);
+  if (copy_path_in(idx, upath) < 0) {
+    proc_regs[idx * 8 + 0] = -1;
+    return 0;
+  }
+  if (build_args_from_user(idx, uargv) < 0) {
+    proc_regs[idx * 8 + 0] = -1;
+    return 0;
+  }
   old_pd = proc_ptbr[idx];
-  spawn(idx, kpath); // fds are preserved across exec
+  if (spawn(idx, kpath) < 0) {
+    proc_regs[idx * 8 + 0] = -1;
+    return 0;
+  }
   return old_pd;
 }
 
@@ -1235,7 +1386,10 @@ void on_syscall() {
     pending_free = do_exit(caller, a1);
     switch_to_next();
   } else if (num == CFG_SYS_WRITE) {
-    proc_regs[caller * 8 + 0] = sys_write(caller, a1, a2, a3);
+    rv = sys_write(caller, a1, a2, a3);
+    if (g_blocked == 0) {
+      proc_regs[caller * 8 + 0] = rv;
+    }
   } else if (num == CFG_SYS_READ) {
     rv = sys_read(caller, a1, a2, a3);
     if (g_blocked == 0) {
@@ -1266,7 +1420,7 @@ void on_syscall() {
     serial_write("phase16: shutdown\n");
     power_off(); // the machine stops at the next instruction boundary
   } else {
-    panic("unknown syscall");
+    proc_regs[caller * 8 + 0] = -1;
   }
 
   load_ctx(current);
@@ -1285,6 +1439,13 @@ void set_idt_entry(int vector, int handler) {
   entry[1] = CFG_IDT_PRESENT;
 }
 
+void set_user_idt_entry(int vector, int handler) {
+  int *entry;
+  entry = CFG_IDT + vector * CFG_IDT_ENTRY_SIZE;
+  entry[0] = handler;
+  entry[1] = CFG_IDT_PRESENT | CFG_IDT_USER;
+}
+
 void capture_handlers() {
   asm("
     MOV R1, phase16_default_handler
@@ -1295,6 +1456,8 @@ void capture_handlers() {
     STORE R1, pf_handler_addr
     MOV R1, phase16_syscall_handler
     STORE R1, syscall_handler_addr
+    MOV R1, phase16_keyboard_handler
+    STORE R1, keyboard_handler_addr
   ");
 }
 
@@ -1309,7 +1472,8 @@ void setup_traps() {
   }
   set_idt_entry(CFG_TIMER_VECTOR, timer_handler_addr);
   set_idt_entry(CFG_PAGEFAULT_VECTOR, pf_handler_addr);
-  set_idt_entry(CFG_SYSCALL_VECTOR, syscall_handler_addr);
+  set_idt_entry(CFG_KBD_VECTOR, keyboard_handler_addr);
+  set_user_idt_entry(CFG_SYSCALL_VECTOR, syscall_handler_addr);
   __lksp(CFG_KSTACK_TOP);
 }
 
@@ -1375,6 +1539,27 @@ int kmain() {
     POP R0
     STORE R0, sctx_sp
     CALL on_syscall
+    JMP phase16_resume
+
+  phase16_keyboard_handler:
+    PUSH R0
+    PUSH R1
+    PUSH R2
+    PUSH R3
+    PUSH R4
+    PUSH R5
+    PUSH R6
+    PUSH R7
+    CALL wake_pipe_waiters
+    POP R7
+    POP R6
+    POP R5
+    POP R4
+    POP R3
+    POP R2
+    POP R1
+    POP R0
+    IRET
 
   phase16_resume:
     LOAD R0, sctx_sp

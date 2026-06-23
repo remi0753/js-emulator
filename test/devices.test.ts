@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { assemble } from '../src/assembler.ts';
+import { BlockDisk } from '../src/vm/custom32/devices/disk.ts';
 import { Power, POWER_OFF } from '../src/vm/custom32/devices/power.ts';
 import { Rtc } from '../src/vm/custom32/devices/rtc.ts';
 import { Machine } from '../src/vm/custom32/machine.ts';
@@ -71,4 +72,12 @@ test('Machine: an OUT of POWER_OFF to the power port halts run()', () => {
   assert.equal(r.reason, 'halt');
   assert.equal(machine.power.poweredOff, true);
   assert.equal(machine.cpu.regs[0], 0); // MOV R0, 123 never executed
+});
+
+test('BlockDisk rejects out-of-range sectors and streaming past the image', () => {
+  const disk = BlockDisk.blank(1);
+  assert.throws(() => disk.write(PORT.DISK_POS, 1), /sector out of range/);
+  disk.write(PORT.DISK_POS, 0);
+  for (let i = 0; i < 128; i++) disk.read(PORT.DISK_DATA);
+  assert.throws(() => disk.read(PORT.DISK_DATA), /word access out of range/);
 });

@@ -49,6 +49,7 @@ const SHARED_DATA_SYMBOLS = new Set(['__csp', '__stack']);
 export function linkExecutable(objects: CompiledObject[], options: LinkOptions = {}): LinkedImage {
   const textOrigin = options.textOrigin ?? LAYOUT.USER_TEXT;
   const entryName = options.entry ?? '_start';
+  rejectReservedRuntimeDefinitions(objects);
   // Objects may each carry crt0 + the runtime helpers (identical, shared
   // symbols). Drop duplicate label-led blocks so several objects can link
   // together; each object's private labels are already namespaced.
@@ -89,6 +90,21 @@ export function linkExecutable(objects: CompiledObject[], options: LinkOptions =
   };
 }
 
+function rejectReservedRuntimeDefinitions(objects: CompiledObject[]): void {
+  for (const obj of objects) {
+    for (const name of SHARED_TEXT_LABELS) {
+      if (obj.sourceMap.has(name)) {
+        throw new Error(`link: duplicate text symbol: ${name}`);
+      }
+    }
+    for (const name of SHARED_DATA_SYMBOLS) {
+      if (obj.globals.has(name)) {
+        throw new Error(`link: duplicate data symbol: ${name}`);
+      }
+    }
+  }
+}
+
 export function linkKernelImage(objects: CompiledObject[], options: LinkOptions = {}): KernelImage {
   const textOrigin = options.textOrigin ?? 0;
   let dataOrigin = options.dataOrigin;
@@ -119,24 +135,31 @@ export function linkKernelImage(objects: CompiledObject[], options: LinkOptions 
 // Drops duplicate top-level label blocks (keeping the first), so shared crt0 /
 // runtime helpers emitted by every object appear once in the linked image.
 function dedupeText(text: string): string {
-  const seen = new Set<string>();
+  const seen = new Map<string, string>();
   const out: string[] = [];
-  let skipping = false;
-  for (const line of text.split('\n')) {
-    const label = /^([A-Za-z_]\w*):$/.exec(line.trim());
-    if (label) {
-      const name = label[1]!;
-      if (seen.has(name)) {
-        if (!SHARED_TEXT_LABELS.has(name)) throw new Error(`link: duplicate text symbol: ${name}`);
-        skipping = true;
-        continue;
-      }
-      seen.add(name);
-      skipping = false;
-      out.push(line);
+  const lines = text.split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const label = /^([A-Za-z_]\w*):$/.exec(lines[i]!.trim());
+    if (!label) {
+      out.push(lines[i]!);
+      i++;
       continue;
     }
-    if (!skipping) out.push(line);
+    const name = label[1]!;
+    let end = i + 1;
+    while (end < lines.length && !/^([A-Za-z_]\w*):$/.test(lines[end]!.trim())) end++;
+    const block = lines.slice(i, end).join('\n');
+    const prior = seen.get(name);
+    if (prior !== undefined) {
+      if (!SHARED_TEXT_LABELS.has(name) || prior !== block) {
+        throw new Error(`link: duplicate text symbol: ${name}`);
+      }
+    } else {
+      seen.set(name, block);
+      out.push(...lines.slice(i, end));
+    }
+    i = end;
   }
   return out.join('\n');
 }

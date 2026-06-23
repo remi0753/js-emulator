@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { IDT_ENTRY_SIZE, IDT_PRESENT, SYSCALL_INT, TIMER_IRQ, TRAP } from '../src/isa.ts';
+import {
+  IDT_ENTRY_SIZE,
+  IDT_PRESENT,
+  IDT_USER,
+  SYSCALL_INT,
+  TIMER_IRQ,
+  TRAP,
+} from '../src/isa.ts';
 import {
   buildPhase13KernelImage,
   PHASE13_CHILD_EXIT_CODE,
@@ -60,7 +67,10 @@ test('Phase 13: guest kernel handles the syscall ABI and process lifecycle (fork
   assert.ok(defaultHandler > 0 && timerHandler > 0 && pfHandler > 0 && syscallHandler > 0);
   for (let vector = 0; vector < 256; vector++) {
     const base = PHASE13_KERNEL_LAYOUT.idt + vector * IDT_ENTRY_SIZE;
-    assert.equal(machine.phys.read32(base + 4), IDT_PRESENT);
+    assert.equal(
+      machine.phys.read32(base + 4),
+      vector === SYSCALL_INT ? IDT_PRESENT | IDT_USER : IDT_PRESENT,
+    );
     const expected =
       vector === timerVector
         ? timerHandler

@@ -16,6 +16,7 @@ import {
   FLAG,
   IDT_ENTRY_SIZE,
   IDT_PRESENT,
+  IDT_USER,
   type Mnemonic,
   OPCODE_TABLE,
   PF_ERR,
@@ -274,7 +275,17 @@ export class CPU {
           // machine (the host execution boundary); a syscall vectors in-CPU when
           // an IDT is installed, else returns to the host.
           if (result.reason === 'syscall') {
-            const deliver = this.deliver(result.num, this.pc, 0);
+            const deliver = this.deliver(result.num, this.pc, 0, true);
+            if (deliver === 'denied') {
+              const gp = this.deliver(TRAP.GP, pc0, 0);
+              if (gp === 'double') return this.trap(this.doubleFault());
+              if (gp === 'guest') continue;
+              return this.trap({
+                reason: 'fault',
+                kind: 'privileged',
+                message: `software interrupt 0x${result.num.toString(16)} is not callable from USER mode`,
+              });
+            }
             if (deliver === 'host') return this.trap(result);
             if (deliver === 'double') return this.trap(this.doubleFault());
             continue;
@@ -329,7 +340,8 @@ export class CPU {
     vector: number,
     returnPc: number,
     errorCode: number,
-  ): 'guest' | 'host' | 'double' {
+    software = false,
+  ): 'guest' | 'host' | 'double' | 'denied' {
     if (this.idtr === 0) return 'host';
     const base = this.idtr + vector * IDT_ENTRY_SIZE;
     let handler: number;
@@ -342,6 +354,7 @@ export class CPU {
       throw e;
     }
     if ((flags & IDT_PRESENT) === 0) return 'host';
+    if (software && this.mode === MODE.USER && (flags & IDT_USER) === 0) return 'denied';
 
     const oldMode = this.mode;
     const oldFlags = this.flags;

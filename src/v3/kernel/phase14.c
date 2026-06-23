@@ -74,6 +74,7 @@ char buf_data[CFG_BUF_DATA_LEN]; // NBUF * 512 bytes
 // Kernel scratch buffers (the syscall path is non-reentrant -- interrupts are
 // masked in handlers -- so single global buffers are safe).
 char initpath[CFG_INITPATH_LEN]; // boot-block init path, NUL-terminated
+char kpath[CFG_INITPATH_LEN];
 char namebuf[16]; // one path component during namei
 char direntbuf[16]; // one directory entry during dirlookup
 
@@ -412,6 +413,62 @@ int get_phys(int pd, int vaddr) {
   return ptp[(vaddr >> 12) & 0x3ff] & 0xfffff000;
 }
 
+int user_access_ok(int proc, int addr, int len, int write) {
+  int *pd;
+  int pde;
+  int *pt;
+  int pte;
+  int page;
+  int last;
+  if (len < 0 || addr < CFG_USER_BASE || addr > CFG_USER_END) {
+    return 0;
+  }
+  if (len > CFG_USER_END - addr) {
+    return 0;
+  }
+  if (len == 0) {
+    return 1;
+  }
+  page = addr & 0xfffff000;
+  last = (addr + len - 1) & 0xfffff000;
+  pd = proc_ptbr[proc];
+  while (page <= last) {
+    pde = pd[(page >> 22) & 0x3ff];
+    if ((pde & 5) != 5) {
+      return 0;
+    }
+    pt = pde & 0xfffff000;
+    pte = pt[(page >> 12) & 0x3ff];
+    if ((pte & 5) != 5 || (write != 0 && (pte & 2) == 0)) {
+      return 0;
+    }
+    page = page + 4096;
+  }
+  return 1;
+}
+
+int copy_path_in(int proc, int upath) {
+  int i;
+  int c;
+  i = 0;
+  while (i < CFG_INITPATH_LEN) {
+    if (user_access_ok(proc, upath + i, 1, 0) == 0) {
+      return -1;
+    }
+    c = read8_at(upath + i);
+    if (c == 0) {
+      kpath[i] = 0;
+      return 0;
+    }
+    if (i == CFG_INITPATH_LEN - 1) {
+      return -1;
+    }
+    kpath[i] = c;
+    i = i + 1;
+  }
+  return -1;
+}
+
 // Copy every user mapping (page-directory entries 1..1023) from src to dst,
 // duplicating each frame's contents. This is fork without copy-on-write.
 void copy_space(int src, int dst) {
@@ -537,26 +594,27 @@ int alloc_proc() {
 }
 
 // Resolve `path` and read the whole executable into the code frame.
-void load_user_file(int code, int path) {
+int load_user_file(int code, int path) {
   int inum;
   int sz;
   inum = namei(path);
   if (inum == 0) {
-    panic("exec: file not found");
+    return -1;
   }
   if (inode_type(inum) != CFG_T_FILE) {
-    panic("exec: not a regular file");
+    return -1;
   }
   sz = inode_size(inum);
   if (sz > 4096) {
-    panic("exec: program larger than one page");
+    return -1;
   }
   readi(inum, 0, sz, code);
+  return 0;
 }
 
 // Build a fresh address space for slot idx running the program at `path`, with
 // R0 seeded to `tag`. Sets proc_ptbr / proc_data_frame and resets the context.
-void build_image(int idx, int path, int tag) {
+int build_image(int idx, int path, int tag) {
   int pd;
   int code;
   int data;
@@ -568,19 +626,28 @@ void build_image(int idx, int path, int tag) {
   zero_page(code); // unused tail of the code page reads as zero (NOPs)
   zero_page(data);
   zero_page(stack);
-  load_user_file(code, path);
+  if (load_user_file(code, path) < 0) {
+    free_frame(code);
+    free_frame(data);
+    free_frame(stack);
+    free_space(pd);
+    return -1;
+  }
   map_page(pd, CFG_USER_CODE, code, CFG_PTE_USER);
   map_page(pd, CFG_USER_DATA, data, CFG_PTE_USER);
   map_page(pd, CFG_USER_STACK_PAGE, stack, CFG_PTE_USER);
   proc_ptbr[idx] = pd;
   proc_data_frame[idx] = data;
   set_initial_context(idx, tag);
+  return 0;
 }
 
 int setup_process(int path, int tag) {
   int idx;
   idx = alloc_proc();
-  build_image(idx, path, tag);
+  if (build_image(idx, path, tag) < 0) {
+    panic("boot: invalid init executable");
+  }
   proc_parent[idx] = -1;
   proc_state[idx] = CFG_ST_RUNNABLE;
   clear_fds(idx);
@@ -707,7 +774,7 @@ void on_page_fault() {
 // Copy `len` bytes from a user virtual address out to the console. The syscall
 // runs with the calling process's page directory still live, so user pointers
 // are directly readable; we only bound-check them to the user address range.
-int sys_write(int fd, int buf, int len) {
+int sys_write(int caller, int fd, int buf, int len) {
   char *p;
   int i;
   if (fd != 1 && fd != 2) {
@@ -716,10 +783,7 @@ int sys_write(int fd, int buf, int len) {
   if (len < 0) {
     return -1;
   }
-  if (buf < CFG_USER_BASE) {
-    return -1;
-  }
-  if (buf + len > CFG_USER_END) {
+  if (user_access_ok(caller, buf, len, 0) == 0) {
     return -1;
   }
   p = buf;
@@ -736,10 +800,10 @@ int sys_open(int caller, int path, int flags) {
   int inum;
   int base;
   int fd;
-  if (path < CFG_USER_BASE || path >= CFG_USER_END) {
+  if (copy_path_in(caller, path) < 0) {
     return -1;
   }
-  inum = namei(path);
+  inum = namei(kpath);
   if (inum == 0) {
     return -1;
   }
@@ -771,10 +835,7 @@ int sys_read(int caller, int fd, int buf, int len) {
   if (len < 0) {
     return -1;
   }
-  if (buf < CFG_USER_BASE) {
-    return -1;
-  }
-  if (buf + len > CFG_USER_END) {
+  if (user_access_ok(caller, buf, len, 1) == 0) {
     return -1;
   }
   if (fd == 0) {
@@ -834,8 +895,15 @@ int do_fork(int parent) {
 // there is no return to the caller (build_image resets pc/R0 to the new entry).
 int do_exec(int idx, int path) {
   int old_pd;
+  if (copy_path_in(idx, path) < 0) {
+    proc_regs[idx * 8 + 0] = -1;
+    return 0;
+  }
   old_pd = proc_ptbr[idx];
-  build_image(idx, path, 0);
+  if (build_image(idx, kpath, 0) < 0) {
+    proc_regs[idx * 8 + 0] = -1;
+    return 0;
+  }
   return old_pd;
 }
 
@@ -914,7 +982,7 @@ void on_syscall() {
     pending_free = do_exit(caller, a1);
     switch_to_next();
   } else if (num == CFG_SYS_WRITE) {
-    proc_regs[caller * 8 + 0] = sys_write(a1, a2, a3);
+    proc_regs[caller * 8 + 0] = sys_write(caller, a1, a2, a3);
   } else if (num == CFG_SYS_READ) {
     proc_regs[caller * 8 + 0] = sys_read(caller, a1, a2, a3);
   } else if (num == CFG_SYS_YIELD) {
@@ -933,7 +1001,7 @@ void on_syscall() {
   } else if (num == CFG_SYS_CLOSE) {
     proc_regs[caller * 8 + 0] = sys_close(caller, a1);
   } else {
-    panic("unknown syscall");
+    proc_regs[caller * 8 + 0] = -1;
   }
 
   load_ctx(current);
@@ -953,6 +1021,13 @@ void set_idt_entry(int vector, int handler) {
   entry = CFG_IDT + vector * CFG_IDT_ENTRY_SIZE;
   entry[0] = handler;
   entry[1] = CFG_IDT_PRESENT;
+}
+
+void set_user_idt_entry(int vector, int handler) {
+  int *entry;
+  entry = CFG_IDT + vector * CFG_IDT_ENTRY_SIZE;
+  entry[0] = handler;
+  entry[1] = CFG_IDT_PRESENT | CFG_IDT_USER;
 }
 
 void capture_handlers() {
@@ -979,7 +1054,7 @@ void setup_traps() {
   }
   set_idt_entry(CFG_TIMER_VECTOR, timer_handler_addr);
   set_idt_entry(CFG_PAGEFAULT_VECTOR, pf_handler_addr);
-  set_idt_entry(CFG_SYSCALL_VECTOR, syscall_handler_addr);
+  set_user_idt_entry(CFG_SYSCALL_VECTOR, syscall_handler_addr);
   __lksp(CFG_KSTACK_TOP);
 }
 

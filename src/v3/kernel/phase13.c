@@ -168,6 +168,40 @@ int get_phys(int pd, int vaddr) {
   return ptp[(vaddr >> 12) & 0x3ff] & 0xfffff000;
 }
 
+int user_access_ok(int proc, int addr, int len, int write) {
+  int *pd;
+  int pde;
+  int *pt;
+  int pte;
+  int page;
+  int last;
+  if (len < 0 || addr < CFG_USER_BASE || addr > CFG_USER_END) {
+    return 0;
+  }
+  if (len > CFG_USER_END - addr) {
+    return 0;
+  }
+  if (len == 0) {
+    return 1;
+  }
+  page = addr & 0xfffff000;
+  last = (addr + len - 1) & 0xfffff000;
+  pd = proc_ptbr[proc];
+  while (page <= last) {
+    pde = pd[(page >> 22) & 0x3ff];
+    if ((pde & 5) != 5) {
+      return 0;
+    }
+    pt = pde & 0xfffff000;
+    pte = pt[(page >> 12) & 0x3ff];
+    if ((pte & 5) != 5 || (write != 0 && (pte & 2) == 0)) {
+      return 0;
+    }
+    page = page + 4096;
+  }
+  return 1;
+}
+
 // Copy every user mapping (page-directory entries 1..1023) from src to dst,
 // duplicating each frame's contents. This is fork without copy-on-write.
 void copy_space(int src, int dst) {
@@ -427,7 +461,7 @@ void on_page_fault() {
 // Copy `len` bytes from a user virtual address out to the console. The syscall
 // runs with the calling process's page directory still live, so user pointers
 // are directly readable; we only bound-check them to the user address range.
-int sys_write(int fd, int buf, int len) {
+int sys_write(int caller, int fd, int buf, int len) {
   char *p;
   int i;
   if (fd != 1 && fd != 2) {
@@ -436,10 +470,7 @@ int sys_write(int fd, int buf, int len) {
   if (len < 0) {
     return -1;
   }
-  if (buf < CFG_USER_BASE) {
-    return -1;
-  }
-  if (buf + len > CFG_USER_END) {
+  if (user_access_ok(caller, buf, len, 0) == 0) {
     return -1;
   }
   p = buf;
@@ -453,7 +484,7 @@ int sys_write(int fd, int buf, int len) {
 
 // Read at most one byte from the keyboard into a user buffer; 0 means no input
 // is available (treated as EOF by callers). No blocking yet.
-int sys_read(int fd, int buf, int len) {
+int sys_read(int caller, int fd, int buf, int len) {
   char *p;
   int ch;
   if (fd != 0) {
@@ -462,10 +493,7 @@ int sys_read(int fd, int buf, int len) {
   if (len <= 0) {
     return 0;
   }
-  if (buf < CFG_USER_BASE) {
-    return -1;
-  }
-  if (buf + len > CFG_USER_END) {
+  if (user_access_ok(caller, buf, len, 1) == 0) {
     return -1;
   }
   ch = __in(CFG_KBD_DATA);
@@ -494,6 +522,10 @@ int do_fork(int parent) {
 // resets pc to the new entry and R0 to 0).
 int do_exec(int idx, int id) {
   int old_pd;
+  if (id < 0 || id > 1) {
+    proc_regs[idx * 8 + 0] = -1;
+    return 0;
+  }
   old_pd = proc_ptbr[idx];
   build_image(idx, id, 0);
   return old_pd;
@@ -575,9 +607,9 @@ void on_syscall() {
     pending_free = do_exit(caller, a1);
     switch_to_next();
   } else if (num == CFG_SYS_WRITE) {
-    proc_regs[caller * 8 + 0] = sys_write(a1, a2, a3);
+    proc_regs[caller * 8 + 0] = sys_write(caller, a1, a2, a3);
   } else if (num == CFG_SYS_READ) {
-    proc_regs[caller * 8 + 0] = sys_read(a1, a2, a3);
+    proc_regs[caller * 8 + 0] = sys_read(caller, a1, a2, a3);
   } else if (num == CFG_SYS_YIELD) {
     proc_regs[caller * 8 + 0] = 0;
     switch_to_next();
@@ -590,7 +622,7 @@ void on_syscall() {
   } else if (num == CFG_SYS_WAIT) {
     pending_free = do_wait(caller);
   } else {
-    panic("unknown syscall");
+    proc_regs[caller * 8 + 0] = -1;
   }
 
   load_ctx(current);
@@ -610,6 +642,13 @@ void set_idt_entry(int vector, int handler) {
   entry = CFG_IDT + vector * CFG_IDT_ENTRY_SIZE;
   entry[0] = handler;
   entry[1] = CFG_IDT_PRESENT;
+}
+
+void set_user_idt_entry(int vector, int handler) {
+  int *entry;
+  entry = CFG_IDT + vector * CFG_IDT_ENTRY_SIZE;
+  entry[0] = handler;
+  entry[1] = CFG_IDT_PRESENT | CFG_IDT_USER;
 }
 
 void capture_handlers() {
@@ -636,7 +675,7 @@ void setup_traps() {
   }
   set_idt_entry(CFG_TIMER_VECTOR, timer_handler_addr);
   set_idt_entry(CFG_PAGEFAULT_VECTOR, pf_handler_addr);
-  set_idt_entry(CFG_SYSCALL_VECTOR, syscall_handler_addr);
+  set_user_idt_entry(CFG_SYSCALL_VECTOR, syscall_handler_addr);
   __lksp(CFG_KSTACK_TOP);
 }
 

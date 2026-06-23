@@ -5,9 +5,18 @@ char buf[512];
 
 void copy_fd(int fd) {
   int n;
+  int off;
+  int wrote;
   n = read(fd, buf, 512);
   while (n > 0) {
-    write(1, buf, n);
+    off = 0;
+    while (off < n) {
+      wrote = write(1, buf + off, n - off);
+      if (wrote <= 0) {
+        return;
+      }
+      off = off + wrote;
+    }
     n = read(fd, buf, 512);
   }
 }

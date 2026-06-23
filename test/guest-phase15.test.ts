@@ -36,6 +36,7 @@ test('Phase 15: a compiled userland boots and the shell runs echo/ls/cat and a p
     consoleSink: (s) => (out += s),
   });
   machine.keyboard.feed(SCRIPT);
+  machine.keyboard.close();
   machine.load(0, image.flat);
   machine.reset({ pc: image.entry, sp: PHASE15_KERNEL_LAYOUT.kstackTop });
 
@@ -69,4 +70,27 @@ test('Phase 15: a fresh disk image contains the compiled userland under /bin', (
     const magic = bytes[0]! | (bytes[1]! << 8) | (bytes[2]! << 16) | (bytes[3]! << 24);
     assert.equal(magic >>> 0, 0x35315850, `${path} missing executable magic`);
   }
+});
+
+test('Phase 15: keyboard read blocks until input arrives, then resumes through IRQ', () => {
+  const image = buildPhase15KernelImage();
+  let out = '';
+  const machine = new Machine({
+    physSize: PHASE15_KERNEL_LAYOUT.physSize,
+    diskImage: buildPhase15DiskImage(),
+    consoleSink: (s) => (out += s),
+  });
+  machine.load(0, image.flat);
+  machine.reset({ pc: image.entry, sp: PHASE15_KERNEL_LAYOUT.kstackTop });
+
+  const idle = machine.run(20_000_000);
+  assert.equal(idle.reason, 'halt');
+  assert.equal(out.includes('all processes exited'), false);
+
+  machine.keyboard.feed('echo awake\n');
+  machine.keyboard.close();
+  const done = machine.run(20_000_000);
+  assert.equal(done.reason, 'halt');
+  assert.equal(out.includes('awake\n'), true);
+  assert.equal(out.endsWith('phase15: all processes exited\n'), true);
 });

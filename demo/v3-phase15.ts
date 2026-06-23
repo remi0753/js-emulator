@@ -17,6 +17,7 @@ const machine = new Machine({
 
 // Feed the shell a script on the keyboard; end of input ends the shell.
 machine.keyboard.feed('echo hi\nls /\ncat /etc/motd\ncat /etc/motd | cat\n');
+machine.keyboard.close();
 
 machine.load(0, image.flat);
 machine.reset({ pc: image.entry, sp: PHASE15_KERNEL_LAYOUT.kstackTop });

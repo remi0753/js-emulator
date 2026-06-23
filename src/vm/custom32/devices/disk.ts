@@ -53,6 +53,9 @@ export class BlockDisk implements PortDevice {
   write(port: number, value: number): void {
     if (port === PORT_POS) {
       const sector = value >>> 0;
+      if (sector >= this.sectors) {
+        throw new RangeError(`disk: sector out of range: ${sector} (sectors=${this.sectors})`);
+      }
       this.pos = sector * SECTOR_SIZE;
       this.onIo?.('seek', this.pos, sector);
       return;
@@ -67,15 +70,23 @@ export class BlockDisk implements PortDevice {
   }
 
   private read32(at: number): number {
+    this.checkWord(at);
     const b = this.data;
     return (b[at]! | (b[at + 1]! << 8) | (b[at + 2]! << 16) | (b[at + 3]! << 24)) >>> 0;
   }
   private write32(at: number, v: number): void {
+    this.checkWord(at);
     const b = this.data;
     b[at] = v & 0xff;
     b[at + 1] = (v >>> 8) & 0xff;
     b[at + 2] = (v >>> 16) & 0xff;
     b[at + 3] = (v >>> 24) & 0xff;
+  }
+
+  private checkWord(at: number): void {
+    if (at < 0 || at + 4 > this.data.length) {
+      throw new RangeError(`disk: word access out of range at byte ${at}`);
+    }
   }
 }
 

@@ -111,6 +111,10 @@ never disagree on operand layout.
 
 These instructions are privileged and trap if executed in USER mode.
 
+IDT entries are two words: handler address and flags. Flag bit 0 marks the gate
+present; bit 1 permits software `INT` entry from USER mode. Exception and IRQ
+gates omit bit 1, while the syscall gate includes it.
+
 ## Assembler syntax
 
 - One instruction per line; `;` or `#` starts a comment.

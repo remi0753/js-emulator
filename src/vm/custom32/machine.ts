@@ -6,6 +6,7 @@
 // TypeScript kernel is one client of this machine; a future guest kernel
 // (model B) can boot directly through this boundary instead.
 
+import { KEYBOARD_IRQ } from '../../isa.ts';
 import { CPU, type CpuState, MODE, NUM_REGS, type RunResult } from './cpu.ts';
 import { Console } from './devices/console.ts';
 import { BlockDisk } from './devices/disk.ts';
@@ -54,6 +55,8 @@ export class Machine {
 
     this.keyboard = new Keyboard();
     this.ports.register(PORT.KBD_DATA, 1, this.keyboard);
+    this.ports.register(PORT.KBD_STATUS, 1, this.keyboard);
+    this.keyboard.onInput = () => this.cpu.raiseIrq(KEYBOARD_IRQ);
 
     this.disk = opts.diskImage
       ? new BlockDisk(opts.diskImage)

@@ -131,11 +131,15 @@ export const TRAP = {
 
 // The timer is wired to IRQ line 0 -> vector TRAP.IRQ_BASE.
 export const TIMER_IRQ = 0;
+export const KEYBOARD_IRQ = 1;
 
 // IDT layout: a flat table of 8-byte gate descriptors indexed by vector.
 //   +0: handler virtual address (offset)   +4: flags (bit 0 = Present)
 export const IDT_ENTRY_SIZE = 8;
 export const IDT_PRESENT = 1 << 0;
+// Software INT from USER mode may enter only gates carrying this bit. Hardware
+// exceptions and IRQs ignore it.
+export const IDT_USER = 1 << 1;
 
 // Page-fault error-code bits (pushed as the trap error code; readable via RDERR).
 export const PF_ERR = {

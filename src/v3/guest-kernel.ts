@@ -2,7 +2,17 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { assemble } from '../assembler.ts';
-import { ARG_SIZE, FLAG, IDT_ENTRY_SIZE, IDT_PRESENT, SYSCALL_INT, TIMER_IRQ, TRAP } from '../isa.ts';
+import {
+  ARG_SIZE,
+  FLAG,
+  IDT_ENTRY_SIZE,
+  IDT_PRESENT,
+  IDT_USER,
+  KEYBOARD_IRQ,
+  SYSCALL_INT,
+  TIMER_IRQ,
+  TRAP,
+} from '../isa.ts';
 import { SYS } from '../v2/kernel/abi.ts';
 import { BOOT_MAGIC, encodeBootBlock, makeBootBlock } from '../v2/kernel/bootblock.ts';
 import { BlockDriver } from '../v2/kernel/disk.ts';
@@ -76,6 +86,7 @@ function phase11Defines(): Defines {
     CFG_IDT: L.idt,
     CFG_IDT_ENTRY_SIZE: IDT_ENTRY_SIZE,
     CFG_IDT_PRESENT: IDT_PRESENT,
+    CFG_IDT_USER: IDT_USER,
     CFG_PAGE_TABLE0: L.pageTable0,
     CFG_PAGE_DIRECTORY: L.pageDirectory,
     CFG_TIMER_VECTOR: TRAP.IRQ_BASE + TIMER_IRQ,
@@ -171,6 +182,7 @@ function phase12Defines(): Defines {
     CFG_IDT: L.idt,
     CFG_IDT_ENTRY_SIZE: IDT_ENTRY_SIZE,
     CFG_IDT_PRESENT: IDT_PRESENT,
+    CFG_IDT_USER: IDT_USER,
     CFG_TIMER_VECTOR: TRAP.IRQ_BASE + TIMER_IRQ,
     CFG_PAGEFAULT_VECTOR: TRAP.PAGEFAULT,
     CFG_KSTACK_TOP: L.kstackTop,
@@ -310,6 +322,8 @@ function phase13Defines(): Defines {
   return {
     CFG_CONSOLE_DATA: PORT.CONSOLE_DATA,
     CFG_KBD_DATA: PORT.KBD_DATA,
+    CFG_KBD_STATUS: PORT.KBD_STATUS,
+    CFG_KBD_VECTOR: TRAP.IRQ_BASE + KEYBOARD_IRQ,
     CFG_PTE_KERNEL: PTE_KERNEL,
     CFG_PTE_USER: PTE_USER,
     CFG_MAX_PROC: PHASE12_MAX_PROC,
@@ -326,6 +340,7 @@ function phase13Defines(): Defines {
     CFG_IDT: L.idt,
     CFG_IDT_ENTRY_SIZE: IDT_ENTRY_SIZE,
     CFG_IDT_PRESENT: IDT_PRESENT,
+    CFG_IDT_USER: IDT_USER,
     CFG_TIMER_VECTOR: TRAP.IRQ_BASE + TIMER_IRQ,
     CFG_PAGEFAULT_VECTOR: TRAP.PAGEFAULT,
     CFG_SYSCALL_VECTOR: SYSCALL_INT,
@@ -516,6 +531,8 @@ function phase14Defines(): Defines {
   return {
     CFG_CONSOLE_DATA: PORT.CONSOLE_DATA,
     CFG_KBD_DATA: PORT.KBD_DATA,
+    CFG_KBD_STATUS: PORT.KBD_STATUS,
+    CFG_KBD_VECTOR: TRAP.IRQ_BASE + KEYBOARD_IRQ,
     CFG_DISK_POS: PORT.DISK_POS,
     CFG_DISK_DATA: PORT.DISK_DATA,
     CFG_PTE_KERNEL: PTE_KERNEL,
@@ -536,6 +553,7 @@ function phase14Defines(): Defines {
     CFG_IDT: L.idt,
     CFG_IDT_ENTRY_SIZE: IDT_ENTRY_SIZE,
     CFG_IDT_PRESENT: IDT_PRESENT,
+    CFG_IDT_USER: IDT_USER,
     CFG_TIMER_VECTOR: TRAP.IRQ_BASE + TIMER_IRQ,
     CFG_PAGEFAULT_VECTOR: TRAP.PAGEFAULT,
     CFG_SYSCALL_VECTOR: SYSCALL_INT,
@@ -654,7 +672,7 @@ const PHASE15_LIBC_SOURCE = substituteDefines(
 // executable: a 12-byte header (magic, entry, memSize) followed by the text+data
 // image. The kernel maps memSize bytes of pages from USER_LOAD_BASE, copies the
 // image in, and the bss tail stays zero.
-function buildUserExecutable(name: string, programSource: string): Uint8Array {
+export function buildPhase15UserExecutable(name: string, programSource: string): Uint8Array {
   const base = PHASE15_KERNEL_LAYOUT.userLoadBase;
   const libc = compileC(PHASE15_LIBC_SOURCE, { start: 'none', moduleId: `${name}_libc` });
   const prog = compileC(programSource, { start: 'user', moduleId: name, cStackSize: 4096 });
@@ -690,11 +708,11 @@ export function buildPhase15DiskImage(): Uint8Array {
   const driver = new BlockDriver(ports);
   const fs = new Fs(driver);
   fs.mkfs();
-  fs.writeFile('/bin/init', buildUserExecutable('init', sourceFile('userland/init.c')));
-  fs.writeFile('/bin/sh', buildUserExecutable('sh', sourceFile('userland/sh.c')));
-  fs.writeFile('/bin/echo', buildUserExecutable('echo', sourceFile('userland/echo.c')));
-  fs.writeFile('/bin/cat', buildUserExecutable('cat', sourceFile('userland/cat.c')));
-  fs.writeFile('/bin/ls', buildUserExecutable('ls', sourceFile('userland/ls.c')));
+  fs.writeFile('/bin/init', buildPhase15UserExecutable('init', sourceFile('userland/init.c')));
+  fs.writeFile('/bin/sh', buildPhase15UserExecutable('sh', sourceFile('userland/sh.c')));
+  fs.writeFile('/bin/echo', buildPhase15UserExecutable('echo', sourceFile('userland/echo.c')));
+  fs.writeFile('/bin/cat', buildPhase15UserExecutable('cat', sourceFile('userland/cat.c')));
+  fs.writeFile('/bin/ls', buildPhase15UserExecutable('ls', sourceFile('userland/ls.c')));
   fs.writeFile('/etc/motd', new TextEncoder().encode(PHASE15_MOTD));
 
   driver.write(0, encodeBootBlock(makeBootBlock('/bin/init')));
@@ -707,6 +725,8 @@ function phase15Defines(): Defines {
     ...phase15SyscallDefines(),
     CFG_CONSOLE_DATA: PORT.CONSOLE_DATA,
     CFG_KBD_DATA: PORT.KBD_DATA,
+    CFG_KBD_STATUS: PORT.KBD_STATUS,
+    CFG_KBD_VECTOR: TRAP.IRQ_BASE + KEYBOARD_IRQ,
     CFG_DISK_POS: PORT.DISK_POS,
     CFG_DISK_DATA: PORT.DISK_DATA,
     CFG_PTE_KERNEL: PTE_KERNEL,
@@ -731,6 +751,7 @@ function phase15Defines(): Defines {
     CFG_IDT: L.idt,
     CFG_IDT_ENTRY_SIZE: IDT_ENTRY_SIZE,
     CFG_IDT_PRESENT: IDT_PRESENT,
+    CFG_IDT_USER: IDT_USER,
     CFG_TIMER_VECTOR: TRAP.IRQ_BASE + TIMER_IRQ,
     CFG_PAGEFAULT_VECTOR: TRAP.PAGEFAULT,
     CFG_SYSCALL_VECTOR: SYSCALL_INT,
@@ -814,13 +835,16 @@ export function buildPhase16DiskImage(): Uint8Array {
   const driver = new BlockDriver(ports);
   const fs = new Fs(driver);
   fs.mkfs();
-  fs.writeFile('/bin/init', buildUserExecutable('init', sourceFile('userland/init.c')));
-  fs.writeFile('/bin/sh', buildUserExecutable('sh', sourceFile('userland/sh.c')));
-  fs.writeFile('/bin/echo', buildUserExecutable('echo', sourceFile('userland/echo.c')));
-  fs.writeFile('/bin/cat', buildUserExecutable('cat', sourceFile('userland/cat.c')));
-  fs.writeFile('/bin/ls', buildUserExecutable('ls', sourceFile('userland/ls.c')));
-  fs.writeFile('/bin/date', buildUserExecutable('date', sourceFile('userland/date.c')));
-  fs.writeFile('/bin/shutdown', buildUserExecutable('shutdown', sourceFile('userland/shutdown.c')));
+  fs.writeFile('/bin/init', buildPhase15UserExecutable('init', sourceFile('userland/init.c')));
+  fs.writeFile('/bin/sh', buildPhase15UserExecutable('sh', sourceFile('userland/sh.c')));
+  fs.writeFile('/bin/echo', buildPhase15UserExecutable('echo', sourceFile('userland/echo.c')));
+  fs.writeFile('/bin/cat', buildPhase15UserExecutable('cat', sourceFile('userland/cat.c')));
+  fs.writeFile('/bin/ls', buildPhase15UserExecutable('ls', sourceFile('userland/ls.c')));
+  fs.writeFile('/bin/date', buildPhase15UserExecutable('date', sourceFile('userland/date.c')));
+  fs.writeFile(
+    '/bin/shutdown',
+    buildPhase15UserExecutable('shutdown', sourceFile('userland/shutdown.c')),
+  );
   fs.writeFile('/etc/motd', new TextEncoder().encode(PHASE16_MOTD));
 
   driver.write(0, encodeBootBlock(makeBootBlock('/bin/init')));

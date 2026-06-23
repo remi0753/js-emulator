@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { assemble } from '../src/assembler.ts';
-import { PF_ERR } from '../src/isa.ts';
+import { IDT_PRESENT, IDT_USER, PF_ERR } from '../src/isa.ts';
 import { MODE } from '../src/vm/custom32/cpu.ts';
 import { Machine } from '../src/vm/custom32/machine.ts';
 import { dirIndex, PTE, tableIndex } from '../src/vm/custom32/mmu.ts';
@@ -27,8 +27,8 @@ test('guest kernel: INT 0x80 vectors to a handler and IRET resumes user mode', (
       MOV R3, sys_handler
       STORER R2, R3           ; IDT[0x80].offset = handler
       MOV R2, 0x8404
-      MOV R3, 1
-      STORER R2, R3           ; IDT[0x80].flags = Present
+      MOV R3, ${IDT_PRESENT | IDT_USER}
+      STORER R2, R3           ; Present + callable from USER mode
       MOV R1, 0x5000
       LKSP R1                 ; kernel stack pointer (esp0)
       ; drop to user mode by IRETing into a synthetic trap frame
@@ -179,7 +179,7 @@ test('guest kernel: a user page fault is handled in-CPU and the instruction retr
 
   // IDT entries (physical): vector 14 = page fault, vector 0x80 = exit.
   installGate(phys, IDT, 14, kernel.labels.get('pf_handler')!);
-  installGate(phys, IDT, 0x80, kernel.labels.get('sys_handler')!);
+  installGate(phys, IDT, 0x80, kernel.labels.get('sys_handler')!, true);
 
   machine.reset({ pc: 0, sp: 0x2f000, ptbr: PD, pagingEnabled: true });
   const r = machine.run(10000);
@@ -270,6 +270,46 @@ test('no IDT installed: a syscall still falls back to returning to the host', ()
   assert.equal(r.reason === 'syscall' && r.num, 0x80);
 });
 
+test('USER mode cannot invoke a supervisor-only IDT gate with INT', () => {
+  const { bytes, labels } = assemble(`
+    MOV R1, 0x8000
+    LIDT R1
+    MOV R2, 0x8070
+    MOV R3, forbidden
+    STORER R2, R3
+    MOV R2, 0x8074
+    MOV R3, ${IDT_PRESENT}
+    STORER R2, R3
+    MOV R1, 0x5000
+    LKSP R1
+    MOV R0, 0x4000
+    PUSH R0
+    MOV R0, 0
+    PUSH R0
+    MOV R0, 1
+    PUSH R0
+    MOV R0, user
+    PUSH R0
+    IRET
+  user:
+    INT 14
+  forbidden:
+    MOV R0, 1
+    STORE R0, marker
+    HLT
+  marker: .word 0
+  `);
+  const machine = new Machine({ physSize: 64 * 1024 });
+  machine.load(0, bytes);
+  machine.reset();
+
+  const r = machine.run(1000);
+
+  assert.equal(r.reason, 'fault');
+  assert.equal(r.reason === 'fault' && r.kind, 'privileged');
+  assert.equal(machine.phys.read32(labels.get('marker')!), 0);
+});
+
 test('a fault during trap delivery (unmapped kernel stack) is reported as a double fault', () => {
   // Paging on, but the kernel stack page is left unmapped, so pushing the trap
   // frame itself faults. The CPU must report this rather than recursing.
@@ -311,7 +351,7 @@ test('a fault during trap delivery (unmapped kernel stack) is reported as a doub
   };
   for (let p = 0; p < 0x40000; p += 4096) mmu.map(PD, p, p, PTE.W, alloc);
   mmu.map(PD, 0x40000, 0x20000, PTE.U, alloc);
-  installGate(phys, IDT, 0x80, kernel.labels.get('sys_handler')!);
+  installGate(phys, IDT, 0x80, kernel.labels.get('sys_handler')!, true);
 
   machine.reset({ pc: 0, sp: 0x2f000, ptbr: PD, pagingEnabled: true });
   const r = machine.run(10000);
@@ -362,7 +402,8 @@ function installGate(
   base: number,
   vec: number,
   handler: number,
+  userCallable = false,
 ): void {
   phys.write32(base + vec * 8, handler);
-  phys.write32(base + vec * 8 + 4, 1);
+  phys.write32(base + vec * 8 + 4, IDT_PRESENT | (userCallable ? IDT_USER : 0));
 }

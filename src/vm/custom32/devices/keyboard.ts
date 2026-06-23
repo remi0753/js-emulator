@@ -37,6 +37,9 @@ export class Keyboard implements PortDevice {
 
   // Raw port read (IN): next byte or 0.
   read(_port: number): number {
+    if (_port === 0x64) {
+      return (this.queue.length > 0 ? 1 : 0) | (this.closed ? 2 : 0);
+    }
     return this.queue.shift() ?? 0;
   }
 }

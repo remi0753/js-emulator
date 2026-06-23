@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { IDT_ENTRY_SIZE, IDT_PRESENT, SYSCALL_INT, TIMER_IRQ, TRAP } from '../src/isa.ts';
+import {
+  IDT_ENTRY_SIZE,
+  IDT_PRESENT,
+  IDT_USER,
+  SYSCALL_INT,
+  TIMER_IRQ,
+  TRAP,
+} from '../src/isa.ts';
 import {
   buildPhase14DiskImage,
   buildPhase14KernelImage,
@@ -55,7 +62,10 @@ test('Phase 14: guest kernel mounts the FS, loads /bin/init from disk, and runs 
   assert.ok(defaultHandler > 0 && timerHandler > 0 && pfHandler > 0 && syscallHandler > 0);
   for (let vector = 0; vector < 256; vector++) {
     const base = PHASE14_KERNEL_LAYOUT.idt + vector * IDT_ENTRY_SIZE;
-    assert.equal(machine.phys.read32(base + 4), IDT_PRESENT);
+    assert.equal(
+      machine.phys.read32(base + 4),
+      vector === SYSCALL_INT ? IDT_PRESENT | IDT_USER : IDT_PRESENT,
+    );
     const expected =
       vector === timerVector
         ? timerHandler
