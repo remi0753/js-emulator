@@ -122,14 +122,16 @@ const SIGNAL = {
   SIGCONT: 18,
   SIGSTOP: 19,
   SIGTSTP: 20,
+  SIGTTIN: 21,
+  SIGTTOU: 22,
 } as const;
 
 export const GUEST_EXECUTABLE_MAGIC = 0x35315850;
 
 export const GUEST_KERNEL_LAYOUT = {
-  idt: 0x48000,
-  kernelPageTable: 0x49000,
-  kstackTop: 0x58000,
+  idt: 0x50000,
+  kernelPageTable: 0x51000,
+  kstackTop: 0x60000,
   framePoolBase: 0x100000,
   framePoolEnd: 0x380000,
   timerPeriod: 8000,
@@ -300,6 +302,8 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_SIGCONT: SIGNAL.SIGCONT,
   CFG_SIGSTOP: SIGNAL.SIGSTOP,
   CFG_SIGTSTP: SIGNAL.SIGTSTP,
+  CFG_SIGTTIN: SIGNAL.SIGTTIN,
+  CFG_SIGTTOU: SIGNAL.SIGTTOU,
   CFG_SIG_BLOCK: 0,
   CFG_SIG_UNBLOCK: 1,
   CFG_SIG_SETMASK: 2,
@@ -329,6 +333,22 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_O_TRUNC: 0x400,
   CFG_TIOCGPGRP: 0x540f,
   CFG_TIOCSPGRP: 0x5410,
+  CFG_TCGETS: 0x5401,
+  CFG_TCSETS: 0x5402,
+  CFG_TCSETSW: 0x5403,
+  CFG_TCSETSF: 0x5404,
+  CFG_TIOCGWINSZ: 0x5413,
+  CFG_TIOCSWINSZ: 0x5414,
+  CFG_TTY_ISIG: 1,
+  CFG_TTY_ICANON: 2,
+  CFG_TTY_ECHO: 8,
+  CFG_TTY_ECHOE: 16,
+  CFG_TTY_VINTR: 0,
+  CFG_TTY_VERASE: 2,
+  CFG_TTY_VKILL: 3,
+  CFG_TTY_VEOF: 4,
+  CFG_TTY_VMIN: 6,
+  CFG_TTY_VSUSP: 10,
   CFG_CLOCK_REALTIME: 0,
   CFG_CLOCK_MONOTONIC: 1,
 };
@@ -403,6 +423,25 @@ int pipe(int *fds);
 int dup(int fd);
 int fcntl(int fd, int command, int argument);
 int ioctl(int fd, int request, int argument);
+struct termios {
+  int iflag;
+  int oflag;
+  int cflag;
+  int lflag;
+  int line;
+  int cc[12];
+};
+struct winsize {
+  int rows;
+  int cols;
+  int xpixel;
+  int ypixel;
+};
+int tcgetattr(int fd, struct termios *attributes);
+int tcsetattr(int fd, int actions, struct termios *attributes);
+int tcgetwinsize(int fd, struct winsize *size);
+int tcsetwinsize(int fd, struct winsize *size);
+int isatty(int fd);
 struct timespec {
   int tv_sec;
   int tv_nsec;

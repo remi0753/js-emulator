@@ -25,23 +25,7 @@ int console_write_op(int file_addr, int caller, int buf, int len) {
 }
 
 int keyboard_read_op(int file_addr, int caller, int buf, int len) {
-  int ch;
-  if (len == 0) {
-    return 0;
-  }
-  ch = kbd_getc();
-  if (ch == 0) {
-    if (kbd_eof()) {
-      return 0;
-    }
-    g_noret = 1;
-    proc_table[caller].ctx.pc =
-      proc_table[caller].ctx.pc - CFG_SYSCALL_INSTR_SIZE;
-    sleep(caller, &kbd_chan);
-    return 0;
-  }
-  write8_at(buf, ch);
-  return 1;
+  return tty_read(caller, buf, len);
 }
 
 int vnode_read_op(int file_addr, int caller, int buf, int len) {
@@ -390,8 +374,8 @@ void init_fds(int idx) {
     file_reset(&proc_table[idx].files[fd]);
     fd = fd + 1;
   }
-  if (vfs_lookup("/dev/console", 1, idx, &console) < 0) {
-    panic("missing /dev/console");
+  if (vfs_lookup("/dev/tty", 1, idx, &console) < 0) {
+    panic("missing /dev/tty");
   }
   file_set_node(&proc_table[idx].files[0], &console);
   proc_table[idx].files[0].readable = 1;

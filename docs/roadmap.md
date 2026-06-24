@@ -595,12 +595,21 @@ For every milestone, use the same completion workflow:
   inspection paths, and temporary files open and operate through the same VFS
   path as persistent disk files.
 
-- **Phase 21** ⬜ implement terminal and TTY semantics.
+- **Phase 21** ✅ implement terminal and TTY semantics.
 
   Add canonical/raw input modes, echo, line discipline, terminal window size,
   Ctrl-C/Ctrl-D/Ctrl-Z handling, and enough `ioctl` behavior for shells and text
   programs. Keep serial console as the early boot/debug path, but expose a proper
   TTY device to userland.
+
+  Added a guest-owned TTY line discipline between the keyboard driver and
+  devfs. `/dev/tty` (and the compatible `/dev/console` node) supports canonical
+  line buffering, raw input, echo and erase/kill editing, configured control
+  characters, foreground process groups, Ctrl-C/Ctrl-Z signals, Ctrl-D EOF,
+  host-input close, and blocking reads. Linux-shaped `TCGETS`/`TCSETS*`,
+  `TIOCGWINSZ`/`TIOCSWINSZ`, and foreground-group ioctls are exposed through
+  libc terminal helpers. The shell uses the TTY for standard descriptors and
+  supports basic `<` and `>` redirection without host-side input processing.
 
   Done when the shell can run interactively with line editing behavior, EOF,
   interrupts, job-control signals, and redirection without host-side special

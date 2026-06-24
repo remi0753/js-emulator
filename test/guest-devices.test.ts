@@ -21,6 +21,7 @@ const SCRIPT = 'date\nshutdown\n';
 const EXPECTED_OUTPUT =
   'kernel: boot\n' +
   'kernel: exec /bin/init\n' +
+  SCRIPT +
   `${RTC_TIME}\n` + // date: prints the RTC wall-clock time
   'kernel: shutdown\n'; // shutdown: the power device stops the machine
 

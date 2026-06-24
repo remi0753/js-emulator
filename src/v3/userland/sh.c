@@ -6,6 +6,8 @@
 char line[128];
 char *args[20];
 char pathbuf[64];
+char *redir_in;
+char *redir_out;
 
 // exec a command, searching /bin when the name contains no '/'. Returns only on
 // failure (exec replaces the image on success).
@@ -90,6 +92,49 @@ int tokenize() {
   return argc;
 }
 
+int parse_redirections(int argc) {
+  int i;
+  int out;
+  redir_in = 0;
+  redir_out = 0;
+  i = 0;
+  out = 0;
+  while (i < argc) {
+    if ((args[i][0] == '<' || args[i][0] == '>') &&
+        args[i][1] == 0) {
+      if (i + 1 >= argc) return -1;
+      if (args[i][0] == '<') redir_in = args[i + 1];
+      else redir_out = args[i + 1];
+      i = i + 2;
+    } else {
+      args[out] = args[i];
+      out = out + 1;
+      i = i + 1;
+    }
+  }
+  args[out] = 0;
+  return out;
+}
+
+int apply_redirections() {
+  int fd;
+  if (redir_in != 0) {
+    fd = open(redir_in, 0);
+    if (fd < 0) return -1;
+    close(0);
+    dup(fd);
+    close(fd);
+  }
+  if (redir_out != 0) {
+    fd = open(redir_out, 0x601);
+    if (fd < 0) return -1;
+    close(1);
+    dup(fd);
+    close(fd);
+  }
+  return 0;
+}
+
 void run_single(char **av, int background) {
   int pid;
   int status;
@@ -97,6 +142,7 @@ void run_single(char **av, int background) {
   if (pid == 0) {
     setpgid(0, 0);
     signal(2, 0);
+    if (apply_redirections() < 0) exit(1);
     exec_cmd(av);
     write(2, "sh: exec failed\n", 16);
     exit(1);
@@ -172,6 +218,11 @@ int main(int argc, char **argv) {
       continue;
     }
     nargs = tokenize();
+    nargs = parse_redirections(nargs);
+    if (nargs < 0) {
+      write(2, "sh: bad redirection\n", 20);
+      continue;
+    }
     if (nargs == 0) {
       continue;
     }

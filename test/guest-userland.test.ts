@@ -21,6 +21,7 @@ const SCRIPT = 'echo hi\nls /\ncat /etc/motd\ncat /etc/motd | cat\n';
 const EXPECTED_OUTPUT =
   'kernel: boot\n' +
   'kernel: exec /bin/init\n' +
+  SCRIPT +
   'hi\n' + // echo hi
   '.\n..\ndev\nproc\ntmp\nbin\netc\n' + // ls /
   GUEST_MOTD + // cat /etc/motd

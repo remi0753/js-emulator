@@ -212,7 +212,8 @@ int default_ignored(int signal) {
 }
 
 int default_stops(int signal) {
-  return signal == CFG_SIGSTOP || signal == CFG_SIGTSTP;
+  return signal == CFG_SIGSTOP || signal == CFG_SIGTSTP ||
+    signal == CFG_SIGTTIN || signal == CFG_SIGTTOU;
 }
 
 void prepare_signal(int idx) {

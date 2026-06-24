@@ -212,6 +212,11 @@ int dev_lookup(char *relative, struct vnode *node) {
       CFG_T_FILE, CFG_S_IFCHR | 438, 0);
     return 0;
   }
+  if (strcmp(relative, "tty") == 0) {
+    vnode_fill(node, &dev_vnode_ops, CFG_FS_DEV, 4,
+      CFG_T_FILE, CFG_S_IFCHR | 438, 0);
+    return 0;
+  }
   if (strcmp(relative, "null") == 0) {
     vnode_fill(node, &dev_vnode_ops, CFG_FS_DEV, 2,
       CFG_T_FILE, CFG_S_IFCHR | 438, 0);
@@ -239,19 +244,8 @@ int dev_read_op(int node_addr, int caller, int off, int buf, int len) {
     }
     return len;
   }
-  if (node->object != 1) return -CFG_EISDIR;
-  if (len == 0) return 0;
-  ch = kbd_getc();
-  if (ch == 0) {
-    if (kbd_eof()) return 0;
-    g_noret = 1;
-    proc_table[caller].ctx.pc =
-      proc_table[caller].ctx.pc - CFG_SYSCALL_INSTR_SIZE;
-    sleep(caller, &kbd_chan);
-    return 0;
-  }
-  write8_at(buf, ch);
-  return 1;
+  if (node->object != 1 && node->object != 4) return -CFG_EISDIR;
+  return tty_read(caller, buf, len);
 }
 
 int dev_write_op(int node_addr, int caller, int off, int buf, int len) {
@@ -259,13 +253,8 @@ int dev_write_op(int node_addr, int caller, int off, int buf, int len) {
   int i;
   node = node_addr;
   if (node->object == 2 || node->object == 3) return len;
-  if (node->object != 1) return -CFG_EISDIR;
-  i = 0;
-  while (i < len) {
-    serial_putc(read8_at(buf + i));
-    i = i + 1;
-  }
-  return len;
+  if (node->object != 1 && node->object != 4) return -CFG_EISDIR;
+  return tty_write(caller, buf, len);
 }
 
 int dev_getdents_op(
@@ -277,11 +266,12 @@ int dev_getdents_op(
   offset = offset_addr;
   if (count < sizeof(struct guest_dirent)) return -CFG_EINVAL;
   written = 0;
-  while (*offset < 3 &&
+  while (*offset < 4 &&
       written + sizeof(struct guest_dirent) <= count) {
     if (*offset == 0) name = "console";
     else if (*offset == 1) name = "null";
-    else name = "zero";
+    else if (*offset == 2) name = "zero";
+    else name = "tty";
     if (emit_dirent(caller, destination + written, *offset + 1,
         *offset + 1, CFG_T_FILE, name) < 0) return -CFG_EFAULT;
     *offset = *offset + 1;
@@ -826,7 +816,8 @@ int vnode_access(struct vnode *node, int uid, int gid, int mask) {
 }
 
 int vnode_is_tty(struct vnode *node) {
-  return node->fs_type == CFG_FS_DEV && node->object == 1;
+  return node->fs_type == CFG_FS_DEV &&
+    (node->object == 1 || node->object == 4);
 }
 
 void vfs_init(void) {

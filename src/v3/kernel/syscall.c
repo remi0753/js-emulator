@@ -207,6 +207,21 @@ int sys_ioctl(int caller, int fd, int request, int argument) {
     }
     return tty_set_foreground(caller, pgid);
   }
+  if (request == CFG_TCGETS) {
+    return tty_getattr(caller, argument);
+  }
+  if (request == CFG_TCSETS || request == CFG_TCSETSW) {
+    return tty_setattr(caller, argument, 0);
+  }
+  if (request == CFG_TCSETSF) {
+    return tty_setattr(caller, argument, 1);
+  }
+  if (request == CFG_TIOCGWINSZ) {
+    return tty_getwinsize(caller, argument);
+  }
+  if (request == CFG_TIOCSWINSZ) {
+    return tty_setwinsize(caller, argument);
+  }
   return -CFG_ENOTTY;
 }
 
@@ -369,7 +384,7 @@ int sys_uname(int caller, int destination) {
   copy_fixed_string(value, "jscpu-os", 32);
   copy_fixed_string(value + 32, "jscpu", 32);
   copy_fixed_string(value + 64, "0.4", 32);
-  copy_fixed_string(value + 96, "phase20", 32);
+  copy_fixed_string(value + 96, "phase21", 32);
   copy_fixed_string(value + 128, "custom32", 32);
   copy_fixed_string(value + 160, "local", 32);
   return copyout(caller, destination, value, 192);

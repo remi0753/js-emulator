@@ -118,6 +118,24 @@ struct guest_stat {
   int ctime;
 };
 
+// Stable custom32 termios layout used by TCGETS/TCSETS. The control-character
+// indexes follow Linux for the subset implemented by the line discipline.
+struct guest_termios {
+  int iflag;
+  int oflag;
+  int cflag;
+  int lflag;
+  int line;
+  int cc[12];
+};
+
+struct guest_winsize {
+  int rows;
+  int cols;
+  int xpixel;
+  int ypixel;
+};
+
 // A descriptor points at an open-file object. The latter owns the shared file
 // offset and reference count, so dup() and fork() preserve Unix open-file
 // description semantics instead of copying the offset by value.
@@ -216,6 +234,15 @@ int sys_setpgid(int caller, int pid, int pgid);
 int sys_setsid(int caller);
 int tty_set_foreground(int caller, int pgid);
 int tty_get_foreground(void);
+void tty_init(void);
+void tty_receive(int ch);
+void tty_close_input(void);
+int tty_read(int caller, int buf, int len);
+int tty_write(int caller, int buf, int len);
+int tty_getattr(int caller, int destination);
+int tty_setattr(int caller, int source, int flush);
+int tty_getwinsize(int caller, int destination);
+int tty_setwinsize(int caller, int source);
 
 // --- memory.c ---
 extern int free_list;
@@ -442,8 +469,7 @@ void serial_putc(int ch);    // drivers/console.c
 void serial_write(char *s);
 void panic(char *msg);
 extern int kbd_chan;         // drivers/keyboard.c -- wait channel for blocked readers
-int kbd_getc(void);
-int kbd_eof(void);
+void kbd_drain(void);
 void keyboard_init(void);
 void on_keyboard_irq(void);  // keyboard IRQ handler body (wakes blocked readers)
 void disk_read_block(int blockno, int dst); // drivers/disk.c

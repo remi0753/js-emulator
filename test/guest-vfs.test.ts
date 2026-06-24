@@ -118,7 +118,7 @@ test('Phase 20 mounts devfs, procfs, and tmpfs through the common VFS path', () 
   const first = boot(disk, 'p20\nls /dev\nls /proc\nls /tmp\n');
   assert.equal(first.includes('vfs-console-ok\n'), true, first);
   assert.equal(first.includes('phase20-ok\n'), true, first);
-  assert.match(first, /console\nnull\nzero\n/);
+  assert.match(first, /console\nnull\nzero\ntty\n/);
   assert.match(first, /self\n0\n/);
   assert.match(first, /live\n/);
 

@@ -14,7 +14,6 @@ import {
   GUEST_EXECUTABLE_MAGIC,
   GUEST_KERNEL_DEFINES,
   GUEST_KERNEL_LAYOUT,
-  GUEST_SYSCALL_DEFINES,
 } from './config.ts';
 
 export { GUEST_EXECUTABLE_MAGIC, GUEST_KERNEL_LAYOUT } from './config.ts';
@@ -37,7 +36,7 @@ export const GUEST_MOTD = 'welcome to jscpu-os\n';
 
 const LIBC_SOURCE = substituteDefines(
   sourceFile('userland/libc.c'),
-  GUEST_SYSCALL_DEFINES,
+  GUEST_KERNEL_DEFINES,
   'libc.c',
 );
 
@@ -107,6 +106,7 @@ const KERNEL_SOURCE_FILES = [
   'fs.c',
   'vfs.c',
   'drivers/console.c',
+  'drivers/tty.c',
   'drivers/keyboard.c',
   'drivers/disk.c',
   'drivers/rtc.c',

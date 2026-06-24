@@ -107,7 +107,7 @@ Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 | private file-backed `mmap` | implemented | eager read; no shared write-back or page cache yet |
 | `munmap`, `mprotect` | implemented | page-granular VMA split/trim and PTE permissions |
 | `fcntl` | implemented subset | `F_DUPFD`, `F_GETFD`, `F_SETFD`, `F_GETFL`; nonblocking deferred |
-| `ioctl` | implemented subset | `TIOCGPGRP` and `TIOCSPGRP` on terminal descriptors |
+| `ioctl` | implemented subset | foreground groups, termios modes, and terminal window size |
 | `gettimeofday`, `clock_gettime`, `uname` | implemented | 32-bit time values on this ISA |
 | `getdents` | implemented | fixed 32-byte guest `dirent` records |
 | inode metadata and credentials | implemented | persistent mode/uid/gid/nlink and 32-bit timestamps; single-user uid/gid 0 |
@@ -117,7 +117,7 @@ Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 | `lseek` | implemented | `SEEK_SET`, `SEEK_CUR`, `SEEK_END`; shared by dup/fork |
 | VFS mounts and pseudo filesystems | implemented | disk root plus devfs `/dev`, procfs `/proc`, and tmpfs `/tmp` |
 | `MAP_SHARED`, lazy mappings, COW mappings | unsupported | planned for Phase 22 |
-| `O_NONBLOCK`, general terminal ioctls | unsupported | planned with polling/TTY phases |
+| `O_NONBLOCK`, polling ioctls | unsupported | planned with the polling phase |
 | Linux binary ABI compatibility | intentionally unsupported | programs are compiled for custom32 |
 
 ### Signals and job control (Phase 17)
@@ -133,6 +133,12 @@ Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 - `waitpid` supports `WNOHANG=1`, `WUNTRACED=2`, and `WCONTINUED=4`. Exit status
   uses the conventional high-byte exit code; signaled exits use the low signal
   bits, stopped status has low byte `0x7f`, and continued status is `0xffff`.
+- `/dev/tty` is the standard terminal device; `/dev/console` reaches the same
+  line discipline while the serial port remains available for early kernel
+  output. Canonical mode provides line buffering, erase/kill editing, echo,
+  Ctrl-D EOF, Ctrl-C `SIGINT`, and Ctrl-Z `SIGTSTP`; raw mode exposes bytes as
+  they arrive. `TCGETS`/`TCSETS*`, `TIOCGWINSZ`/`TIOCSWINSZ`, and foreground
+  process-group ioctls are implemented.
 - The TTY converts Ctrl-C into `SIGINT` for its foreground process group. The
   shell gives each command/pipeline a process group, transfers foreground
   ownership while waiting, and supports a trailing `&` for background jobs.

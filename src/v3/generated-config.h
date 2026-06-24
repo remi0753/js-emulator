@@ -62,7 +62,7 @@
 #define CFG_FT_KBD 2
 #define CFG_FT_NONE 0
 #define CFG_FT_PIPE 4
-#define CFG_IDT 0x48000
+#define CFG_IDT 0x50000
 #define CFG_IDT_ENTRY_SIZE 8
 #define CFG_IDT_PRESENT 1
 #define CFG_IDT_USER 2
@@ -71,8 +71,8 @@
 #define CFG_KBD_DATA 96
 #define CFG_KBD_STATUS 100
 #define CFG_KBD_VECTOR 33
-#define CFG_KERNEL_PT 0x49000
-#define CFG_KSTACK_TOP 0x58000
+#define CFG_KERNEL_PT 0x51000
+#define CFG_KSTACK_TOP 0x60000
 #define CFG_MAP_ANONYMOUS 32
 #define CFG_MAP_FIXED 16
 #define CFG_MAP_PRIVATE 2
@@ -132,6 +132,8 @@
 #define CFG_SIGSTOP 19
 #define CFG_SIGTERM 15
 #define CFG_SIGTSTP 20
+#define CFG_SIGTTIN 21
+#define CFG_SIGTTOU 22
 #define CFG_SIGUSR1 10
 #define CFG_ST_RUNNABLE 1
 #define CFG_ST_SLEEPING 3
@@ -194,12 +196,28 @@
 #define CFG_T_DIR 1
 #define CFG_T_FILE 2
 #define CFG_T_SYMLINK 3
+#define CFG_TCGETS 0x5401
+#define CFG_TCSETS 0x5402
+#define CFG_TCSETSF 0x5404
+#define CFG_TCSETSW 0x5403
 #define CFG_TICKS_PER_SEC 100
 #define CFG_TIMER_PERIOD 0x1f40
 #define CFG_TIMER_VECTOR 32
 #define CFG_TIOCGPGRP 0x540f
+#define CFG_TIOCGWINSZ 0x5413
 #define CFG_TIOCSPGRP 0x5410
+#define CFG_TIOCSWINSZ 0x5414
 #define CFG_TMP_FILE_SIZE 512
+#define CFG_TTY_ECHO 8
+#define CFG_TTY_ECHOE 16
+#define CFG_TTY_ICANON 2
+#define CFG_TTY_ISIG 1
+#define CFG_TTY_VEOF 4
+#define CFG_TTY_VERASE 2
+#define CFG_TTY_VINTR 0
+#define CFG_TTY_VKILL 3
+#define CFG_TTY_VMIN 6
+#define CFG_TTY_VSUSP 10
 #define CFG_USER_BASE 0x400000
 #define CFG_USER_END 0x800000
 #define CFG_USER_LOAD_BASE 0x400000
@@ -263,6 +281,25 @@ int pipe(int *fds);
 int dup(int fd);
 int fcntl(int fd, int command, int argument);
 int ioctl(int fd, int request, int argument);
+struct termios {
+  int iflag;
+  int oflag;
+  int cflag;
+  int lflag;
+  int line;
+  int cc[12];
+};
+struct winsize {
+  int rows;
+  int cols;
+  int xpixel;
+  int ypixel;
+};
+int tcgetattr(int fd, struct termios *attributes);
+int tcsetattr(int fd, int actions, struct termios *attributes);
+int tcgetwinsize(int fd, struct winsize *size);
+int tcsetwinsize(int fd, struct winsize *size);
+int isatty(int fd);
 struct timespec {
   int tv_sec;
   int tv_nsec;

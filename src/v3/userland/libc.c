@@ -55,6 +55,22 @@ struct dirent {
   char name[16];
 };
 
+struct termios {
+  int iflag;
+  int oflag;
+  int cflag;
+  int lflag;
+  int line;
+  int cc[12];
+};
+
+struct winsize {
+  int rows;
+  int cols;
+  int xpixel;
+  int ypixel;
+};
+
 struct stat {
   int dev;
   int ino;
@@ -237,6 +253,31 @@ int fcntl(int fd, int command, int argument) {
 
 int ioctl(int fd, int request, int argument) {
   return ret_errno(__syscall(CFG_SYS_IOCTL, fd, request, argument));
+}
+
+int tcgetattr(int fd, struct termios *attributes) {
+  return ioctl(fd, CFG_TCGETS, attributes);
+}
+
+int tcsetattr(int fd, int actions, struct termios *attributes) {
+  int request;
+  request = CFG_TCSETS;
+  if (actions == 1) request = CFG_TCSETSW;
+  else if (actions == 2) request = CFG_TCSETSF;
+  return ioctl(fd, request, attributes);
+}
+
+int tcgetwinsize(int fd, struct winsize *size) {
+  return ioctl(fd, CFG_TIOCGWINSZ, size);
+}
+
+int tcsetwinsize(int fd, struct winsize *size) {
+  return ioctl(fd, CFG_TIOCSWINSZ, size);
+}
+
+int isatty(int fd) {
+  struct termios attributes;
+  return tcgetattr(fd, &attributes) == 0;
 }
 
 int nanosleep(struct timespec *request, struct timespec *remaining) {
