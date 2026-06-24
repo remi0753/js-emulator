@@ -132,6 +132,7 @@ int kmain(void) {
   serial_write("kernel: boot\n");
   setup_traps();
   syscall_init();
+  file_init();
   pmm_init();
   build_kernel_pt();
 
@@ -145,7 +146,7 @@ int kmain(void) {
 
   __stmr(CFG_TIMER_PERIOD);
   current = 0;
-  __lptbr(proc_ptbr[0]);
+  __lptbr(proc_table[0].vm.ptbr);
   __pgon();
   load_ctx(0);
 

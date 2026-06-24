@@ -75,6 +75,7 @@ int build_args_from_user(int proc, int uargv) {
 // pages for the whole memory image (text + data + bss), and copy in the file
 // bytes (bss tail stays zero). Returns the entry virtual address.
 int load_exec_image(int pd, int path) {
+  struct vnode node;
   int inum;
   int entry;
   int memsz;
@@ -85,10 +86,11 @@ int load_exec_image(int pd, int path) {
   if (inum == 0) {
     return -1;
   }
-  if (inode_type(inum) != CFG_T_FILE) {
+  vnode_init(&node, inum);
+  if (node.inode.type != CFG_T_FILE) {
     return -1;
   }
-  if (inode_size(inum) < 12 || readi(inum, 0, 12, exec_hdr) != 12) {
+  if (node.inode.size < 12 || vnode_read(&node, 0, 12, exec_hdr) != 12) {
     return -1;
   }
   if (read32_at(exec_hdr) != CFG_EXEC_MAGIC) {
@@ -99,7 +101,7 @@ int load_exec_image(int pd, int path) {
   if (memsz <= 0 || memsz > CFG_USER_STACK_PAGE - CFG_USER_LOAD_BASE) {
     return -1;
   }
-  if (inode_size(inum) - 12 > memsz) {
+  if (node.inode.size - 12 > memsz) {
     return -1;
   }
   if (entry < CFG_USER_LOAD_BASE || entry >= CFG_USER_LOAD_BASE + memsz) {
@@ -114,7 +116,7 @@ int load_exec_image(int pd, int path) {
     frame = alloc_frame();
     zero_page(frame);
     // file bytes after the 12-byte header map to USER_LOAD_BASE upward
-    readi(inum, 12 + i * 4096, 4096, frame);
+    vnode_read(&node, 12 + i * 4096, 4096, frame);
     map_page(pd, CFG_USER_LOAD_BASE + i * 4096, frame, CFG_PTE_USER);
     i = i + 1;
   }
@@ -159,14 +161,14 @@ int setup_user_args(int idx, int pd) {
   }
   write32_at(sframe + (argvaddr - CFG_USER_STACK_PAGE) + g_argc * 4, 0);
 
-  proc_regs[idx * 8 + 0] = g_argc; // R0 = argc
-  proc_regs[idx * 8 + 1] = argvaddr; // R1 = argv
+  proc_table[idx].ctx.regs[0] = g_argc; // R0 = argc
+  proc_table[idx].ctx.regs[1] = argvaddr; // R1 = argv
   i = 2;
   while (i < 8) {
-    proc_regs[idx * 8 + i] = 0;
+    proc_table[idx].ctx.regs[i] = 0;
     i = i + 1;
   }
-  proc_sp[idx] = argvaddr; // hardware stack grows down, below the args
+  proc_table[idx].ctx.sp = argvaddr; // hardware stack grows down, below the args
   return 0;
 }
 
@@ -188,26 +190,26 @@ int spawn(int idx, int path) {
     free_space(pd);
     return -1;
   }
-  proc_ptbr[idx] = pd;
-  proc_pc[idx] = entry;
-  proc_mode[idx] = CFG_MODE_USER;
-  proc_flags[idx] = CFG_FLAG_IF;
+  proc_table[idx].vm.ptbr = pd;
+  proc_table[idx].ctx.pc = entry;
+  proc_table[idx].ctx.mode = CFG_MODE_USER;
+  proc_table[idx].ctx.flags = CFG_FLAG_IF;
   return 0;
 }
 
 int do_exec(int idx, int upath, int uargv) {
   int old_pd;
   if (copy_path_in(idx, upath) < 0) {
-    proc_regs[idx * 8 + 0] = -CFG_EFAULT;
+    proc_table[idx].ctx.regs[0] = -CFG_EFAULT;
     return 0;
   }
   if (build_args_from_user(idx, uargv) < 0) {
-    proc_regs[idx * 8 + 0] = -CFG_EFAULT;
+    proc_table[idx].ctx.regs[0] = -CFG_EFAULT;
     return 0;
   }
-  old_pd = proc_ptbr[idx];
+  old_pd = proc_table[idx].vm.ptbr;
   if (spawn(idx, kpath) < 0) {
-    proc_regs[idx * 8 + 0] = -CFG_ENOEXEC;
+    proc_table[idx].ctx.regs[0] = -CFG_ENOEXEC;
     return 0;
   }
   return old_pd;

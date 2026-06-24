@@ -409,8 +409,8 @@ keyboard,disk,rtc,power}.c`) that share `kernel.h` and link into one image
 this needed: `extern` globals in the C compiler and a `#include` preprocessor
 (`src/toolchain/preprocess.ts`); see `test/toolchain.test.ts`. The remaining
 kernel-internal foundations below (errno, copyin/copyout, wait queues,
-table-driven dispatch, structured state, `file_ops`) are still to do. The
-intended file shape is:
+table-driven dispatch, structured state, and `file_ops`) are now complete. The
+maintained file shape is:
 
 ```text
 src/v3/kernel/
@@ -450,11 +450,14 @@ Establish these kernel-internal foundations during that split:
 - ✅ table-driven syscall dispatch (syscall.c `syscall_table`), enabled by a new
   register-indirect call (`CALLR`) in the ISA and function-pointer support in
   the C compiler;
-- ⬜ structured process, file, inode/vnode, and VM state instead of adding more
-  parallel flat arrays;
-- ⬜ a common `file_ops`-style interface for files, directories, pipes,
-  terminals, and devices (the compiler now supports the function pointers this
-  needs).
+- ✅ structured process, file, inode/vnode, pipe, and VM state instead of
+  parallel flat arrays (`proc_table` owns each process's context, VM space, and
+  descriptor objects; descriptors embed vnode state; `pipe_table` owns each
+  pipe's buffer and endpoint counts);
+- ✅ a common `file_ops`-style interface for files/directories, pipes, terminal
+  input, and console/device output. `read`/`write`/`close`/`retain` dispatch
+  through per-file operation tables, so syscall handlers no longer branch on
+  descriptor type.
 
 The phases below have dependencies and should not be implemented as isolated
 feature lists. Use this practical order:

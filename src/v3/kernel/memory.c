@@ -61,7 +61,7 @@ int user_access_ok(int proc, int addr, int len, int write) {
   }
   page = addr & 0xfffff000;
   last = (addr + len - 1) & 0xfffff000;
-  pd = proc_ptbr[proc];
+  pd = proc_table[proc].vm.ptbr;
   while (page <= last) {
     pde = pd[(page >> 22) & 0x3ff];
     if ((pde & 5) != 5) {

@@ -6,37 +6,33 @@ int ticks;
 int current;
 
 void save_ctx(int i) {
-  int b;
-  b = i * 8;
-  proc_regs[b + 0] = sctx_r0;
-  proc_regs[b + 1] = sctx_r1;
-  proc_regs[b + 2] = sctx_r2;
-  proc_regs[b + 3] = sctx_r3;
-  proc_regs[b + 4] = sctx_r4;
-  proc_regs[b + 5] = sctx_r5;
-  proc_regs[b + 6] = sctx_r6;
-  proc_regs[b + 7] = sctx_r7;
-  proc_pc[i] = sctx_pc;
-  proc_sp[i] = sctx_sp;
-  proc_flags[i] = sctx_flags;
-  proc_mode[i] = sctx_mode;
+  proc_table[i].ctx.regs[0] = sctx_r0;
+  proc_table[i].ctx.regs[1] = sctx_r1;
+  proc_table[i].ctx.regs[2] = sctx_r2;
+  proc_table[i].ctx.regs[3] = sctx_r3;
+  proc_table[i].ctx.regs[4] = sctx_r4;
+  proc_table[i].ctx.regs[5] = sctx_r5;
+  proc_table[i].ctx.regs[6] = sctx_r6;
+  proc_table[i].ctx.regs[7] = sctx_r7;
+  proc_table[i].ctx.pc = sctx_pc;
+  proc_table[i].ctx.sp = sctx_sp;
+  proc_table[i].ctx.flags = sctx_flags;
+  proc_table[i].ctx.mode = sctx_mode;
 }
 
 void load_ctx(int i) {
-  int b;
-  b = i * 8;
-  sctx_r0 = proc_regs[b + 0];
-  sctx_r1 = proc_regs[b + 1];
-  sctx_r2 = proc_regs[b + 2];
-  sctx_r3 = proc_regs[b + 3];
-  sctx_r4 = proc_regs[b + 4];
-  sctx_r5 = proc_regs[b + 5];
-  sctx_r6 = proc_regs[b + 6];
-  sctx_r7 = proc_regs[b + 7];
-  sctx_pc = proc_pc[i];
-  sctx_sp = proc_sp[i];
-  sctx_flags = proc_flags[i];
-  sctx_mode = proc_mode[i];
+  sctx_r0 = proc_table[i].ctx.regs[0];
+  sctx_r1 = proc_table[i].ctx.regs[1];
+  sctx_r2 = proc_table[i].ctx.regs[2];
+  sctx_r3 = proc_table[i].ctx.regs[3];
+  sctx_r4 = proc_table[i].ctx.regs[4];
+  sctx_r5 = proc_table[i].ctx.regs[5];
+  sctx_r6 = proc_table[i].ctx.regs[6];
+  sctx_r7 = proc_table[i].ctx.regs[7];
+  sctx_pc = proc_table[i].ctx.pc;
+  sctx_sp = proc_table[i].ctx.sp;
+  sctx_flags = proc_table[i].ctx.flags;
+  sctx_mode = proc_table[i].ctx.mode;
 }
 
 int schedule(void) {
@@ -45,7 +41,7 @@ int schedule(void) {
   n = 0;
   while (n < nproc) {
     idx = (current + 1 + n) % nproc;
-    if (proc_state[idx] == CFG_ST_RUNNABLE) {
+    if (proc_table[idx].state == CFG_ST_RUNNABLE) {
       return idx;
     }
     n = n + 1;
@@ -57,8 +53,8 @@ int schedule(void) {
 // arranged for its condition to be re-checked when it wakes (typically by
 // rewinding pc so the syscall re-runs).
 void sleep(int idx, int chan) {
-  proc_chan[idx] = chan;
-  proc_state[idx] = CFG_ST_SLEEPING;
+  proc_table[idx].chan = chan;
+  proc_table[idx].state = CFG_ST_SLEEPING;
   switch_to_next();
 }
 
@@ -68,8 +64,8 @@ void wakeup(int chan) {
   int i;
   i = 0;
   while (i < nproc) {
-    if (proc_state[i] == CFG_ST_SLEEPING && proc_chan[i] == chan) {
-      proc_state[i] = CFG_ST_RUNNABLE;
+    if (proc_table[i].state == CFG_ST_SLEEPING && proc_table[i].chan == chan) {
+      proc_table[i].state = CFG_ST_RUNNABLE;
     }
     i = i + 1;
   }
@@ -84,7 +80,7 @@ void switch_to_next(void) {
     i = 0;
     blocked = 0;
     while (i < nproc) {
-      if (proc_state[i] == CFG_ST_SLEEPING) {
+      if (proc_table[i].state == CFG_ST_SLEEPING) {
         blocked = 1;
       }
       i = i + 1;
@@ -116,5 +112,5 @@ void on_timer(void) {
   }
   current = next;
   load_ctx(current);
-  __lptbr(proc_ptbr[current]);
+  __lptbr(proc_table[current].vm.ptbr);
 }

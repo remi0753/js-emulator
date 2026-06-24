@@ -67,6 +67,12 @@ int inode_slot(int inum, int k) {
   return read32_at(inode_addr(inum) + 8 + k * 4);
 }
 
+void vnode_init(struct vnode *node, int inum) {
+  node->inode.inum = inum;
+  node->inode.type = inode_type(inum);
+  node->inode.size = inode_size(inum);
+}
+
 int bmap(int inum, int bn) {
   int ind;
   if (bn < CFG_NDIRECT) {
@@ -113,6 +119,10 @@ int readi(int inum, int off, int n, int dst) {
     d = d + take;
   }
   return end - off;
+}
+
+int vnode_read(struct vnode *node, int off, int n, int dst) {
+  return readi(node->inode.inum, off, n, dst);
 }
 
 int name_eq(int dname, int want, int wlen) {

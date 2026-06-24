@@ -8,12 +8,6 @@ int g_pending_free; // address space to free after switching contexts, or 0
 syscall_fn syscall_table[CFG_NSYS]; // syscall number -> handler (0 = unimplemented)
 
 int sys_write(int caller, int fd, int buf, int len) {
-  char *p;
-  int i;
-  int base;
-  int t;
-  int pp;
-  int n;
   if (len < 0) {
     return -CFG_EINVAL;
   }
@@ -23,44 +17,10 @@ int sys_write(int caller, int fd, int buf, int len) {
   if (fd < 0 || fd >= CFG_NFD) {
     return -CFG_EBADF;
   }
-  base = caller * CFG_NFD;
-  t = proc_fd_type[base + fd];
-  if (t == CFG_FT_CONS) {
-    p = buf;
-    i = 0;
-    while (i < len) {
-      serial_putc(p[i]);
-      i = i + 1;
-    }
-    return len;
-  }
-  if (t == CFG_FT_PIPE && proc_fd_pend[base + fd] == 1) {
-    pp = proc_fd_pipe[base + fd];
-    if (pipe_nread[pp] == 0) {
-      return -CFG_EPIPE; // broken pipe: no readers
-    }
-    if (pipe_count[pp] == CFG_PIPESZ) {
-      g_noret = 1;
-      proc_pc[caller] = proc_pc[caller] - CFG_SYSCALL_INSTR_SIZE;
-      sleep(caller, &pipe_used[pp]); // wait for a reader to make space
-      return 0;
-    }
-    n = pipe_write_bytes(pp, buf, len);
-    wakeup(&pipe_used[pp]); // data available for a blocked reader
-    return n;
-  }
-  return -CFG_EBADF;
+  return file_write(&proc_table[caller].files[fd], caller, buf, len);
 }
 
 int sys_read(int caller, int fd, int buf, int len) {
-  int base;
-  int t;
-  int inum;
-  int off;
-  int got;
-  int ch;
-  int pp;
-  int n;
   if (len < 0) {
     return -CFG_EINVAL;
   }
@@ -70,56 +30,13 @@ int sys_read(int caller, int fd, int buf, int len) {
   if (fd < 0 || fd >= CFG_NFD) {
     return -CFG_EBADF;
   }
-  base = caller * CFG_NFD;
-  t = proc_fd_type[base + fd];
-  if (t == CFG_FT_KBD) {
-    if (len == 0) {
-      return 0;
-    }
-    ch = kbd_getc();
-    if (ch == 0) {
-      if (kbd_eof()) {
-        return 0;
-      }
-      g_noret = 1;
-      proc_pc[caller] = proc_pc[caller] - CFG_SYSCALL_INSTR_SIZE;
-      sleep(caller, &kbd_chan); // wait for the keyboard IRQ to deliver input
-      return 0;
-    }
-    write8_at(buf, ch);
-    return 1;
-  }
-  if (t == CFG_FT_FILE) {
-    inum = proc_fd_inum[base + fd];
-    off = proc_fd_off[base + fd];
-    got = readi(inum, off, len, buf);
-    proc_fd_off[base + fd] = off + got;
-    return got;
-  }
-  if (t == CFG_FT_PIPE && proc_fd_pend[base + fd] == 0) {
-    pp = proc_fd_pipe[base + fd];
-    if (pipe_count[pp] > 0) {
-      n = pipe_read_bytes(pp, buf, len);
-      wakeup(&pipe_used[pp]); // space freed for a blocked writer
-      return n;
-    }
-    if (pipe_nwrite[pp] == 0) {
-      return 0; // EOF: no data and no writers
-    }
-    // Block: rewind to re-execute INT 0x80 when a writer wakes us.
-    g_noret = 1;
-    proc_pc[caller] = proc_pc[caller] - CFG_SYSCALL_INSTR_SIZE;
-    sleep(caller, &pipe_used[pp]);
-    return 0;
-  }
-  return -CFG_EBADF;
+  return file_read(&proc_table[caller].files[fd], caller, buf, len);
 }
 
 int sys_open(int caller, int upath, int flags) {
   int inum;
   int t;
   int fd;
-  int base;
   if (copy_path_in(caller, upath) < 0) {
     return -CFG_EFAULT;
   }
@@ -135,10 +52,7 @@ int sys_open(int caller, int upath, int flags) {
   if (fd < 0) {
     return -CFG_EMFILE;
   }
-  base = caller * CFG_NFD;
-  proc_fd_type[base + fd] = CFG_FT_FILE;
-  proc_fd_inum[base + fd] = inum;
-  proc_fd_off[base + fd] = 0;
+  file_set_vnode(&proc_table[caller].files[fd], inum);
   return fd;
 }
 
@@ -146,7 +60,7 @@ int sys_close(int caller, int fd) {
   if (fd < 0 || fd >= CFG_NFD) {
     return -CFG_EBADF;
   }
-  if (proc_fd_type[caller * CFG_NFD + fd] == CFG_FT_NONE) {
+  if (proc_table[caller].files[fd].type == CFG_FT_NONE) {
     return -CFG_EBADF;
   }
   fd_close(caller, fd); // wakes blocked pipe peers when releasing a pipe end
@@ -157,7 +71,6 @@ int sys_pipe(int caller, int ufds) {
   int pp;
   int rfd;
   int wfd;
-  int base;
   int fds[2];
   if (user_access_ok(caller, ufds, 8, 1) == 0) {
     return -CFG_EFAULT;
@@ -166,24 +79,19 @@ int sys_pipe(int caller, int ufds) {
   if (pp < 0) {
     return -CFG_ENFILE;
   }
-  base = caller * CFG_NFD;
   rfd = alloc_fd(caller);
   if (rfd < 0) {
-    pipe_used[pp] = 0;
+    pipe_table[pp].used = 0;
     return -CFG_EMFILE;
   }
-  proc_fd_type[base + rfd] = CFG_FT_PIPE;
-  proc_fd_pipe[base + rfd] = pp;
-  proc_fd_pend[base + rfd] = 0;
+  file_set_pipe(&proc_table[caller].files[rfd], pp, 0);
   wfd = alloc_fd(caller);
   if (wfd < 0) {
-    proc_fd_type[base + rfd] = CFG_FT_NONE;
-    pipe_used[pp] = 0;
+    file_reset(&proc_table[caller].files[rfd]);
+    pipe_table[pp].used = 0;
     return -CFG_EMFILE;
   }
-  proc_fd_type[base + wfd] = CFG_FT_PIPE;
-  proc_fd_pipe[base + wfd] = pp;
-  proc_fd_pend[base + wfd] = 1;
+  file_set_pipe(&proc_table[caller].files[wfd], pp, 1);
   fds[0] = rfd;
   fds[1] = wfd;
   copyout(caller, ufds, fds, 8); // already validated above; cannot fault here
@@ -191,35 +99,18 @@ int sys_pipe(int caller, int ufds) {
 }
 
 int sys_dup(int caller, int oldfd) {
-  int base;
-  int t;
   int newfd;
-  int pp;
   if (oldfd < 0 || oldfd >= CFG_NFD) {
     return -CFG_EBADF;
   }
-  base = caller * CFG_NFD;
-  t = proc_fd_type[base + oldfd];
-  if (t == CFG_FT_NONE) {
+  if (proc_table[caller].files[oldfd].type == CFG_FT_NONE) {
     return -CFG_EBADF;
   }
   newfd = alloc_fd(caller);
   if (newfd < 0) {
     return -CFG_EMFILE;
   }
-  proc_fd_type[base + newfd] = t;
-  proc_fd_inum[base + newfd] = proc_fd_inum[base + oldfd];
-  proc_fd_off[base + newfd] = proc_fd_off[base + oldfd];
-  proc_fd_pipe[base + newfd] = proc_fd_pipe[base + oldfd];
-  proc_fd_pend[base + newfd] = proc_fd_pend[base + oldfd];
-  if (t == CFG_FT_PIPE) {
-    pp = proc_fd_pipe[base + oldfd];
-    if (proc_fd_pend[base + oldfd] == 1) {
-      pipe_nwrite[pp] = pipe_nwrite[pp] + 1;
-    } else {
-      pipe_nread[pp] = pipe_nread[pp] + 1;
-    }
-  }
+  copy_file(&proc_table[caller].files[newfd], &proc_table[caller].files[oldfd]);
   return newfd;
 }
 
@@ -336,22 +227,22 @@ void on_syscall(void) {
   g_pending_free = 0;
   caller = current;
   save_ctx(caller);
-  num = proc_regs[caller * 8 + 0];
-  a1 = proc_regs[caller * 8 + 1];
-  a2 = proc_regs[caller * 8 + 2];
-  a3 = proc_regs[caller * 8 + 3];
+  num = proc_table[caller].ctx.regs[0];
+  a1 = proc_table[caller].ctx.regs[1];
+  a2 = proc_table[caller].ctx.regs[2];
+  a3 = proc_table[caller].ctx.regs[3];
 
   if (num >= 0 && num < CFG_NSYS && syscall_table[num] != 0) {
     rv = syscall_table[num](caller, a1, a2, a3);
     if (g_noret == 0) {
-      proc_regs[caller * 8 + 0] = rv;
+      proc_table[caller].ctx.regs[0] = rv;
     }
   } else {
-    proc_regs[caller * 8 + 0] = -CFG_ENOSYS;
+    proc_table[caller].ctx.regs[0] = -CFG_ENOSYS;
   }
 
   load_ctx(current);
-  __lptbr(proc_ptbr[current]);
+  __lptbr(proc_table[current].vm.ptbr);
   if (g_pending_free != 0) {
     free_space(g_pending_free);
   }

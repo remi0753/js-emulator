@@ -12,6 +12,72 @@
 #ifndef JSCPU_OS_KERNEL_H
 #define JSCPU_OS_KERNEL_H
 
+// --- shared kernel object model ---
+//
+// Keep related state together. New process, VM, file, vnode, and pipe fields
+// belong in these structures rather than in parallel global arrays.
+struct cpu_context {
+  int regs[8];
+  int pc;
+  int sp;
+  int flags;
+  int mode;
+};
+
+struct vm_space {
+  int ptbr;
+};
+
+typedef int (*file_io_fn)(int file, int caller, int buf, int len);
+typedef void (*file_lifecycle_fn)(int file);
+
+struct file_ops {
+  file_io_fn read;
+  file_io_fn write;
+  file_lifecycle_fn close;
+  file_lifecycle_fn retain;
+};
+
+struct inode {
+  int inum;
+  int type;
+  int size;
+};
+
+struct vnode {
+  struct inode inode;
+};
+
+struct file {
+  struct file_ops *ops;
+  int type;
+  int readable;
+  int writable;
+  int offset;
+  int pipe_end;
+  struct vnode vnode;
+  int object;
+};
+
+struct proc {
+  int state;
+  int parent;
+  int exit_code;
+  int chan;
+  struct vm_space vm;
+  struct cpu_context ctx;
+  struct file files[CFG_NFD];
+};
+
+struct pipe {
+  int used;
+  int count;
+  int head;
+  int nread;
+  int nwrite;
+  char data[CFG_PIPESZ];
+};
+
 // --- scheduler.c ---
 extern int ticks;
 extern int current;
@@ -22,23 +88,14 @@ void switch_to_next(void);
 void on_timer(void);
 // Wait-channel primitive: sleep(idx, chan) blocks process idx on `chan` and
 // switches away; wakeup(chan) makes every process sleeping on `chan` runnable.
-// Channels are object addresses (e.g. &pipe_used[pp], &proc_state[parent]), so
+// Channels are object addresses (e.g. a pipe or process object), so
 // distinct objects never collide.
 void sleep(int idx, int chan);
 void wakeup(int chan);
 
 // --- process.c ---
 extern int nproc;
-extern int proc_state[CFG_MAX_PROC];   // unused / runnable / zombie / blocked / pipewait
-extern int proc_parent[CFG_MAX_PROC];  // parent slot, -1 for the initial process
-extern int proc_exit_code[CFG_MAX_PROC];
-extern int proc_ptbr[CFG_MAX_PROC];
-extern int proc_regs[CFG_PROC_REG_COUNT]; // proc * 8 + register number
-extern int proc_pc[CFG_MAX_PROC];
-extern int proc_sp[CFG_MAX_PROC];
-extern int proc_flags[CFG_MAX_PROC];
-extern int proc_mode[CFG_MAX_PROC];
-extern int proc_chan[CFG_MAX_PROC]; // wait channel while CFG_ST_SLEEPING
+extern struct proc proc_table[CFG_MAX_PROC];
 int alloc_proc(void);
 int fork_process(int parent);
 int setup_process_boot(int path);
@@ -92,18 +149,30 @@ int inode_addr(int inum);
 int inode_type(int inum);
 int inode_size(int inum);
 int inode_slot(int inum, int k);
+void vnode_init(struct vnode *node, int inum);
 int bmap(int inum, int bn);
 int readi(int inum, int off, int n, int dst);
+int vnode_read(struct vnode *node, int off, int n, int dst);
 int name_eq(int dname, int want, int wlen);
 int dirlookup(int dir, int name, int namelen);
 int namei(int path);
 
 // --- file.c (per-process file descriptors) ---
-extern int proc_fd_type[CFG_FD_TABLE_LEN]; // none / console / keyboard / file / pipe
-extern int proc_fd_inum[CFG_FD_TABLE_LEN];
-extern int proc_fd_off[CFG_FD_TABLE_LEN];
-extern int proc_fd_pipe[CFG_FD_TABLE_LEN];
-extern int proc_fd_pend[CFG_FD_TABLE_LEN]; // pipe end: 0 = read, 1 = write
+extern struct file_ops console_file_ops;
+extern struct file_ops keyboard_file_ops;
+extern struct file_ops vnode_file_ops;
+extern struct file_ops pipe_file_ops;
+void file_init(void);
+void file_reset(struct file *file);
+void file_set_console(struct file *file);
+void file_set_keyboard(struct file *file);
+void file_set_vnode(struct file *file, int inum);
+void file_set_pipe(struct file *file, int pipe, int end);
+int file_read(struct file *file, int caller, int buf, int len);
+int file_write(struct file *file, int caller, int buf, int len);
+void file_close(struct file *file);
+void file_retain(struct file *file);
+void copy_file(struct file *dst, struct file *src);
 void init_fds(int idx);
 int alloc_fd(int idx);
 void fd_close(int idx, int fd);
@@ -111,12 +180,7 @@ void clear_fds(int idx);
 void copy_fds(int dst, int src);
 
 // --- pipe.c ---
-extern int pipe_used[CFG_NPIPE];
-extern int pipe_count[CFG_NPIPE]; // bytes currently buffered
-extern int pipe_head[CFG_NPIPE];  // read position
-extern int pipe_nread[CFG_NPIPE]; // open read ends
-extern int pipe_nwrite[CFG_NPIPE]; // open write ends
-extern char pipe_buf[CFG_PIPE_BUF_LEN]; // NPIPE * PIPESZ
+extern struct pipe pipe_table[CFG_NPIPE];
 int alloc_pipe(void);
 int pipe_write_bytes(int pp, int buf, int len);
 int pipe_read_bytes(int pp, int buf, int len);
