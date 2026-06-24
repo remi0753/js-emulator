@@ -88,6 +88,7 @@ struct vnode {
 struct mount {
   int used;
   int fs_type;
+  int root_inum;
   char path[8];
 };
 
@@ -206,6 +207,7 @@ void signal_exec_proc(int idx);
 int send_signal(int idx, int signal);
 int send_signal_selector(int caller, int pid, int signal);
 int send_signal_group(int pgid, int signal);
+void notify_parent(int idx);
 void prepare_signal(int idx);
 int sys_sigaction(int caller, int signal, int action, int old_action);
 int sys_sigprocmask(int caller, int how, int mask, int old_mask);
@@ -293,8 +295,11 @@ int dirunlink(int dir, int name, int namelen);
 int dir_is_empty(int dir);
 int namei(int path);
 int namei_nofollow(int path);
+int namei_access(int path, int follow_final, int uid, int gid);
 int nameiparent(int path, int name);
 int create_inode(int path, int type, int mode);
+int inode_is_open(int inum);
+int inode_open_count(int inum);
 int unlink_path(int path, int remove_dir);
 int link_path(int oldpath, int newpath);
 int rename_path(int oldpath, int newpath);
@@ -304,6 +309,9 @@ int chmod_path(int path, int mode);
 int chown_path(int path, int uid, int gid);
 void inode_stat(int inum, struct guest_stat *st);
 int inode_access(int inum, int uid, int gid, int mask);
+extern int fs_lookup_error;
+extern int fs_redirect_valid;
+extern char fs_redirect_path[CFG_INITPATH_LEN];
 
 // --- vfs.c ---
 extern struct vnode_ops disk_vnode_ops;
@@ -331,6 +339,7 @@ int vnode_truncate(struct vnode *node);
 void vnode_release(struct vnode *node);
 int vnode_access(struct vnode *node, int uid, int gid, int mask);
 int vnode_is_tty(struct vnode *node);
+char *vfs_mounted_path(int inum);
 
 // --- file.c (per-process file descriptors) ---
 extern struct file_ops console_file_ops;

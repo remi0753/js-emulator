@@ -6,6 +6,8 @@
 // stays in the PCB.
 #include "kernel.h"
 
+int default_ignored(int signal);
+
 int signal_bit(int signal) {
   return 1 << signal;
 }
@@ -79,6 +81,8 @@ void notify_parent(int idx) {
 }
 
 int send_signal(int idx, int signal) {
+  int handler;
+  int blocked;
   if (idx < 0 || idx >= nproc || proc_table[idx].state == CFG_ST_UNUSED) {
     return -CFG_ESRCH;
   }
@@ -96,7 +100,12 @@ int send_signal(int idx, int signal) {
   }
   proc_table[idx].pending_signals =
     proc_table[idx].pending_signals | signal_bit(signal);
-  if (proc_table[idx].state == CFG_ST_SLEEPING) {
+  handler = proc_table[idx].signal_handlers[signal];
+  blocked = (proc_table[idx].blocked_signals & signal_bit(signal)) != 0;
+  if (signal_cannot_catch(signal)) blocked = 0;
+  if (proc_table[idx].state == CFG_ST_SLEEPING && blocked == 0 &&
+      handler != CFG_SIG_IGN &&
+      !(handler == CFG_SIG_DFL && default_ignored(signal))) {
     // Blocking operations rewind PC to retry their INT. A signal interrupts the
     // operation instead: resume after INT with -EINTR after the handler returns.
     if (proc_table[idx].sleep_deadline != 0) {

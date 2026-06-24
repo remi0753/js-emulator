@@ -14,6 +14,9 @@ char buf_data[CFG_BUF_DATA_LEN];
 
 char namebuf[16];
 char direntbuf[16];
+int fs_lookup_error;
+int fs_redirect_valid;
+char fs_redirect_path[CFG_INITPATH_LEN];
 
 int bread(int blockno) {
   int i;
@@ -286,7 +289,12 @@ int writei(int inum, int off, int n, int src) {
   end = off + n;
   while (pos < end) {
     blk = bmap_alloc(inum, pos / 512);
-    if (blk == 0) return -CFG_ENOSPC;
+    if (blk == 0) {
+      if (pos == off) return -CFG_ENOSPC;
+      if (pos > inode_size(inum)) inode_set32(inum, 12, pos);
+      inode_touch(inum, 0, 1, 1);
+      return pos - off;
+    }
     within = pos % 512;
     take = 512 - within;
     if (take > end - pos) take = end - pos;
@@ -433,7 +441,10 @@ int dir_is_empty(int dir) {
   return 1;
 }
 
-int namei_from(int start, int path, int follow_final, int depth) {
+int namei_from_checked(
+  int start, int path, int follow_final, int depth,
+  int uid, int gid, int check_access
+) {
   int inum;
   int next;
   int i;
@@ -442,9 +453,14 @@ int namei_from(int start, int path, int follow_final, int depth) {
   int final;
   int target_len;
   int j;
+  int mounted_len;
+  char *mounted;
   char target[CFG_INITPATH_LEN];
   char combined[CFG_INITPATH_LEN];
-  if (depth > 8) return 0;
+  if (depth > 8) {
+    fs_lookup_error = CFG_ELOOP;
+    return 0;
+  }
   inum = start;
   i = 0;
   if (read8_at(path) == '/') {
@@ -455,7 +471,10 @@ int namei_from(int start, int path, int follow_final, int depth) {
     ni = 0;
     c = read8_at(path + i);
     while (c != 0 && c != '/') {
-      if (ni >= CFG_DIRSIZ) return 0;
+      if (ni >= CFG_DIRSIZ) {
+        fs_lookup_error = CFG_ENAMETOOLONG;
+        return 0;
+      }
       namebuf[ni] = c;
       ni = ni + 1;
       i = i + 1;
@@ -464,12 +483,26 @@ int namei_from(int start, int path, int follow_final, int depth) {
     namebuf[ni] = 0;
     while (read8_at(path + i) == '/') i = i + 1;
     final = read8_at(path + i) == 0;
+    if (inode_type(inum) != CFG_T_DIR) {
+      fs_lookup_error = CFG_ENOTDIR;
+      return 0;
+    }
+    if (check_access != 0 && inode_access(inum, uid, gid, 1) == 0) {
+      fs_lookup_error = CFG_EACCES;
+      return 0;
+    }
     next = dirlookup(inum, namebuf, ni);
-    if (next == 0) return 0;
+    if (next == 0) {
+      fs_lookup_error = CFG_ENOENT;
+      return 0;
+    }
     if (inode_type(next) == CFG_T_SYMLINK &&
         (final == 0 || follow_final != 0)) {
       target_len = inode_size(next);
-      if (target_len >= CFG_INITPATH_LEN) return 0;
+      if (target_len >= CFG_INITPATH_LEN) {
+        fs_lookup_error = CFG_ENAMETOOLONG;
+        return 0;
+      }
       readi(next, 0, target_len, target);
       target[target_len] = 0;
       j = 0;
@@ -488,9 +521,37 @@ int namei_from(int start, int path, int follow_final, int depth) {
       }
       combined[j] = 0;
       if (target[0] == '/') {
-        return namei_from(CFG_ROOTINO, combined, follow_final, depth + 1);
+        memcpy(fs_redirect_path, combined, j + 1);
+        fs_redirect_valid = 1;
+        return 0;
       }
-      return namei_from(inum, combined, follow_final, depth + 1);
+      return namei_from_checked(inum, combined, follow_final, depth + 1,
+        uid, gid, check_access);
+    }
+    mounted = vfs_mounted_path(next);
+    if (mounted != 0) {
+      mounted_len = strlen(mounted);
+      j = 0;
+      while (j < mounted_len && j < CFG_INITPATH_LEN - 1) {
+        fs_redirect_path[j] = mounted[j];
+        j = j + 1;
+      }
+      if (read8_at(path + i) != 0 && j < CFG_INITPATH_LEN - 1) {
+        fs_redirect_path[j] = '/';
+        j = j + 1;
+      }
+      while (read8_at(path + i) != 0 && j < CFG_INITPATH_LEN - 1) {
+        fs_redirect_path[j] = read8_at(path + i);
+        i = i + 1;
+        j = j + 1;
+      }
+      if (read8_at(path + i) != 0) {
+        fs_lookup_error = CFG_ENAMETOOLONG;
+        return 0;
+      }
+      fs_redirect_path[j] = 0;
+      fs_redirect_valid = 1;
+      return 0;
     }
     inum = next;
   }
@@ -498,11 +559,21 @@ int namei_from(int start, int path, int follow_final, int depth) {
 }
 
 int namei(int path) {
-  return namei_from(CFG_ROOTINO, path, 1, 0);
+  fs_lookup_error = CFG_ENOENT;
+  fs_redirect_valid = 0;
+  return namei_from_checked(CFG_ROOTINO, path, 1, 0, 0, 0, 0);
 }
 
 int namei_nofollow(int path) {
-  return namei_from(CFG_ROOTINO, path, 0, 0);
+  fs_lookup_error = CFG_ENOENT;
+  fs_redirect_valid = 0;
+  return namei_from_checked(CFG_ROOTINO, path, 0, 0, 0, 0, 0);
+}
+
+int namei_access(int path, int follow_final, int uid, int gid) {
+  fs_lookup_error = CFG_ENOENT;
+  fs_redirect_valid = 0;
+  return namei_from_checked(CFG_ROOTINO, path, follow_final, 0, uid, gid, 1);
 }
 
 int nameiparent(int path, int name) {
@@ -575,15 +646,21 @@ int create_inode(int path, int type, int mode) {
 }
 
 int inode_is_open(int inum) {
+  return inode_open_count(inum) != 0;
+}
+
+int inode_open_count(int inum) {
   int i;
+  int count;
+  count = 0;
   i = 0;
   while (i < CFG_NFILE) {
     if (open_file_table[i].used != 0 &&
         open_file_table[i].vnode.fs_type == CFG_FS_DISK &&
-        open_file_table[i].vnode.inode.inum == inum) return 1;
+        open_file_table[i].vnode.inode.inum == inum) count = count + 1;
     i = i + 1;
   }
-  return 0;
+  return count;
 }
 
 int unlink_path(int path, int remove_dir) {
@@ -664,9 +741,6 @@ int rename_path(int oldpath, int newpath) {
   }
   existing = dirlookup(newparent, newname, strlen(newname));
   if (existing == inum) {
-    dirunlink(oldparent, oldname, strlen(oldname));
-    inode_set16(inum, 2, inode_nlink(inum) - 1);
-    inode_touch(inum, 0, 0, 1);
     return 0;
   }
   if (existing != 0) {

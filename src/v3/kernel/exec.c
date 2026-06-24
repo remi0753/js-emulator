@@ -85,6 +85,10 @@ int load_exec_image(int pd, int path) {
   if (node.inode.type != CFG_T_FILE) {
     return -CFG_ENOEXEC;
   }
+  if (vnode_access(&node, proc_table[current].uid,
+      proc_table[current].gid, 1) == 0) {
+    return -CFG_EACCES;
+  }
   if (node.inode.size < 12 ||
       vnode_read(&node, current, 0, 12, exec_hdr) != 12) {
     return -CFG_ENOEXEC;

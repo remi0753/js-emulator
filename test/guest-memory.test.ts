@@ -73,11 +73,18 @@ test('copyin/copyout translate through the requested process address space', () 
           nproc = 2;
           proc_table[0].vm.ptbr = pd0;
           proc_table[1].vm.ptbr = pd1;
+          proc_table[1].vm.areas[0].used = 1;
+          proc_table[1].vm.areas[0].start = CFG_USER_BASE;
+          proc_table[1].vm.areas[0].end = CFG_USER_BASE + 4096;
+          proc_table[1].vm.areas[0].prot = CFG_PROT_READ | CFG_PROT_WRITE;
+          proc_table[1].vm.areas[0].flags = CFG_MAP_PRIVATE;
 
           if (copyin(1, kbuf, CFG_USER_BASE, 1) < 0) return 1;
           serial_putc(kbuf[0]);
           kbuf[0] = 'C';
           if (copyout(1, CFG_USER_BASE, kbuf, 1) < 0) return 2;
+          if (vm_mprotect(1, CFG_USER_BASE, 4096, CFG_PROT_READ) < 0) return 3;
+          if (proc_table[1].vm.areas[0].prot != CFG_PROT_READ) return 4;
           serial_putc(frame0[0]);
           serial_putc(frame1[0]);
           __halt();

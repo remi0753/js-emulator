@@ -84,6 +84,7 @@ test('failed libc calls preserve specific kernel errno values', () => {
   const fs = new Fs(new PortBlockDevice(ports));
   fs.mount();
   fs.writeFile('/bad-exec', new TextEncoder().encode('not an executable'));
+  fs.chmod('/bad-exec', 0o755);
   fs.writeFile(
     '/bin/errcheck',
     buildUserExecutable(
@@ -111,6 +112,7 @@ test('failed libc calls preserve specific kernel errno values', () => {
       `,
     ),
   );
+  fs.chmod('/bin/errcheck', 0o755);
 
   const image = buildGuestKernelImage();
   let out = '';

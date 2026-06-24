@@ -105,6 +105,7 @@ test('bad user inputs return errors without panicking the kernel', () => {
       `,
     ),
   );
+  fs.chmod('/bin/probe', 0o755);
   fs.writeFile('/bad', new TextEncoder().encode('not an executable'));
 
   const image = buildGuestKernelImage();

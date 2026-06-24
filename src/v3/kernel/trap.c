@@ -68,5 +68,12 @@ void on_default_trap(void) {
 
 void on_page_fault(void) {
   page_fault_addr = __rdpfla();
-  panic("unexpected page fault");
+  if (sctx_mode != CFG_MODE_USER) {
+    panic("unexpected kernel page fault");
+  }
+  save_ctx(current);
+  send_signal(current, CFG_SIGSEGV);
+  prepare_signal(current);
+  load_ctx(current);
+  __lptbr(proc_table[current].vm.ptbr);
 }

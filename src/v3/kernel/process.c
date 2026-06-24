@@ -91,7 +91,7 @@ int do_exit(int idx, int code) {
   proc_table[idx].state = CFG_ST_ZOMBIE;
   p = proc_table[idx].parent;
   if (p >= 0) {
-    wakeup(&proc_table[p]); // a parent sleeping in wait() re-checks for zombies
+    notify_parent(idx);
   }
   // Orphans are adopted by init (slot 0), including zombies that still need
   // reaping after their original parent exits.

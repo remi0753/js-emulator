@@ -23,6 +23,7 @@ function addProgram(disk: Uint8Array, name: string, source: string): void {
   const fs = new Fs(new PortBlockDevice(ports));
   fs.mount();
   fs.writeFile(`/bin/${name}`, buildUserExecutable(name, source));
+  fs.chmod(`/bin/${name}`, 0o755);
 }
 
 function boot(disk: Uint8Array, input: string): string {
@@ -123,4 +124,38 @@ test('Phase 20 mounts devfs, procfs, and tmpfs through the common VFS path', () 
 
   const second = boot(disk, 'p20reboot\n');
   assert.equal(second.includes('phase20-tmp-reset-ok\n'), true, second);
+});
+
+test('disk symlinks re-enter VFS mount lookup and loops return ELOOP', () => {
+  const disk = buildGuestDiskImage();
+  addProgram(
+    disk,
+    'vfsedge',
+    `
+      extern int errno;
+      int main(int argc, char **argv) {
+        int fd;
+        char buf[8];
+        if (symlink("/proc/self/status", "/absolute") < 0) return 1;
+        fd = open("/absolute", 0);
+        if (fd < 0 || read(fd, buf, 4) != 4 || buf[0] != 'P') return 2;
+        close(fd);
+
+        if (mkdir("/links", 493) < 0) return 3;
+        if (symlink("../proc/self/status", "/links/relative") < 0) return 4;
+        fd = open("/links/relative", 0);
+        if (fd < 0 || read(fd, buf, 4) != 4 || buf[0] != 'P') return 5;
+        close(fd);
+
+        if (symlink("/loop-b", "/loop-a") < 0) return 6;
+        if (symlink("/loop-a", "/loop-b") < 0) return 7;
+        if (open("/loop-a", 0) != -1 || errno != 40) return 8;
+        write(1, "vfs-edge-ok\\n", 12);
+        return 0;
+      }
+    `,
+  );
+
+  const output = boot(disk, 'vfsedge\n');
+  assert.equal(output.includes('vfs-edge-ok\n'), true, output);
 });

@@ -174,6 +174,7 @@ test('Phase 18 Linux-shaped libc ABI works end to end', () => {
       `,
     ),
   );
+  fs.chmod('/bin/abi18', 0o755);
 
   const image = buildGuestKernelImage();
   let output = '';
@@ -192,4 +193,55 @@ test('Phase 18 Linux-shaped libc ABI works end to end', () => {
   assert.equal(output.includes('phase18-ok\n'), true, output);
   assert.equal(output.includes('PANIC'), false, output);
   assert.equal(output.endsWith('kernel: all processes exited\n'), true, output);
+});
+
+test('munmap leaves non-VMA image pages intact and user page faults become SIGSEGV', () => {
+  const disk = buildGuestDiskImage();
+  const ports = new PortBus();
+  const blockDisk = new BlockDisk(disk);
+  ports.register(PORT.DISK_DATA, 1, blockDisk);
+  ports.register(PORT.DISK_POS, 1, blockDisk);
+  ports.register(PORT.DISK_SECTORS, 1, blockDisk);
+  const fs = new Fs(new PortBlockDevice(ports));
+  fs.mount();
+  fs.writeFile(
+    '/bin/vmedge',
+    buildUserExecutable(
+      'vmedge',
+      `
+        int main(int argc, char **argv) {
+          int pid;
+          int status;
+          char *mapping;
+          if (munmap(0x400000, 4096) < 0) return 1;
+          mapping = mmap(0, 4096, 0, 0x22, -1, 0);
+          if (mapping == -1) return 2;
+          pid = fork();
+          if (pid == 0) {
+            return mapping[0];
+          }
+          if (waitpid(pid, &status, 0) != pid || (status & 127) != 11) return 3;
+          write(1, "vm-edge-ok\\n", 11);
+          return 0;
+        }
+      `,
+    ),
+  );
+  fs.chmod('/bin/vmedge', 0o755);
+
+  const image = buildGuestKernelImage();
+  let output = '';
+  const machine = new Machine({
+    physSize: GUEST_KERNEL_LAYOUT.physSize,
+    diskImage: disk,
+    consoleSink: (text) => (output += text),
+  });
+  machine.keyboard.feed('vmedge\n');
+  machine.keyboard.close();
+  machine.load(0, image.flat);
+  machine.reset({ pc: image.entry, sp: GUEST_KERNEL_LAYOUT.kstackTop });
+
+  assert.equal(machine.run(50_000_000).reason, 'halt');
+  assert.equal(output.includes('vm-edge-ok\n'), true, output);
+  assert.equal(output.includes('PANIC'), false, output);
 });

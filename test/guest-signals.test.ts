@@ -23,6 +23,7 @@ function addProgram(disk: Uint8Array, name: string, source: string): void {
   const fs = new Fs(new PortBlockDevice(ports));
   fs.mount();
   fs.writeFile(`/bin/${name}`, buildUserExecutable(name, source));
+  fs.chmod(`/bin/${name}`, 0o755);
 }
 
 function boot(disk: Uint8Array, input: string): { machine: Machine; output: () => string } {
@@ -172,4 +173,71 @@ test('the shell runs background jobs and Ctrl-C interrupts its foreground group'
   assert.equal(done.reason, 'halt');
   assert.equal(output().includes('survived\n'), true);
   assert.equal(output().endsWith('kernel: all processes exited\n'), true);
+});
+
+test('ignored signals do not interrupt sleep, SIGCHLD is delivered, and signal returns the old handler', () => {
+  const disk = buildGuestDiskImage();
+  addProgram(
+    disk,
+    'sigedge',
+    `
+      extern int errno;
+      int child_signal;
+      void first(int signal_number) { }
+      void second(int signal_number) { }
+      void on_child(int signal_number) { child_signal = signal_number; }
+
+      int main(int argc, char **argv) {
+        int fds[2];
+        int pid;
+        int status;
+        int i;
+        int old;
+        char byte;
+
+        old = signal(10, first);
+        if (old != 0) return 1;
+        old = signal(10, second);
+        if (old != first) return 2;
+
+        child_signal = 0;
+        if (signal(17, on_child) < 0) return 3;
+        pid = fork();
+        if (pid == 0) exit(0);
+        if (waitpid(pid, &status, 0) != pid || child_signal != 17) return 4;
+
+        if (pipe(fds) < 0) return 5;
+        pid = fork();
+        if (pid == 0) {
+          close(fds[1]);
+          signal(10, 1);
+          if (read(fds[0], &byte, 1) != 1 || byte != 'x') exit(6);
+          exit(0);
+        }
+        close(fds[0]);
+        i = 0;
+        while (i < 4) {
+          __syscall(2, 0, 0, 0);
+          i = i + 1;
+        }
+        kill(pid, 10);
+        i = 0;
+        while (i < 4) {
+          __syscall(2, 0, 0, 0);
+          i = i + 1;
+        }
+        if (write(fds[1], "x", 1) != 1) return 7;
+        close(fds[1]);
+        if (waitpid(pid, &status, 0) != pid || status != 0) return 8;
+        write(1, "signal-edge-ok\\n", 15);
+        return 0;
+      }
+    `,
+  );
+  const { machine, output } = boot(disk, 'sigedge\n');
+  machine.keyboard.close();
+
+  assert.equal(machine.run(50_000_000).reason, 'halt');
+  assert.equal(output().includes('signal-edge-ok\n'), true, output());
+  assert.equal(output().includes('PANIC'), false, output());
 });

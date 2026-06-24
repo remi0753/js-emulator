@@ -307,6 +307,30 @@ int vm_area_slot(int proc) {
   return -1;
 }
 
+int vm_page_in_area(int proc, int page) {
+  int i;
+  i = 0;
+  while (i < CFG_MAX_VMAS) {
+    if (proc_table[proc].vm.areas[i].used != 0 &&
+        page >= proc_table[proc].vm.areas[i].start &&
+        page < proc_table[proc].vm.areas[i].end) {
+      return 1;
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+void vm_area_assign(
+  int proc, int slot, int start, int end, int prot, int flags
+) {
+  proc_table[proc].vm.areas[slot].used = 1;
+  proc_table[proc].vm.areas[slot].start = start;
+  proc_table[proc].vm.areas[slot].end = end;
+  proc_table[proc].vm.areas[slot].prot = prot;
+  proc_table[proc].vm.areas[slot].flags = flags;
+}
+
 void vm_init(int proc, int pd, int image_end) {
   int i;
   proc_table[proc].vm.ptbr = pd;
@@ -488,6 +512,7 @@ int vm_munmap(int proc, int address, int length) {
   int page;
   int i;
   int split;
+  int needs_split;
   if ((address & 4095) != 0 || length <= 0) {
     return -CFG_EINVAL;
   }
@@ -496,23 +521,35 @@ int vm_munmap(int proc, int address, int length) {
   if (start < CFG_USER_BASE || end < start || end > CFG_USER_STACK_PAGE) {
     return -CFG_EINVAL;
   }
+  needs_split = 0;
+  i = 0;
+  while (i < CFG_MAX_VMAS) {
+    if (proc_table[proc].vm.areas[i].used != 0 &&
+        start > proc_table[proc].vm.areas[i].start &&
+        end < proc_table[proc].vm.areas[i].end) {
+      needs_split = 1;
+    }
+    i = i + 1;
+  }
+  if (needs_split != 0 && vm_area_slot(proc) < 0) {
+    return -CFG_ENOMEM;
+  }
+  page = start;
+  while (page < end) {
+    if (vm_page_in_area(proc, page) != 0) {
+      unmap_page(proc_table[proc].vm.ptbr, page);
+    }
+    page = page + 4096;
+  }
   i = 0;
   while (i < CFG_MAX_VMAS) {
     if (proc_table[proc].vm.areas[i].used != 0 &&
         start > proc_table[proc].vm.areas[i].start &&
         end < proc_table[proc].vm.areas[i].end) {
       split = vm_area_slot(proc);
-      if (split < 0) {
-        return -CFG_ENOMEM;
-      }
-      proc_table[proc].vm.areas[split].used = 1;
-      proc_table[proc].vm.areas[split].start = end;
-      proc_table[proc].vm.areas[split].end =
-        proc_table[proc].vm.areas[i].end;
-      proc_table[proc].vm.areas[split].prot =
-        proc_table[proc].vm.areas[i].prot;
-      proc_table[proc].vm.areas[split].flags =
-        proc_table[proc].vm.areas[i].flags;
+      vm_area_assign(proc, split, end, proc_table[proc].vm.areas[i].end,
+        proc_table[proc].vm.areas[i].prot,
+        proc_table[proc].vm.areas[i].flags);
       proc_table[proc].vm.areas[i].end = start;
     } else if (proc_table[proc].vm.areas[i].used != 0 &&
         start <= proc_table[proc].vm.areas[i].start &&
@@ -529,12 +566,101 @@ int vm_munmap(int proc, int address, int length) {
     }
     i = i + 1;
   }
-  page = start;
-  while (page < end) {
-    unmap_page(proc_table[proc].vm.ptbr, page);
-    page = page + 4096;
-  }
   return 0;
+}
+
+int vm_mprotect_slots_needed(int proc, int start, int end) {
+  int i;
+  int needed;
+  int overlap_start;
+  int overlap_end;
+  needed = 0;
+  i = 0;
+  while (i < CFG_MAX_VMAS) {
+    if (proc_table[proc].vm.areas[i].used != 0 &&
+        start < proc_table[proc].vm.areas[i].end &&
+        end > proc_table[proc].vm.areas[i].start) {
+      overlap_start = start;
+      if (overlap_start < proc_table[proc].vm.areas[i].start) {
+        overlap_start = proc_table[proc].vm.areas[i].start;
+      }
+      overlap_end = end;
+      if (overlap_end > proc_table[proc].vm.areas[i].end) {
+        overlap_end = proc_table[proc].vm.areas[i].end;
+      }
+      if (overlap_start > proc_table[proc].vm.areas[i].start) {
+        needed = needed + 1;
+      }
+      if (overlap_end < proc_table[proc].vm.areas[i].end) {
+        needed = needed + 1;
+      }
+    }
+    i = i + 1;
+  }
+  return needed;
+}
+
+int vm_free_area_slots(int proc) {
+  int i;
+  int count;
+  count = 0;
+  i = 0;
+  while (i < CFG_MAX_VMAS) {
+    if (proc_table[proc].vm.areas[i].used == 0) count = count + 1;
+    i = i + 1;
+  }
+  return count;
+}
+
+void vm_mprotect_areas(int proc, int start, int end, int prot) {
+  int i;
+  int slot;
+  int right;
+  int area_start;
+  int area_end;
+  int overlap_start;
+  int overlap_end;
+  int old_prot;
+  int old_flags;
+  int original[CFG_MAX_VMAS];
+  i = 0;
+  while (i < CFG_MAX_VMAS) {
+    original[i] = proc_table[proc].vm.areas[i].used;
+    i = i + 1;
+  }
+  i = 0;
+  while (i < CFG_MAX_VMAS) {
+    if (original[i] != 0 &&
+        start < proc_table[proc].vm.areas[i].end &&
+        end > proc_table[proc].vm.areas[i].start) {
+      area_start = proc_table[proc].vm.areas[i].start;
+      area_end = proc_table[proc].vm.areas[i].end;
+      old_prot = proc_table[proc].vm.areas[i].prot;
+      old_flags = proc_table[proc].vm.areas[i].flags;
+      overlap_start = start;
+      if (overlap_start < area_start) overlap_start = area_start;
+      overlap_end = end;
+      if (overlap_end > area_end) overlap_end = area_end;
+      if (overlap_start == area_start && overlap_end == area_end) {
+        proc_table[proc].vm.areas[i].prot = prot;
+      } else if (overlap_start == area_start) {
+        proc_table[proc].vm.areas[i].start = overlap_end;
+        slot = vm_area_slot(proc);
+        vm_area_assign(proc, slot, area_start, overlap_end, prot, old_flags);
+      } else if (overlap_end == area_end) {
+        proc_table[proc].vm.areas[i].end = overlap_start;
+        slot = vm_area_slot(proc);
+        vm_area_assign(proc, slot, overlap_start, area_end, prot, old_flags);
+      } else {
+        proc_table[proc].vm.areas[i].end = overlap_start;
+        slot = vm_area_slot(proc);
+        vm_area_assign(proc, slot, overlap_start, overlap_end, prot, old_flags);
+        right = vm_area_slot(proc);
+        vm_area_assign(proc, right, overlap_end, area_end, old_prot, old_flags);
+      }
+    }
+    i = i + 1;
+  }
 }
 
 int vm_mprotect(int proc, int address, int length, int prot) {
@@ -556,6 +682,9 @@ int vm_mprotect(int proc, int address, int length, int prot) {
       vm_range_mapped(proc, start, end) == 0) {
     return -CFG_ENOMEM;
   }
+  if (vm_mprotect_slots_needed(proc, start, end) > vm_free_area_slots(proc)) {
+    return -CFG_ENOMEM;
+  }
   pd = proc_table[proc].vm.ptbr;
   page = start;
   while (page < end) {
@@ -572,6 +701,7 @@ int vm_mprotect(int proc, int address, int length, int prot) {
     pt[(page >> 12) & 0x3ff] = (pte & 0xfffff000) | flags;
     page = page + 4096;
   }
+  vm_mprotect_areas(proc, start, end, prot);
   return 0;
 }
 

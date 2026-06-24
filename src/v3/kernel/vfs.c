@@ -50,8 +50,22 @@ void vnode_fill(
 void mount_set(int slot, int fs_type, char *path) {
   mount_table[slot].used = 1;
   mount_table[slot].fs_type = fs_type;
+  mount_table[slot].root_inum = 0;
   memset(mount_table[slot].path, 0, 8);
   memcpy(mount_table[slot].path, path, strlen(path));
+}
+
+char *vfs_mounted_path(int inum) {
+  int i;
+  i = 1;
+  while (i < CFG_NMOUNT) {
+    if (mount_table[i].used != 0 &&
+        mount_table[i].root_inum == inum) {
+      return mount_table[i].path;
+    }
+    i = i + 1;
+  }
+  return 0;
 }
 
 int mount_matches(char *path, char *mount_path) {
@@ -180,7 +194,10 @@ int disk_truncate_op(int node_addr) {
 void disk_release_op(int node_addr) {
   struct vnode *node;
   node = node_addr;
-  if (inode_nlink(node->inode.inum) == 0) ifree(node->inode.inum);
+  if (inode_nlink(node->inode.inum) == 0 &&
+      inode_open_count(node->inode.inum) <= 1) {
+    ifree(node->inode.inum);
+  }
 }
 
 int dev_lookup(char *relative, struct vnode *node) {
@@ -278,6 +295,9 @@ void generic_stat_op(int node_addr, int stat_addr) {
   struct guest_stat *st;
   node = node_addr;
   st = stat_addr;
+  if (node->fs_type == CFG_FS_TMP && node->object > 0) {
+    tmp_vnode_init(node, node->object);
+  }
   memset(st, 0, sizeof(struct guest_stat));
   st->dev = node->fs_type;
   st->ino = node->inode.inum;
@@ -619,10 +639,13 @@ void tmp_release_op(int node_addr) {
   }
 }
 
-int vfs_lookup(int path, int follow, int caller, struct vnode *node) {
+int vfs_lookup_depth(
+  int path, int follow, int caller, struct vnode *node, int depth
+) {
   int mount_index;
   int inum;
   char *relative;
+  if (depth > 8) return -CFG_ELOOP;
   mount_index = vfs_mount_for(path);
   relative = mount_relative(path, mount_table[mount_index].path);
   if (mount_table[mount_index].fs_type == CFG_FS_DEV) {
@@ -634,11 +657,18 @@ int vfs_lookup(int path, int follow, int caller, struct vnode *node) {
   if (mount_table[mount_index].fs_type == CFG_FS_TMP) {
     return tmp_lookup(relative, node);
   }
-  if (follow != 0) inum = namei(path);
-  else inum = namei_nofollow(path);
-  if (inum == 0) return -CFG_ENOENT;
+  inum = namei_access(path, follow, proc_table[caller].uid,
+    proc_table[caller].gid);
+  if (inum == 0 && fs_redirect_valid != 0) {
+    return vfs_lookup_depth(fs_redirect_path, follow, caller, node, depth + 1);
+  }
+  if (inum == 0) return 0 - fs_lookup_error;
   disk_vnode_init(node, inum);
   return 0;
+}
+
+int vfs_lookup(int path, int follow, int caller, struct vnode *node) {
+  return vfs_lookup_depth(path, follow, caller, node, 0);
 }
 
 int vfs_create(int path, int type, int mode, int caller, struct vnode *node) {
@@ -810,6 +840,9 @@ void vfs_init(void) {
   mount_set(1, CFG_FS_DEV, "/dev");
   mount_set(2, CFG_FS_PROC, "/proc");
   mount_set(3, CFG_FS_TMP, "/tmp");
+  mount_table[1].root_inum = namei_nofollow("/dev");
+  mount_table[2].root_inum = namei_nofollow("/proc");
+  mount_table[3].root_inum = namei_nofollow("/tmp");
 
   disk_vnode_ops.read = disk_read_op;
   disk_vnode_ops.write = disk_write_op;

@@ -83,6 +83,7 @@ test('structured file objects dispatch vnode, pipe, terminal, and console operat
       `,
     ),
   );
+  fs.chmod('/bin/fileops', 0o755);
 
   const image = buildGuestKernelImage();
   let output = '';

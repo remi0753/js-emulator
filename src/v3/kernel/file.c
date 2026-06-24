@@ -126,6 +126,7 @@ int file_stat(struct file *file, struct guest_stat *st) {
 
 int file_lseek(struct file *file, int offset, int whence) {
   struct open_file *open;
+  struct guest_stat value;
   int next;
   if (file->type != CFG_FT_FILE || file->object < 0 ||
       file->object >= CFG_NFILE) {
@@ -140,7 +141,8 @@ int file_lseek(struct file *file, int offset, int whence) {
   } else if (whence == CFG_SEEK_CUR) {
     next = open->offset + offset;
   } else if (whence == CFG_SEEK_END) {
-    next = open->vnode.inode.size + offset;
+    vnode_stat(&open->vnode, &value);
+    next = value.size + offset;
   } else {
     return -CFG_EINVAL;
   }

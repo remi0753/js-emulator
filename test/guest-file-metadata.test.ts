@@ -23,6 +23,7 @@ function addProgram(disk: Uint8Array, name: string, source: string): void {
   const fs = new Fs(new PortBlockDevice(ports));
   fs.mount();
   fs.writeFile(`/bin/${name}`, buildUserExecutable(name, source));
+  fs.chmod(`/bin/${name}`, 0o755);
 }
 
 function boot(disk: Uint8Array, input: string): string {
@@ -41,6 +42,25 @@ function boot(disk: Uint8Array, input: string): string {
   assert.equal(machine.run(80_000_000).reason, 'halt');
   assert.equal(output.includes('PANIC'), false, output);
   return output;
+}
+
+function leaveOneFreeFilesystemBlock(disk: Uint8Array): void {
+  const superblock = new DataView(disk.buffer, disk.byteOffset + 512, 512);
+  const size = superblock.getUint32(4, true);
+  const bitmapStart = superblock.getUint32(16, true);
+  let kept = false;
+  for (let block = 0; block < size; block++) {
+    const byteOffset = bitmapStart * 512 + Math.floor((block % 4096) / 8);
+    const mask = 1 << (block % 8);
+    if ((disk[byteOffset]! & mask) === 0) {
+      if (!kept) {
+        kept = true;
+      } else {
+        disk[byteOffset] = disk[byteOffset]! | mask;
+      }
+    }
+  }
+  assert.equal(kept, true);
 }
 
 test('Phase 19 metadata, links, directory mutation, and persistence work end to end', () => {
@@ -139,4 +159,117 @@ test('Phase 19 metadata, links, directory mutation, and persistence work end to 
 
   const second = boot(disk, 'p19check\n');
   assert.equal(second.includes('phase19-reboot-ok\n'), true, second);
+});
+
+test('inode lifetime, rename aliases, live metadata, and exec permissions follow Unix semantics', () => {
+  const disk = buildGuestDiskImage();
+  addProgram(
+    disk,
+    'p19edge',
+    `
+      extern int errno;
+      struct stat {
+        int dev; int ino; int mode; int nlink; int uid; int gid; int rdev;
+        int size; int blksize; int blocks; int atime; int mtime; int ctime;
+      };
+
+      int main(int argc, char **argv) {
+        int a;
+        int b;
+        int pid;
+        int status;
+        char value;
+        char *args[2];
+        struct stat st;
+
+        a = open("/victim", 0x202);
+        if (a < 0 || write(a, "x", 1) != 1) return 1;
+        close(a);
+        a = open("/victim", 0);
+        b = open("/victim", 0);
+        if (a < 0 || b < 0 || unlink("/victim") < 0) return 2;
+        close(a);
+        if (read(b, &value, 1) != 1 || value != 'x') return 3;
+        close(b);
+
+        a = open("/live-size", 0x202);
+        b = open("/live-size", 0);
+        if (a < 0 || b < 0 || write(a, "abc", 3) != 3) return 4;
+        if (lseek(b, 0, 2) != 3) return 5;
+        close(a);
+        close(b);
+
+        a = open("/alias-a", 0x201);
+        close(a);
+        if (link("/alias-a", "/alias-b") < 0) return 6;
+        if (rename("/alias-a", "/alias-b") < 0) return 7;
+        if (stat("/alias-a", &st) < 0 || st.nlink != 2) return 8;
+        if (stat("/alias-b", &st) < 0 || st.nlink != 2) return 9;
+
+        args[0] = "echo";
+        args[1] = 0;
+        if (chmod("/bin/echo", 0) < 0) return 10;
+        pid = fork();
+        if (pid == 0) {
+          if (exec("/bin/echo", args) != -1 || errno != 13) exit(11);
+          exit(0);
+        }
+        if (waitpid(pid, &status, 0) != pid || status != 0) return 12;
+        if (chmod("/bin/echo", 493) < 0 || chmod("/bin", 0) < 0) return 13;
+        pid = fork();
+        if (pid == 0) {
+          if (exec("/bin/echo", args) != -1 || errno != 13) exit(14);
+          exit(0);
+        }
+        if (waitpid(pid, &status, 0) != pid || status != 0) return 15;
+        write(1, "phase19-edge-ok\\n", 16);
+        return 0;
+      }
+    `,
+  );
+
+  const output = boot(disk, 'p19edge\n');
+  assert.equal(output.includes('phase19-edge-ok\n'), true, output);
+});
+
+test('a write that reaches ENOSPC returns and persists its completed prefix', () => {
+  const disk = buildGuestDiskImage();
+  addProgram(
+    disk,
+    'partial',
+    `
+      struct stat {
+        int dev; int ino; int mode; int nlink; int uid; int gid; int rdev;
+        int size; int blksize; int blocks; int atime; int mtime; int ctime;
+      };
+      char data[1024];
+      int main(int argc, char **argv) {
+        int fd;
+        int i;
+        int wrote;
+        char first;
+        struct stat st;
+        i = 0;
+        while (i < 1024) {
+          data[i] = 'q';
+          i = i + 1;
+        }
+        fd = open("/partial-data", 0x202);
+        if (fd < 0) return 1;
+        wrote = write(fd, data, 1024);
+        if (wrote != 512) return 2;
+        if (fstat(fd, &st) < 0 || st.size != 512) return 3;
+        if (lseek(fd, 0, 2) != 512) return 4;
+        if (lseek(fd, 0, 0) != 0 || read(fd, &first, 1) != 1 ||
+            first != 'q') return 5;
+        close(fd);
+        write(1, "partial-write-ok\\n", 17);
+        return 0;
+      }
+    `,
+  );
+  leaveOneFreeFilesystemBlock(disk);
+
+  const output = boot(disk, 'partial\n');
+  assert.equal(output.includes('partial-write-ok\n'), true, output);
 });

@@ -146,7 +146,14 @@ int sigaction(int sig, struct sigaction *action, struct sigaction *old_action) {
   struct sigaction kernel_old;
   struct sigaction *kernel_action_ptr;
   struct sigaction *kernel_old_ptr;
+  sighandler_t previous_handler;
+  sighandler_t next_handler;
   int result;
+  previous_handler = 0;
+  if (sig >= 0 && sig < 32) {
+    previous_handler = signal_handlers[sig];
+  }
+  next_handler = previous_handler;
   kernel_action_ptr = 0;
   kernel_old_ptr = 0;
   if (action != 0) {
@@ -155,8 +162,9 @@ int sigaction(int sig, struct sigaction *action, struct sigaction *old_action) {
     kernel_action.restorer = signal_restorer;
     if (action->handler == 0 || action->handler == 1) {
       kernel_action.handler = action->handler;
+      next_handler = action->handler;
     } else {
-      signal_handlers[sig] = action->handler;
+      next_handler = action->handler;
       kernel_action.handler = signal_dispatch;
     }
     kernel_action_ptr = &kernel_action;
@@ -171,10 +179,13 @@ int sigaction(int sig, struct sigaction *action, struct sigaction *old_action) {
     old_action->flags = kernel_old.flags;
     old_action->restorer = 0;
     if (kernel_old.handler == signal_dispatch) {
-      old_action->handler = signal_handlers[sig];
+      old_action->handler = previous_handler;
     } else {
       old_action->handler = kernel_old.handler;
     }
+  }
+  if (result == 0 && action != 0) {
+    signal_handlers[sig] = next_handler;
   }
   return result;
 }
