@@ -391,6 +391,91 @@ memory mappings, permissions, polling, and a coherent libc. The priority is
 semantic compatibility for programs compiled for this VM's ISA, not bit-for-bit
 compatibility with the Linux kernel.
 
+#### Implementation strategy for v4 and later
+
+Phase numbers are development milestones, not separate kernel versions. Continue
+to evolve the single maintained kernel in `src/v3/kernel/`; preserve completed
+milestones with Git tags such as `phase-17-complete` rather than copying the
+kernel source. Tests and demos should be named after the subsystem or behavior
+they verify, for example `guest-signals.test.ts`, `guest-vfs.test.ts`, and
+`guest-mmap.test.ts`.
+
+Before adding Phase 17 features, split the current monolithic `kernel.c` by
+subsystem. The intended shape is:
+
+```text
+src/v3/kernel/
+  main.c
+  kernel.h
+  trap.c
+  process.c
+  scheduler.c
+  syscall.c
+  memory.c
+  exec.c
+  file.c
+  pipe.c
+  fs.c
+  drivers/
+    console.c
+    keyboard.c
+    disk.c
+    rtc.c
+    power.c
+```
+
+`src/v3/guest-kernel.ts` should compile each source file separately and link the
+resulting objects into one kernel image. Add the minimum toolchain support needed
+for shared declarations first: headers or an equivalent include mechanism,
+function prototypes, structs, constants, and cross-object type checking. Avoid
+duplicating declarations and configuration values across C files.
+
+Establish these kernel-internal foundations during that split:
+
+- stable negative errno values and a libc-visible `errno` convention;
+- `copyin`/`copyout` helpers as the only normal path for user-memory access;
+- a shared sleep/wakeup and wait-queue primitive;
+- table-driven syscall dispatch;
+- structured process, file, inode/vnode, and VM state instead of adding more
+  parallel flat arrays;
+- a common `file_ops`-style interface for files, directories, pipes, terminals,
+  and devices.
+
+The phases below have dependencies and should not be implemented as isolated
+feature lists. Use this practical order:
+
+1. **Kernel structure and error/wait foundations** — modularize the kernel,
+   introduce errno, safe user copies, wait queues, and syscall tables.
+2. **Signals and the minimum TTY foundation** — implement signal delivery,
+   masks, `sigreturn`, and `waitpid`, then process groups, sessions, foreground
+   terminal groups, and Ctrl-C delivery. Phase 17 job control depends on part of
+   Phase 21 and should be developed with it.
+3. **File abstraction, metadata, and VFS** — introduce file/vnode operations
+   before expanding metadata calls, then add `stat`, directory mutation,
+   permissions, `/dev`, `/proc`, and tmpfs. This covers Phases 19–21 without
+   hard-coding each new object type into syscall handlers.
+4. **Virtual-memory areas** — implement `brk`, VMAs, lazy anonymous allocation,
+   `mmap`/`munmap`, `mprotect`, copy-on-write, file-backed mappings, and a page
+   cache. The `mmap` calls listed in Phase 18 depend on this Phase 22 foundation
+   and should not be implemented as ad hoc mappings.
+5. **libc and userland** — add `malloc`, stdio, directory, signal, terminal, and
+   environment APIs after the corresponding kernel interfaces stabilize.
+6. **Polling and networking** — build nonblocking I/O and `poll` on the shared
+   wait queues and `file_ops` readiness interface. Validate a deterministic UDP
+   path before adding TCP.
+7. **Driver model, observability, then SMP** — consolidate devices behind VFS
+   and driver interfaces, make failures diagnosable, and add multi-core only
+   after single-core process, VFS, VM, signal, and driver semantics are stable.
+
+For every milestone, use the same completion workflow:
+
+1. document the syscall ABI, data structures, and important state transitions;
+2. add focused kernel or hardware tests;
+3. add a minimal guest user program that exercises the feature;
+4. add a shell-level end-to-end test where appropriate;
+5. run type checking, linting, and the complete test suite;
+6. update this roadmap and tag the completed commit.
+
 - **Phase 17** ⬜ complete the process and signal model.
 
   Add `kill`, `signal`/`sigaction`-style handlers, default signal actions,
