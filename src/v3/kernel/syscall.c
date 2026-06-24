@@ -34,25 +34,24 @@ int sys_read(int caller, int fd, int buf, int len) {
 }
 
 int sys_open(int caller, int upath, int flags) {
+  struct vnode node;
   int result;
-  int inum;
   int t;
   int fd;
   result = copy_path_in(caller, upath);
   if (result < 0) {
     return result;
   }
-  inum = namei(kpath);
-  if (inum == 0) {
+  result = vfs_lookup(kpath, 1, caller, &node);
+  if (result < 0) {
     if ((flags & CFG_O_CREATE) == 0) {
-      return -CFG_ENOENT;
+      return result;
     }
-    inum = create_inode(kpath, CFG_T_FILE, 438);
-    if (inum < 0) {
-      return inum;
-    }
+    if (result != -CFG_ENOENT) return result;
+    result = vfs_create(kpath, CFG_T_FILE, 438, caller, &node);
+    if (result < 0) return result;
   }
-  t = inode_type(inum);
+  t = node.inode.type;
   if (t != CFG_T_FILE && t != CFG_T_DIR) {
     return -CFG_EINVAL;
   }
@@ -60,25 +59,25 @@ int sys_open(int caller, int upath, int flags) {
     return -CFG_EISDIR;
   }
   if ((flags & CFG_O_ACCMODE) == CFG_O_WRONLY) {
-    if (inode_access(inum, proc_table[caller].uid,
+    if (vnode_access(&node, proc_table[caller].uid,
         proc_table[caller].gid, 2) == 0) return -CFG_EACCES;
   } else if ((flags & CFG_O_ACCMODE) == CFG_O_RDWR) {
-    if (inode_access(inum, proc_table[caller].uid,
+    if (vnode_access(&node, proc_table[caller].uid,
         proc_table[caller].gid, 6) == 0) return -CFG_EACCES;
-  } else if (inode_access(inum, proc_table[caller].uid,
+  } else if (vnode_access(&node, proc_table[caller].uid,
       proc_table[caller].gid, 4) == 0) {
     return -CFG_EACCES;
   }
   if ((flags & CFG_O_TRUNC) != 0) {
     if ((flags & CFG_O_ACCMODE) == 0) return -CFG_EINVAL;
-    if ((fs_mount_flags & 1) != 0) return -CFG_EROFS;
-    itrunc(inum);
+    result = vnode_truncate(&node);
+    if (result < 0) return result;
   }
   fd = alloc_fd(caller);
   if (fd < 0) {
     return -CFG_EMFILE;
   }
-  if (file_set_vnode(&proc_table[caller].files[fd], inum) < 0) {
+  if (file_set_node(&proc_table[caller].files[fd], &node) < 0) {
     return -CFG_ENFILE;
   }
   proc_table[caller].files[fd].status_flags = flags;
@@ -226,15 +225,14 @@ int sys_getdents(int caller, int fd, int destination, int count) {
 }
 
 int sys_stat_path(int caller, int upath, int destination, int follow) {
+  struct vnode node;
   struct guest_stat value;
   int result;
-  int inum;
   result = copy_path_in(caller, upath);
   if (result < 0) return result;
-  if (follow != 0) inum = namei(kpath);
-  else inum = namei_nofollow(kpath);
-  if (inum == 0) return -CFG_ENOENT;
-  inode_stat(inum, &value);
+  result = vfs_lookup(kpath, follow, caller, &node);
+  if (result < 0) return result;
+  vnode_stat(&node, &value);
   return copyout(caller, destination, &value, sizeof(struct guest_stat));
 }
 
@@ -254,7 +252,7 @@ int sys_chmod(int caller, int upath, int mode) {
   int result;
   result = copy_path_in(caller, upath);
   if (result < 0) return result;
-  return chmod_path(kpath, mode);
+  return vfs_chmod(kpath, mode, caller);
 }
 
 int sys_chown(int caller, int upath, int uid, int gid) {
@@ -262,14 +260,17 @@ int sys_chown(int caller, int upath, int uid, int gid) {
   if (proc_table[caller].uid != 0) return -CFG_EPERM;
   result = copy_path_in(caller, upath);
   if (result < 0) return result;
-  return chown_path(kpath, uid, gid);
+  return vfs_chown(kpath, uid, gid, caller);
 }
 
 int sys_mkdir(int caller, int upath, int mode) {
   int result;
   result = copy_path_in(caller, upath);
   if (result < 0) return result;
-  result = create_inode(kpath, CFG_T_DIR, mode);
+  {
+    struct vnode node;
+    result = vfs_create(kpath, CFG_T_DIR, mode, caller, &node);
+  }
   if (result < 0) return result;
   return 0;
 }
@@ -278,7 +279,7 @@ int sys_remove_path(int caller, int upath, int remove_dir) {
   int result;
   result = copy_path_in(caller, upath);
   if (result < 0) return result;
-  return unlink_path(kpath, remove_dir);
+  return vfs_unlink(kpath, remove_dir, caller);
 }
 
 int copy_second_path(int caller, int upath, int destination) {
@@ -293,7 +294,7 @@ int sys_link(int caller, int uold, int unew) {
   if (result < 0) return result;
   result = copy_second_path(caller, unew, newpath);
   if (result < 0) return result;
-  return link_path(oldpath, newpath);
+  return vfs_link(oldpath, newpath);
 }
 
 int sys_rename(int caller, int uold, int unew) {
@@ -304,7 +305,7 @@ int sys_rename(int caller, int uold, int unew) {
   if (result < 0) return result;
   result = copy_second_path(caller, unew, newpath);
   if (result < 0) return result;
-  return rename_path(oldpath, newpath);
+  return vfs_rename(oldpath, newpath);
 }
 
 int sys_symlink(int caller, int utarget, int ulink) {
@@ -315,7 +316,7 @@ int sys_symlink(int caller, int utarget, int ulink) {
   if (result < 0) return result;
   result = copy_second_path(caller, ulink, linkpath);
   if (result < 0) return result;
-  return symlink_path(target, linkpath);
+  return vfs_symlink(target, linkpath);
 }
 
 int sys_readlink(int caller, int upath, int destination, int size) {
@@ -325,7 +326,7 @@ int sys_readlink(int caller, int upath, int destination, int size) {
   result = copy_path_in(caller, upath);
   if (result < 0) return result;
   if (size > CFG_INITPATH_LEN) size = CFG_INITPATH_LEN;
-  result = readlink_path(kpath, value, size);
+  result = vfs_readlink(kpath, caller, value, size);
   if (result < 0) return result;
   if (copyout(caller, destination, value, result) < 0) return -CFG_EFAULT;
   return result;
@@ -368,7 +369,7 @@ int sys_uname(int caller, int destination) {
   copy_fixed_string(value, "jscpu-os", 32);
   copy_fixed_string(value + 32, "jscpu", 32);
   copy_fixed_string(value + 64, "0.4", 32);
-  copy_fixed_string(value + 96, "phase18", 32);
+  copy_fixed_string(value + 96, "phase20", 32);
   copy_fixed_string(value + 128, "custom32", 32);
   copy_fixed_string(value + 160, "local", 32);
   return copyout(caller, destination, value, 192);

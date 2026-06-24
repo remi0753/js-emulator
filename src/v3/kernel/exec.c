@@ -74,21 +74,19 @@ int build_args_from_user(int proc, int uargv) {
 // bytes (bss tail stays zero). Returns the entry virtual address.
 int load_exec_image(int pd, int path) {
   struct vnode node;
-  int inum;
+  int result;
   int entry;
   int memsz;
   int npages;
   int i;
   int frame;
-  inum = namei(path);
-  if (inum == 0) {
-    return -CFG_ENOENT;
-  }
-  vnode_init(&node, inum);
+  result = vfs_lookup(path, 1, current, &node);
+  if (result < 0) return result;
   if (node.inode.type != CFG_T_FILE) {
     return -CFG_ENOEXEC;
   }
-  if (node.inode.size < 12 || vnode_read(&node, 0, 12, exec_hdr) != 12) {
+  if (node.inode.size < 12 ||
+      vnode_read(&node, current, 0, 12, exec_hdr) != 12) {
     return -CFG_ENOEXEC;
   }
   if (read32_at(exec_hdr) != CFG_EXEC_MAGIC) {
@@ -115,7 +113,7 @@ int load_exec_image(int pd, int path) {
     frame = alloc_frame();
     zero_page(frame);
     // file bytes after the 12-byte header map to USER_LOAD_BASE upward
-    vnode_read(&node, 12 + i * 4096, 4096, frame);
+    vnode_read(&node, current, 12 + i * 4096, 4096, frame);
     map_page(pd, CFG_USER_LOAD_BASE + i * 4096, frame, CFG_PTE_USER);
     i = i + 1;
   }

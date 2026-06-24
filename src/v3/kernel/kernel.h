@@ -41,12 +41,28 @@ struct vm_space {
 
 typedef int (*file_io_fn)(int file, int caller, int buf, int len);
 typedef void (*file_lifecycle_fn)(int file);
+typedef int (*vnode_io_fn)(int node, int caller, int off, int buf, int len);
+typedef int (*vnode_getdents_fn)(
+  int node, int caller, int off, int destination, int count
+);
+typedef void (*vnode_stat_fn)(int node, int st);
+typedef int (*vnode_truncate_fn)(int node);
+typedef void (*vnode_release_fn)(int node);
 
 struct file_ops {
   file_io_fn read;
   file_io_fn write;
   file_lifecycle_fn close;
   file_lifecycle_fn retain;
+};
+
+struct vnode_ops {
+  vnode_io_fn read;
+  vnode_io_fn write;
+  vnode_getdents_fn getdents;
+  vnode_stat_fn stat;
+  vnode_truncate_fn truncate;
+  vnode_release_fn release;
 };
 
 struct inode {
@@ -63,7 +79,16 @@ struct inode {
 };
 
 struct vnode {
+  struct vnode_ops *ops;
+  int fs_type;
+  int object;
   struct inode inode;
+};
+
+struct mount {
+  int used;
+  int fs_type;
+  char path[8];
 };
 
 struct guest_dirent {
@@ -253,14 +278,14 @@ int inode_ctime(int inum);
 int inode_slot(int inum, int k);
 void inode_set16(int inum, int offset, int value);
 void inode_set32(int inum, int offset, int value);
-void vnode_init(struct vnode *node, int inum);
+void disk_vnode_init(struct vnode *node, int inum);
 int bmap(int inum, int bn);
 int bmap_alloc(int inum, int bn);
 int readi(int inum, int off, int n, int dst);
 int writei(int inum, int off, int n, int src);
 void itrunc(int inum);
-int vnode_read(struct vnode *node, int off, int n, int dst);
-int vnode_write(struct vnode *node, int off, int n, int src);
+int disk_vnode_read(struct vnode *node, int off, int n, int dst);
+int disk_vnode_write(struct vnode *node, int off, int n, int src);
 int name_eq(int dname, int want, int wlen);
 int dirlookup(int dir, int name, int namelen);
 int dirlink(int dir, int name, int namelen, int inum);
@@ -280,6 +305,33 @@ int chown_path(int path, int uid, int gid);
 void inode_stat(int inum, struct guest_stat *st);
 int inode_access(int inum, int uid, int gid, int mask);
 
+// --- vfs.c ---
+extern struct vnode_ops disk_vnode_ops;
+extern struct vnode_ops dev_vnode_ops;
+extern struct vnode_ops proc_vnode_ops;
+extern struct vnode_ops tmp_vnode_ops;
+extern struct mount mount_table[CFG_NMOUNT];
+void vfs_init(void);
+int vfs_lookup(int path, int follow, int caller, struct vnode *node);
+int vfs_create(int path, int type, int mode, int caller, struct vnode *node);
+int vfs_unlink(int path, int remove_dir, int caller);
+int vfs_link(int oldpath, int newpath);
+int vfs_rename(int oldpath, int newpath);
+int vfs_symlink(int target, int linkpath);
+int vfs_chmod(int path, int mode, int caller);
+int vfs_chown(int path, int uid, int gid, int caller);
+int vfs_readlink(int path, int caller, int dst, int size);
+int vnode_read(struct vnode *node, int caller, int off, int n, int dst);
+int vnode_write(struct vnode *node, int caller, int off, int n, int src);
+int vnode_getdents(
+  struct vnode *node, int caller, int off, int destination, int count
+);
+void vnode_stat(struct vnode *node, struct guest_stat *st);
+int vnode_truncate(struct vnode *node);
+void vnode_release(struct vnode *node);
+int vnode_access(struct vnode *node, int uid, int gid, int mask);
+int vnode_is_tty(struct vnode *node);
+
 // --- file.c (per-process file descriptors) ---
 extern struct file_ops console_file_ops;
 extern struct file_ops keyboard_file_ops;
@@ -291,6 +343,7 @@ void file_reset(struct file *file);
 void file_set_console(struct file *file);
 void file_set_keyboard(struct file *file);
 int file_set_vnode(struct file *file, int inum);
+int file_set_node(struct file *file, struct vnode *node);
 void file_set_pipe(struct file *file, int pipe, int end);
 int file_read(struct file *file, int caller, int buf, int len);
 int file_write(struct file *file, int caller, int buf, int len);

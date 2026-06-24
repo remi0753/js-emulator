@@ -38,6 +38,9 @@ const NBUF = 16;
 const NFD = 16;
 const NFILE = MAX_PROC * NFD;
 const NPIPE = 8;
+const NMOUNT = 4;
+const NTMPNODE = 16;
+const TMP_FILE_SIZE = 512;
 const PIPESZ = 512;
 const MAXARG = 16;
 const MAX_VMAS = 16;
@@ -63,6 +66,13 @@ const FILE_TYPE = {
   keyboard: 2,
   file: 3,
   pipe: 4,
+} as const;
+
+const FS_TYPE = {
+  disk: 1,
+  dev: 2,
+  proc: 3,
+  tmp: 4,
 } as const;
 
 // Stable negative errno values (Linux numbers). Syscalls return -ERRNO on
@@ -117,9 +127,9 @@ const SIGNAL = {
 export const GUEST_EXECUTABLE_MAGIC = 0x35315850;
 
 export const GUEST_KERNEL_LAYOUT = {
-  idt: 0x40000,
-  kernelPageTable: 0x41000,
-  kstackTop: 0x50000,
+  idt: 0x48000,
+  kernelPageTable: 0x49000,
+  kstackTop: 0x58000,
   framePoolBase: 0x100000,
   framePoolEnd: 0x380000,
   timerPeriod: 8000,
@@ -211,6 +221,9 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_NFD: NFD,
   CFG_NFILE: NFILE,
   CFG_NPIPE: NPIPE,
+  CFG_NMOUNT: NMOUNT,
+  CFG_NTMPNODE: NTMPNODE,
+  CFG_TMP_FILE_SIZE: TMP_FILE_SIZE,
   CFG_PIPESZ: PIPESZ,
   CFG_MAXARG: MAXARG,
   CFG_MAX_VMAS: MAX_VMAS,
@@ -245,6 +258,10 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_FT_KBD: FILE_TYPE.keyboard,
   CFG_FT_FILE: FILE_TYPE.file,
   CFG_FT_PIPE: FILE_TYPE.pipe,
+  CFG_FS_DISK: FS_TYPE.disk,
+  CFG_FS_DEV: FS_TYPE.dev,
+  CFG_FS_PROC: FS_TYPE.proc,
+  CFG_FS_TMP: FS_TYPE.tmp,
   CFG_NBUF: NBUF,
   CFG_BUF_DATA_LEN: NBUF * SECTOR_SIZE,
   CFG_INITPATH_LEN: 64,
@@ -266,6 +283,7 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_S_IFDIR: S_IFDIR,
   CFG_S_IFREG: S_IFREG,
   CFG_S_IFLNK: S_IFLNK,
+  CFG_S_IFCHR: 0x2000,
   CFG_SEEK_SET: 0,
   CFG_SEEK_CUR: 1,
   CFG_SEEK_END: 2,

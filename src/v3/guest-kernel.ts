@@ -77,6 +77,9 @@ export function buildGuestDiskImage(): Uint8Array {
   const driver = new PortBlockDevice(ports);
   const fs = new Fs(driver);
   fs.mkfs();
+  fs.mkdir('/dev');
+  fs.mkdir('/proc');
+  fs.mkdir('/tmp');
   for (const name of ['init', 'sh', 'echo', 'cat', 'ls', 'date', 'shutdown', 'spin']) {
     fs.writeFile(`/bin/${name}`, buildUserExecutable(name, sourceFile(`userland/${name}.c`)));
     fs.chmod(`/bin/${name}`, 0o755);
@@ -102,6 +105,7 @@ const KERNEL_SOURCE_FILES = [
   'file.c',
   'pipe.c',
   'fs.c',
+  'vfs.c',
   'drivers/console.c',
   'drivers/keyboard.c',
   'drivers/disk.c',

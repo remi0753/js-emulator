@@ -2,7 +2,8 @@
 //
 // Syscalls no longer switch on descriptor types. Each descriptor carries an
 // operation table, while object-specific state stays in the file/vnode/pipe
-// structures. This is the extension point for future VFS, TTY, and device files.
+// structures. VFS-backed disk files and pseudo filesystems all enter through
+// vnode_file_ops; pipes retain their separate stream operations.
 #include "kernel.h"
 
 struct file_ops console_file_ops;
@@ -49,8 +50,8 @@ int vnode_read_op(int file_addr, int caller, int buf, int len) {
   int got;
   file = file_addr;
   open = &open_file_table[file->object];
-  got = vnode_read(&open->vnode, open->offset, len, buf);
-  open->offset = open->offset + got;
+  got = vnode_read(&open->vnode, caller, open->offset, len, buf);
+  if (got > 0) open->offset = open->offset + got;
   return got;
 }
 
@@ -63,7 +64,7 @@ int vnode_write_op(int file_addr, int caller, int buf, int len) {
   if (open->vnode.inode.type == CFG_T_DIR) {
     return -CFG_EISDIR;
   }
-  wrote = vnode_write(&open->vnode, open->offset, len, buf);
+  wrote = vnode_write(&open->vnode, caller, open->offset, len, buf);
   if (wrote > 0) {
     open->offset = open->offset + wrote;
   }
@@ -80,16 +81,11 @@ int file_mmap_read(struct file *file, int offset, int length, int destination) {
   if (open->used == 0 || open->vnode.inode.type != CFG_T_FILE) {
     return -CFG_ENODEV;
   }
-  return vnode_read(&open->vnode, offset, length, destination);
+  return vnode_read(&open->vnode, current, offset, length, destination);
 }
 
 int file_getdents(struct file *file, int caller, int destination, int count) {
   struct open_file *open;
-  struct guest_dirent entry;
-  char raw[16];
-  int written;
-  int inum;
-  int i;
   if (file->type != CFG_FT_FILE || file->object < 0 ||
       file->object >= CFG_NFILE) {
     return -CFG_EBADF;
@@ -101,38 +97,17 @@ int file_getdents(struct file *file, int caller, int destination, int count) {
   if (count < sizeof(struct guest_dirent)) {
     return -CFG_EINVAL;
   }
-  written = 0;
-  while (written + sizeof(struct guest_dirent) <= count &&
-      open->offset + 16 <= inode_size(open->vnode.inode.inum)) {
-    vnode_read(&open->vnode, open->offset, 16, raw);
-    open->offset = open->offset + 16;
-    inum = read16_at(raw);
-    if (inum != 0) {
-      entry.ino = inum;
-      entry.offset = open->offset;
-      entry.reclen = sizeof(struct guest_dirent);
-      entry.type = inode_type(inum);
-      i = 0;
-      while (i < 16) {
-        if (i < CFG_DIRSIZ) {
-          entry.name[i] = raw[i + 2];
-        } else {
-          entry.name[i] = 0;
-        }
-        i = i + 1;
-      }
-      if (copyout(caller, destination + written, &entry,
-          sizeof(struct guest_dirent)) < 0) {
-        return -CFG_EFAULT;
-      }
-      written = written + sizeof(struct guest_dirent);
-    }
-  }
-  return written;
+  return vnode_getdents(&open->vnode, caller, &open->offset,
+    destination, count);
 }
 
 int file_is_tty(struct file *file) {
-  return file->type == CFG_FT_KBD || file->type == CFG_FT_CONS;
+  struct open_file *open;
+  if (file->type == CFG_FT_KBD || file->type == CFG_FT_CONS) return 1;
+  if (file->type != CFG_FT_FILE || file->object < 0 ||
+      file->object >= CFG_NFILE) return 0;
+  open = &open_file_table[file->object];
+  return open->used != 0 && vnode_is_tty(&open->vnode);
 }
 
 int file_stat(struct file *file, struct guest_stat *st) {
@@ -145,7 +120,7 @@ int file_stat(struct file *file, struct guest_stat *st) {
   if (open->used == 0) {
     return -CFG_EBADF;
   }
-  inode_stat(open->vnode.inode.inum, st);
+  vnode_stat(&open->vnode, st);
   return 0;
 }
 
@@ -165,7 +140,7 @@ int file_lseek(struct file *file, int offset, int whence) {
   } else if (whence == CFG_SEEK_CUR) {
     next = open->offset + offset;
   } else if (whence == CFG_SEEK_END) {
-    next = inode_size(open->vnode.inode.inum) + offset;
+    next = open->vnode.inode.size + offset;
   } else {
     return -CFG_EINVAL;
   }
@@ -183,13 +158,7 @@ void vnode_close_op(int file_addr) {
   open = &open_file_table[file->object];
   open->refs = open->refs - 1;
   if (open->refs == 0) {
-    if (inode_nlink(open->vnode.inode.inum) == 0) {
-      itrunc(open->vnode.inode.inum);
-      memset(inode_addr(open->vnode.inode.inum), 0, CFG_DINODE_SIZE);
-      disk_write_block(fs_inodestart +
-        open->vnode.inode.inum / CFG_IPB,
-        bread(fs_inodestart + open->vnode.inode.inum / CFG_IPB));
-    }
+    vnode_release(&open->vnode);
     open->used = 0;
   }
 }
@@ -348,6 +317,12 @@ void file_set_keyboard(struct file *file) {
 }
 
 int file_set_vnode(struct file *file, int inum) {
+  struct vnode node;
+  disk_vnode_init(&node, inum);
+  return file_set_node(file, &node);
+}
+
+int file_set_node(struct file *file, struct vnode *node) {
   int open;
   open = alloc_open_file();
   if (open < 0) {
@@ -359,7 +334,7 @@ int file_set_vnode(struct file *file, int inum) {
   file->readable = 1;
   file->writable = 0;
   file->object = open;
-  vnode_init(&open_file_table[open].vnode, inum);
+  memcpy(&open_file_table[open].vnode, node, sizeof(struct vnode));
   return 0;
 }
 
@@ -407,14 +382,24 @@ void file_retain(struct file *file) {
 
 void init_fds(int idx) {
   int fd;
+  struct vnode console;
   fd = 0;
   while (fd < CFG_NFD) {
     file_reset(&proc_table[idx].files[fd]);
     fd = fd + 1;
   }
-  file_set_keyboard(&proc_table[idx].files[0]);
-  file_set_console(&proc_table[idx].files[1]);
-  file_set_console(&proc_table[idx].files[2]);
+  if (vfs_lookup("/dev/console", 1, idx, &console) < 0) {
+    panic("missing /dev/console");
+  }
+  file_set_node(&proc_table[idx].files[0], &console);
+  proc_table[idx].files[0].readable = 1;
+  proc_table[idx].files[0].writable = 0;
+  file_set_node(&proc_table[idx].files[1], &console);
+  proc_table[idx].files[1].readable = 0;
+  proc_table[idx].files[1].writable = 1;
+  file_set_node(&proc_table[idx].files[2], &console);
+  proc_table[idx].files[2].readable = 0;
+  proc_table[idx].files[2].writable = 1;
 }
 
 int alloc_fd(int idx) {

@@ -574,16 +574,26 @@ For every milestone, use the same completion workflow:
   renames, hard/symbolic links, traversal, file offsets, and `ls -l` behavior
   remain predictable across reboots.
 
-- **Phase 20** ⬜ add a real VFS layer and pseudo filesystems.
+- **Phase 20** ✅ add a real VFS layer and pseudo filesystems.
 
-  Generalize filesystem operations behind vnode/inode/file abstractions so the
-  kernel can mount multiple filesystem types. Add `/dev` for device nodes, a
-  `devpts`-like terminal namespace if pseudo terminals are added, `/proc` for
-  process and kernel inspection, and tmpfs for temporary files. Device access
-  should go through normal file operations wherever possible.
+  Added a guest-owned mount table and vnode operation interface in
+  `src/v3/kernel/vfs.c`. The root disk filesystem, devfs at `/dev`, procfs at
+  `/proc`, and tmpfs at `/tmp` now share the same path lookup, vnode,
+  open-file-description, `file_ops`, `stat`, `getdents`, and descriptor paths.
+  Executable loading also reads through vnodes instead of calling the disk
+  filesystem directly.
 
-  Done when `/dev/console`, `/dev/null`, `/dev/zero`, `/proc/self`, `/proc/<pid>`,
-  and tmpfs files can be opened through the same VFS path as disk files.
+  devfs exposes `/dev/console`, `/dev/null`, and `/dev/zero`; the initial
+  process's standard descriptors are ordinary opens of the console vnode.
+  procfs exposes `/proc/self`, numeric `/proc/<pid>` directories, and dynamic
+  `status` files. The fixed-size in-memory tmpfs supports create, read, write,
+  seek, stat, chmod/chown, unlink, and reset-on-reboot behavior. Mountpoint
+  directories are present in generated disk images, while their contents come
+  from the mounted pseudo filesystems.
+
+  Coverage is in `test/guest-vfs.test.ts`. Done: device nodes, process
+  inspection paths, and temporary files open and operate through the same VFS
+  path as persistent disk files.
 
 - **Phase 21** ⬜ implement terminal and TTY semantics.
 

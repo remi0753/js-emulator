@@ -22,7 +22,7 @@ const EXPECTED_OUTPUT =
   'kernel: boot\n' +
   'kernel: exec /bin/init\n' +
   'hi\n' + // echo hi
-  '.\n..\nbin\netc\n' + // ls /
+  '.\n..\ndev\nproc\ntmp\nbin\netc\n' + // ls /
   GUEST_MOTD + // cat /etc/motd
   GUEST_MOTD + // cat /etc/motd | cat
   'kernel: all processes exited\n';

@@ -115,6 +115,7 @@ Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 | `mkdir`, `rmdir`, `unlink`, `link`, `rename` | implemented | persistent directory and hard-link mutation |
 | `symlink`, `readlink` | implemented | relative/absolute traversal, bounded to eight expansions |
 | `lseek` | implemented | `SEEK_SET`, `SEEK_CUR`, `SEEK_END`; shared by dup/fork |
+| VFS mounts and pseudo filesystems | implemented | disk root plus devfs `/dev`, procfs `/proc`, and tmpfs `/tmp` |
 | `MAP_SHARED`, lazy mappings, COW mappings | unsupported | planned for Phase 22 |
 | `O_NONBLOCK`, general terminal ioctls | unsupported | planned with polling/TTY phases |
 | Linux binary ABI compatibility | intentionally unsupported | programs are compiled for custom32 |
@@ -173,6 +174,20 @@ for writing. `open` flags (`O.*` in abi.ts): `RDONLY=0`, `WRONLY=1`, `RDWR=2`,
   are maintained across create, remove, and cross-directory rename.
 - `lseek` changes the offset in the shared open-file description, so descriptors
   inherited through `fork` or created through `dup` observe the same position.
+
+### VFS and pseudo filesystems (Phase 20)
+
+- A guest-owned mount table routes absolute paths to the persistent disk root,
+  devfs at `/dev`, procfs at `/proc`, or tmpfs at `/tmp`.
+- Disk files, pseudo files, and device nodes resolve to a common vnode carrying
+  filesystem-specific operations. Open descriptors retain the existing shared
+  open-file-description offset and reference-count semantics.
+- `/dev/console` is readable/writable and backs standard input/output/error;
+  `/dev/null` discards writes and returns EOF; `/dev/zero` supplies zero bytes.
+- `/proc/self` resolves to the calling process, `/proc/<pid>` exposes live
+  process directories, and each directory has a dynamic `status` file.
+- `/tmp` is a bounded in-memory filesystem. Its files support ordinary
+  create/read/write/stat/seek/unlink operations and disappear on reboot.
 
 ### Arguments & stdin (Phase 5)
 

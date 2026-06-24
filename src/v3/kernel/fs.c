@@ -103,7 +103,10 @@ void inode_touch(int inum, int atime, int mtime, int ctime) {
   bwrite(inode_block(inum), bread(inode_block(inum)));
 }
 
-void vnode_init(struct vnode *node, int inum) {
+void disk_vnode_init(struct vnode *node, int inum) {
+  node->ops = &disk_vnode_ops;
+  node->fs_type = CFG_FS_DISK;
+  node->object = inum;
   node->inode.inum = inum;
   node->inode.type = inode_type(inum);
   node->inode.nlink = inode_nlink(inum);
@@ -328,14 +331,14 @@ void itrunc(int inum) {
   inode_touch(inum, 0, 1, 1);
 }
 
-int vnode_read(struct vnode *node, int off, int n, int dst) {
+int disk_vnode_read(struct vnode *node, int off, int n, int dst) {
   return readi(node->inode.inum, off, n, dst);
 }
 
-int vnode_write(struct vnode *node, int off, int n, int src) {
+int disk_vnode_write(struct vnode *node, int off, int n, int src) {
   int result;
   result = writei(node->inode.inum, off, n, src);
-  if (result >= 0) vnode_init(node, node->inode.inum);
+  if (result >= 0) disk_vnode_init(node, node->inode.inum);
   return result;
 }
 
@@ -576,6 +579,7 @@ int inode_is_open(int inum) {
   i = 0;
   while (i < CFG_NFILE) {
     if (open_file_table[i].used != 0 &&
+        open_file_table[i].vnode.fs_type == CFG_FS_DISK &&
         open_file_table[i].vnode.inode.inum == inum) return 1;
     i = i + 1;
   }

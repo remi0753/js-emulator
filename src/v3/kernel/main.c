@@ -138,6 +138,7 @@ int kmain(void) {
   build_kernel_pt();
 
   fs_mount();
+  vfs_init();
   read_initpath();
 
   serial_write("kernel: exec ");
