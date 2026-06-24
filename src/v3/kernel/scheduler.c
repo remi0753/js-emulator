@@ -77,18 +77,48 @@ void switch_to_next(void) {
   while (next < 0) {
     int i;
     int blocked;
+    int deadline;
     i = 0;
     blocked = 0;
+    deadline = 0;
     while (i < nproc) {
       if (proc_table[i].state == CFG_ST_SLEEPING ||
           proc_table[i].state == CFG_ST_STOPPED) {
         blocked = 1;
+      }
+      if (proc_table[i].state == CFG_ST_SLEEPING &&
+          proc_table[i].sleep_deadline != 0 &&
+          (deadline == 0 || proc_table[i].sleep_deadline < deadline)) {
+        deadline = proc_table[i].sleep_deadline;
       }
       i = i + 1;
     }
     if (blocked == 0) {
       serial_write("kernel: all processes exited\n");
       __halt();
+    }
+    // The VM timer advances with executed instructions, so HLT cannot wake a
+    // system whose only sleepers are waiting for time. Fast-forward the
+    // deterministic guest clock to the next deadline and make due sleepers
+    // runnable. When another process is runnable, normal timer IRQs advance it.
+    if (deadline != 0) {
+      ticks = deadline;
+      i = 0;
+      while (i < nproc) {
+        if (proc_table[i].state == CFG_ST_SLEEPING &&
+            proc_table[i].sleep_deadline != 0 &&
+            ticks >= proc_table[i].sleep_deadline) {
+          proc_table[i].sleep_deadline = 0;
+          proc_table[i].sleep_remaining = 0;
+          proc_table[i].ctx.regs[0] = 0;
+          proc_table[i].state = CFG_ST_RUNNABLE;
+        }
+        i = i + 1;
+      }
+      next = schedule();
+    }
+    if (next >= 0) {
+      continue;
     }
     __stmr(0);
     __ei();
@@ -103,11 +133,24 @@ void switch_to_next(void) {
 
 void on_timer(void) {
   int next;
+  int i;
   if (sctx_mode != CFG_MODE_USER) {
     panic("timer outside user");
   }
   ticks = ticks + 1;
   save_ctx(current);
+  i = 0;
+  while (i < nproc) {
+    if (proc_table[i].state == CFG_ST_SLEEPING &&
+        proc_table[i].sleep_deadline != 0 &&
+        ticks >= proc_table[i].sleep_deadline) {
+      proc_table[i].sleep_deadline = 0;
+      proc_table[i].sleep_remaining = 0;
+      proc_table[i].ctx.regs[0] = 0;
+      proc_table[i].state = CFG_ST_RUNNABLE;
+    }
+    i = i + 1;
+  }
   next = schedule();
   if (next < 0) {
     panic("no runnable process in timer");

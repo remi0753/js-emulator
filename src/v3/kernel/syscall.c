@@ -57,6 +57,7 @@ int sys_open(int caller, int upath, int flags) {
   if (file_set_vnode(&proc_table[caller].files[fd], inum) < 0) {
     return -CFG_ENFILE;
   }
+  proc_table[caller].files[fd].status_flags = flags;
   return fd;
 }
 
@@ -115,7 +116,168 @@ int sys_dup(int caller, int oldfd) {
     return -CFG_EMFILE;
   }
   copy_file(&proc_table[caller].files[newfd], &proc_table[caller].files[oldfd]);
+  proc_table[caller].files[newfd].fd_flags = 0;
   return newfd;
+}
+
+int sys_fcntl(int caller, int fd, int command, int argument) {
+  int newfd;
+  if (fd < 0 || fd >= CFG_NFD ||
+      proc_table[caller].files[fd].type == CFG_FT_NONE) {
+    return -CFG_EBADF;
+  }
+  if (command == CFG_F_DUPFD) {
+    newfd = alloc_fd_from(caller, argument);
+    if (newfd < 0) {
+      return -CFG_EMFILE;
+    }
+    copy_file(&proc_table[caller].files[newfd],
+      &proc_table[caller].files[fd]);
+    proc_table[caller].files[newfd].fd_flags = 0;
+    return newfd;
+  }
+  if (command == CFG_F_GETFD) {
+    return proc_table[caller].files[fd].fd_flags;
+  }
+  if (command == CFG_F_SETFD) {
+    proc_table[caller].files[fd].fd_flags = argument & CFG_FD_CLOEXEC;
+    return 0;
+  }
+  if (command == CFG_F_GETFL) {
+    return proc_table[caller].files[fd].status_flags;
+  }
+  if (command == CFG_F_SETFL) {
+    if ((argument & CFG_O_NONBLOCK) != 0) {
+      return -CFG_EINVAL;
+    }
+    return 0;
+  }
+  return -CFG_EINVAL;
+}
+
+int sys_ioctl(int caller, int fd, int request, int argument) {
+  int pgid;
+  if (fd < 0 || fd >= CFG_NFD ||
+      proc_table[caller].files[fd].type == CFG_FT_NONE) {
+    return -CFG_EBADF;
+  }
+  if (file_is_tty(&proc_table[caller].files[fd]) == 0) {
+    return -CFG_ENOTTY;
+  }
+  if (request == CFG_TIOCGPGRP) {
+    pgid = tty_get_foreground();
+    if (copyout(caller, argument, &pgid, 4) < 0) {
+      return -CFG_EFAULT;
+    }
+    return 0;
+  }
+  if (request == CFG_TIOCSPGRP) {
+    if (copyin(caller, &pgid, argument, 4) < 0) {
+      return -CFG_EFAULT;
+    }
+    return tty_set_foreground(caller, pgid);
+  }
+  return -CFG_ENOTTY;
+}
+
+int sys_getdents(int caller, int fd, int destination, int count) {
+  if (count < 0) {
+    return -CFG_EINVAL;
+  }
+  if (user_access_ok(caller, destination, count, 1) == 0) {
+    return -CFG_EFAULT;
+  }
+  if (fd < 0 || fd >= CFG_NFD) {
+    return -CFG_EBADF;
+  }
+  return file_getdents(&proc_table[caller].files[fd],
+    caller, destination, count);
+}
+
+int copy_fixed_string(int destination, int source, int size) {
+  int i;
+  int c;
+  i = 0;
+  while (i < size) {
+    c = 0;
+    if (i < size - 1) {
+      c = read8_at(source + i);
+    }
+    write8_at(destination + i, c);
+    if (c == 0) {
+      i = i + 1;
+      while (i < size) {
+        write8_at(destination + i, 0);
+        i = i + 1;
+      }
+      return 0;
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+int sys_uname(int caller, int destination) {
+  char value[192];
+  memset(value, 0, 192);
+  copy_fixed_string(value, "jscpu-os", 32);
+  copy_fixed_string(value + 32, "jscpu", 32);
+  copy_fixed_string(value + 64, "0.4", 32);
+  copy_fixed_string(value + 96, "phase18", 32);
+  copy_fixed_string(value + 128, "custom32", 32);
+  copy_fixed_string(value + 160, "local", 32);
+  return copyout(caller, destination, value, 192);
+}
+
+int sys_gettimeofday(int caller, int destination, int timezone) {
+  int value[2];
+  if (timezone != 0) {
+    return -CFG_EINVAL;
+  }
+  value[0] = rtc_time();
+  value[1] = (ticks % CFG_TICKS_PER_SEC) *
+    (1000000 / CFG_TICKS_PER_SEC);
+  return copyout(caller, destination, value, 8);
+}
+
+int sys_clock_gettime(int caller, int clock_id, int destination) {
+  int value[2];
+  if (clock_id == CFG_CLOCK_REALTIME) {
+    value[0] = rtc_time();
+    value[1] = (ticks % CFG_TICKS_PER_SEC) *
+      (1000000000 / CFG_TICKS_PER_SEC);
+  } else if (clock_id == CFG_CLOCK_MONOTONIC) {
+    value[0] = ticks / CFG_TICKS_PER_SEC;
+    value[1] = (ticks % CFG_TICKS_PER_SEC) *
+      (1000000000 / CFG_TICKS_PER_SEC);
+  } else {
+    return -CFG_EINVAL;
+  }
+  return copyout(caller, destination, value, 8);
+}
+
+int sys_nanosleep(int caller, int request, int remaining) {
+  int value[2];
+  int delay;
+  if (copyin(caller, value, request, 8) < 0) {
+    return -CFG_EFAULT;
+  }
+  if (value[0] < 0 || value[0] > 1000000 ||
+      value[1] < 0 || value[1] >= 1000000000) {
+    return -CFG_EINVAL;
+  }
+  delay = value[0] * CFG_TICKS_PER_SEC;
+  delay = delay + (value[1] +
+    (1000000000 / CFG_TICKS_PER_SEC) - 1) /
+    (1000000000 / CFG_TICKS_PER_SEC);
+  if (delay == 0) {
+    return 0;
+  }
+  proc_table[caller].sleep_deadline = ticks + delay;
+  proc_table[caller].sleep_remaining = remaining;
+  g_noret = 1;
+  sleep(caller, &proc_table[caller].sleep_deadline);
+  return 0;
 }
 
 // --- syscall handlers ---
@@ -148,6 +310,13 @@ int h_yield(int caller, int a1, int a2, int a3) {
 
 int h_getpid(int caller, int a1, int a2, int a3) {
   return caller;
+}
+
+int h_getppid(int caller, int a1, int a2, int a3) {
+  if (proc_table[caller].parent < 0) {
+    return 0;
+  }
+  return proc_table[caller].parent;
 }
 
 int h_fork(int caller, int a1, int a2, int a3) {
@@ -225,6 +394,54 @@ int h_dup(int caller, int a1, int a2, int a3) {
   return sys_dup(caller, a1);
 }
 
+int h_uptime(int caller, int a1, int a2, int a3) {
+  return ticks;
+}
+
+int h_nanosleep(int caller, int a1, int a2, int a3) {
+  return sys_nanosleep(caller, a1, a2);
+}
+
+int h_brk(int caller, int a1, int a2, int a3) {
+  return vm_brk(caller, a1);
+}
+
+int h_mmap(int caller, int a1, int a2, int a3) {
+  return vm_mmap(caller, a1);
+}
+
+int h_munmap(int caller, int a1, int a2, int a3) {
+  return vm_munmap(caller, a1, a2);
+}
+
+int h_mprotect(int caller, int a1, int a2, int a3) {
+  return vm_mprotect(caller, a1, a2, a3);
+}
+
+int h_fcntl(int caller, int a1, int a2, int a3) {
+  return sys_fcntl(caller, a1, a2, a3);
+}
+
+int h_ioctl(int caller, int a1, int a2, int a3) {
+  return sys_ioctl(caller, a1, a2, a3);
+}
+
+int h_gettimeofday(int caller, int a1, int a2, int a3) {
+  return sys_gettimeofday(caller, a1, a2);
+}
+
+int h_clock_gettime(int caller, int a1, int a2, int a3) {
+  return sys_clock_gettime(caller, a1, a2);
+}
+
+int h_uname(int caller, int a1, int a2, int a3) {
+  return sys_uname(caller, a1);
+}
+
+int h_getdents(int caller, int a1, int a2, int a3) {
+  return sys_getdents(caller, a1, a2, a3);
+}
+
 int h_time(int caller, int a1, int a2, int a3) {
   return rtc_time();
 }
@@ -256,6 +473,7 @@ void syscall_init(void) {
   syscall_table[CFG_SYS_CLOSE] = h_close;
   syscall_table[CFG_SYS_PIPE] = h_pipe;
   syscall_table[CFG_SYS_DUP] = h_dup;
+  syscall_table[CFG_SYS_UPTIME] = h_uptime;
   syscall_table[CFG_SYS_TIME] = h_time;
   syscall_table[CFG_SYS_SHUTDOWN] = h_shutdown;
   syscall_table[CFG_SYS_KILL] = h_kill;
@@ -267,6 +485,18 @@ void syscall_init(void) {
   syscall_table[CFG_SYS_SETSID] = h_setsid;
   syscall_table[CFG_SYS_TCSETPGRP] = h_tcsetpgrp;
   syscall_table[CFG_SYS_TCGETPGRP] = h_tcgetpgrp;
+  syscall_table[CFG_SYS_GETPPID] = h_getppid;
+  syscall_table[CFG_SYS_NANOSLEEP] = h_nanosleep;
+  syscall_table[CFG_SYS_BRK] = h_brk;
+  syscall_table[CFG_SYS_MMAP] = h_mmap;
+  syscall_table[CFG_SYS_MUNMAP] = h_munmap;
+  syscall_table[CFG_SYS_MPROTECT] = h_mprotect;
+  syscall_table[CFG_SYS_FCNTL] = h_fcntl;
+  syscall_table[CFG_SYS_IOCTL] = h_ioctl;
+  syscall_table[CFG_SYS_GETTIMEOFDAY] = h_gettimeofday;
+  syscall_table[CFG_SYS_CLOCK_GETTIME] = h_clock_gettime;
+  syscall_table[CFG_SYS_UNAME] = h_uname;
+  syscall_table[CFG_SYS_GETDENTS] = h_getdents;
 }
 
 void on_syscall(void) {

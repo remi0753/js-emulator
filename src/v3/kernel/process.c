@@ -53,6 +53,7 @@ int fork_process(int parent) {
   pd = new_address_space();
   copy_space(proc_table[parent].vm.ptbr, pd);
   proc_table[idx].vm.ptbr = pd;
+  vm_fork(idx, parent);
   i = 0;
   while (i < 8) {
     proc_table[idx].ctx.regs[i] = proc_table[parent].ctx.regs[i];

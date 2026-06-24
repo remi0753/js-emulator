@@ -24,8 +24,19 @@ struct cpu_context {
   int mode;
 };
 
+struct vm_area {
+  int used;
+  int start;
+  int end;
+  int prot;
+  int flags;
+};
+
 struct vm_space {
   int ptbr;
+  int brk_start;
+  int brk_end;
+  struct vm_area areas[CFG_MAX_VMAS];
 };
 
 typedef int (*file_io_fn)(int file, int caller, int buf, int len);
@@ -48,6 +59,14 @@ struct vnode {
   struct inode inode;
 };
 
+struct guest_dirent {
+  int ino;
+  int offset;
+  int reclen;
+  int type;
+  char name[16];
+};
+
 // A descriptor points at an open-file object. The latter owns the shared file
 // offset and reference count, so dup() and fork() preserve Unix open-file
 // description semantics instead of copying the offset by value.
@@ -65,6 +84,8 @@ struct file {
   int writable;
   int pipe_end;
   int object;
+  int fd_flags;
+  int status_flags;
 };
 
 struct proc {
@@ -84,6 +105,8 @@ struct proc {
   struct cpu_context signal_saved_ctx;
   int wait_event;
   int wait_signal;
+  int sleep_deadline;
+  int sleep_remaining;
   struct vm_space vm;
   struct cpu_context ctx;
   struct file files[CFG_NFD];
@@ -169,6 +192,12 @@ int new_address_space(void);
 void map_page(int pd, int vaddr, int frame, int flags);
 void copy_space(int src, int dst);
 void free_space(int pd);
+void vm_init(int proc, int pd, int image_end);
+void vm_fork(int child, int parent);
+int vm_brk(int proc, int address);
+int vm_mmap(int proc, int args);
+int vm_munmap(int proc, int address, int length);
+int vm_mprotect(int proc, int address, int length, int prot);
 
 // --- fs.c ---
 extern int fs_size;
@@ -214,9 +243,14 @@ void file_retain(struct file *file);
 void copy_file(struct file *dst, struct file *src);
 void init_fds(int idx);
 int alloc_fd(int idx);
+int alloc_fd_from(int idx, int minimum);
 void fd_close(int idx, int fd);
 void clear_fds(int idx);
 void copy_fds(int dst, int src);
+void close_exec_fds(int idx);
+int file_mmap_read(struct file *file, int offset, int length, int destination);
+int file_getdents(struct file *file, int caller, int destination, int count);
+int file_is_tty(struct file *file);
 
 // --- pipe.c ---
 extern struct pipe pipe_table[CFG_NPIPE];
@@ -230,6 +264,7 @@ extern char exec_hdr[12];            // the executable header (magic, entry, mem
 extern char argbuf[CFG_ARGBUF_LEN];  // packed NUL-terminated argv strings
 extern int arg_off[CFG_MAXARG];      // start offset of each arg in argbuf
 extern int g_argc;                   // argument count staged for the next spawn
+extern int g_exec_image_end;         // page-aligned end of the staged executable image
 int copy_path_in(int proc, int upath);
 void build_args_single(int kstr);
 int build_args_from_user(int proc, int uargv);
@@ -252,6 +287,9 @@ int sys_open(int caller, int upath, int flags);
 int sys_close(int caller, int fd);
 int sys_pipe(int caller, int ufds);
 int sys_dup(int caller, int oldfd);
+int sys_fcntl(int caller, int fd, int command, int argument);
+int sys_ioctl(int caller, int fd, int request, int argument);
+int sys_getdents(int caller, int fd, int destination, int count);
 void on_syscall(void);
 
 // --- trap.c ---

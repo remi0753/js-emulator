@@ -585,6 +585,7 @@ export class CPU {
         const n = r[ops[0]!]! >>> 0;
         this.timerInterval = n;
         this.timerCount = n;
+        if (n === 0) this.pendingIrqs.delete(TIMER_IRQ);
         break;
       }
       case 'LPTBR':

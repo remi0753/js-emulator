@@ -234,6 +234,347 @@ void map_page(int pd, int vaddr, int frame, int flags) {
   ptp[(vaddr >> 12) & 0x3ff] = (frame & 0xfffff000) | flags | 1;
 }
 
+int page_mapped(int pd, int vaddr) {
+  int *pdp;
+  int pde;
+  int *ptp;
+  pdp = pd;
+  pde = pdp[(vaddr >> 22) & 0x3ff];
+  if ((pde & 1) == 0) {
+    return 0;
+  }
+  ptp = pde & 0xfffff000;
+  return (ptp[(vaddr >> 12) & 0x3ff] & 1) != 0;
+}
+
+void unmap_page(int pd, int vaddr) {
+  int *pdp;
+  int pde;
+  int *ptp;
+  int slot;
+  int pte;
+  pdp = pd;
+  pde = pdp[(vaddr >> 22) & 0x3ff];
+  if ((pde & 1) == 0) {
+    return;
+  }
+  ptp = pde & 0xfffff000;
+  slot = (vaddr >> 12) & 0x3ff;
+  pte = ptp[slot];
+  if ((pte & 1) != 0) {
+    free_frame(pte & 0xfffff000);
+    ptp[slot] = 0;
+  }
+}
+
+int page_align_up(int value) {
+  return (value + 4095) & 0xfffff000;
+}
+
+int vm_range_free(int proc, int start, int end) {
+  int page;
+  page = start;
+  while (page < end) {
+    if (page_mapped(proc_table[proc].vm.ptbr, page) != 0) {
+      return 0;
+    }
+    page = page + 4096;
+  }
+  return 1;
+}
+
+int vm_range_mapped(int proc, int start, int end) {
+  int page;
+  page = start;
+  while (page < end) {
+    if (page_mapped(proc_table[proc].vm.ptbr, page) == 0) {
+      return 0;
+    }
+    page = page + 4096;
+  }
+  return 1;
+}
+
+int vm_area_slot(int proc) {
+  int i;
+  i = 0;
+  while (i < CFG_MAX_VMAS) {
+    if (proc_table[proc].vm.areas[i].used == 0) {
+      return i;
+    }
+    i = i + 1;
+  }
+  return -1;
+}
+
+void vm_init(int proc, int pd, int image_end) {
+  int i;
+  proc_table[proc].vm.ptbr = pd;
+  proc_table[proc].vm.brk_start = image_end;
+  proc_table[proc].vm.brk_end = image_end;
+  i = 0;
+  while (i < CFG_MAX_VMAS) {
+    proc_table[proc].vm.areas[i].used = 0;
+    i = i + 1;
+  }
+}
+
+void vm_fork(int child, int parent) {
+  int i;
+  proc_table[child].vm.brk_start = proc_table[parent].vm.brk_start;
+  proc_table[child].vm.brk_end = proc_table[parent].vm.brk_end;
+  i = 0;
+  while (i < CFG_MAX_VMAS) {
+    proc_table[child].vm.areas[i].used =
+      proc_table[parent].vm.areas[i].used;
+    proc_table[child].vm.areas[i].start =
+      proc_table[parent].vm.areas[i].start;
+    proc_table[child].vm.areas[i].end =
+      proc_table[parent].vm.areas[i].end;
+    proc_table[child].vm.areas[i].prot =
+      proc_table[parent].vm.areas[i].prot;
+    proc_table[child].vm.areas[i].flags =
+      proc_table[parent].vm.areas[i].flags;
+    i = i + 1;
+  }
+}
+
+int vm_brk(int proc, int address) {
+  int old_page_end;
+  int new_page_end;
+  int page;
+  int frame;
+  if (address == 0) {
+    return proc_table[proc].vm.brk_end;
+  }
+  if (address < proc_table[proc].vm.brk_start ||
+      address >= CFG_USER_STACK_PAGE) {
+    return -CFG_ENOMEM;
+  }
+  old_page_end = page_align_up(proc_table[proc].vm.brk_end);
+  new_page_end = page_align_up(address);
+  if (new_page_end > old_page_end) {
+    if (vm_range_free(proc, old_page_end, new_page_end) == 0) {
+      return -CFG_ENOMEM;
+    }
+    if (free_frame_count() < (new_page_end - old_page_end) / 4096 + 1) {
+      return -CFG_ENOMEM;
+    }
+    page = old_page_end;
+    while (page < new_page_end) {
+      frame = alloc_frame();
+      zero_page(frame);
+      map_page(proc_table[proc].vm.ptbr, page, frame, CFG_PTE_USER);
+      page = page + 4096;
+    }
+  } else {
+    page = new_page_end;
+    while (page < old_page_end) {
+      unmap_page(proc_table[proc].vm.ptbr, page);
+      page = page + 4096;
+    }
+  }
+  proc_table[proc].vm.brk_end = address;
+  return address;
+}
+
+int vm_find_mapping(int proc, int length) {
+  int start;
+  int end;
+  start = page_align_up(proc_table[proc].vm.brk_end);
+  while (start + length <= CFG_USER_STACK_PAGE) {
+    end = start + length;
+    if (vm_range_free(proc, start, end) != 0) {
+      return start;
+    }
+    start = start + 4096;
+  }
+  return 0;
+}
+
+int vm_mmap(int proc, int uargs) {
+  int args[6];
+  int address;
+  int length;
+  int prot;
+  int flags;
+  int fd;
+  int offset;
+  int end;
+  int slot;
+  int page;
+  int frame;
+  int got;
+  if (copyin(proc, args, uargs, 24) < 0) {
+    return -CFG_EFAULT;
+  }
+  address = args[0];
+  length = args[1];
+  prot = args[2];
+  flags = args[3];
+  fd = args[4];
+  offset = args[5];
+  if (length <= 0 || (prot & ~(CFG_PROT_READ | CFG_PROT_WRITE | CFG_PROT_EXEC)) != 0) {
+    return -CFG_EINVAL;
+  }
+  if ((flags & CFG_MAP_PRIVATE) == 0 || (flags & CFG_MAP_SHARED) != 0) {
+    return -CFG_EINVAL;
+  }
+  length = page_align_up(length);
+  if ((flags & CFG_MAP_FIXED) != 0) {
+    if ((address & 4095) != 0 || address < CFG_USER_BASE ||
+        address + length < address || address + length > CFG_USER_STACK_PAGE) {
+      return -CFG_EINVAL;
+    }
+    if (vm_range_free(proc, address, address + length) == 0) {
+      return -CFG_EINVAL;
+    }
+  } else {
+    address = vm_find_mapping(proc, length);
+    if (address == 0) {
+      return -CFG_ENOMEM;
+    }
+  }
+  if ((flags & CFG_MAP_ANONYMOUS) == 0) {
+    if (fd < 0 || fd >= CFG_NFD ||
+        proc_table[proc].files[fd].type == CFG_FT_NONE) {
+      return -CFG_EBADF;
+    }
+    if ((offset & 4095) != 0 || offset < 0) {
+      return -CFG_EINVAL;
+    }
+  }
+  slot = vm_area_slot(proc);
+  if (slot < 0 || free_frame_count() < length / 4096 + 1) {
+    return -CFG_ENOMEM;
+  }
+  end = address + length;
+  page = address;
+  while (page < end) {
+    frame = alloc_frame();
+    zero_page(frame);
+    if ((flags & CFG_MAP_ANONYMOUS) == 0) {
+      got = file_mmap_read(&proc_table[proc].files[fd],
+        offset + page - address, 4096, frame);
+      if (got < 0) {
+        while (page > address) {
+          page = page - 4096;
+          unmap_page(proc_table[proc].vm.ptbr, page);
+        }
+        free_frame(frame);
+        return got;
+      }
+    }
+    if ((prot & CFG_PROT_WRITE) != 0) {
+      map_page(proc_table[proc].vm.ptbr, page, frame, CFG_PTE_USER);
+    } else if (prot == CFG_PROT_NONE) {
+      map_page(proc_table[proc].vm.ptbr, page, frame, 0);
+    } else {
+      map_page(proc_table[proc].vm.ptbr, page, frame, 4);
+    }
+    page = page + 4096;
+  }
+  proc_table[proc].vm.areas[slot].used = 1;
+  proc_table[proc].vm.areas[slot].start = address;
+  proc_table[proc].vm.areas[slot].end = end;
+  proc_table[proc].vm.areas[slot].prot = prot;
+  proc_table[proc].vm.areas[slot].flags = flags;
+  return address;
+}
+
+int vm_munmap(int proc, int address, int length) {
+  int start;
+  int end;
+  int page;
+  int i;
+  int split;
+  if ((address & 4095) != 0 || length <= 0) {
+    return -CFG_EINVAL;
+  }
+  start = address;
+  end = address + page_align_up(length);
+  if (start < CFG_USER_BASE || end < start || end > CFG_USER_STACK_PAGE) {
+    return -CFG_EINVAL;
+  }
+  i = 0;
+  while (i < CFG_MAX_VMAS) {
+    if (proc_table[proc].vm.areas[i].used != 0 &&
+        start > proc_table[proc].vm.areas[i].start &&
+        end < proc_table[proc].vm.areas[i].end) {
+      split = vm_area_slot(proc);
+      if (split < 0) {
+        return -CFG_ENOMEM;
+      }
+      proc_table[proc].vm.areas[split].used = 1;
+      proc_table[proc].vm.areas[split].start = end;
+      proc_table[proc].vm.areas[split].end =
+        proc_table[proc].vm.areas[i].end;
+      proc_table[proc].vm.areas[split].prot =
+        proc_table[proc].vm.areas[i].prot;
+      proc_table[proc].vm.areas[split].flags =
+        proc_table[proc].vm.areas[i].flags;
+      proc_table[proc].vm.areas[i].end = start;
+    } else if (proc_table[proc].vm.areas[i].used != 0 &&
+        start <= proc_table[proc].vm.areas[i].start &&
+        end >= proc_table[proc].vm.areas[i].end) {
+      proc_table[proc].vm.areas[i].used = 0;
+    } else if (proc_table[proc].vm.areas[i].used != 0 &&
+        start <= proc_table[proc].vm.areas[i].start &&
+        end > proc_table[proc].vm.areas[i].start) {
+      proc_table[proc].vm.areas[i].start = end;
+    } else if (proc_table[proc].vm.areas[i].used != 0 &&
+        start < proc_table[proc].vm.areas[i].end &&
+        end >= proc_table[proc].vm.areas[i].end) {
+      proc_table[proc].vm.areas[i].end = start;
+    }
+    i = i + 1;
+  }
+  page = start;
+  while (page < end) {
+    unmap_page(proc_table[proc].vm.ptbr, page);
+    page = page + 4096;
+  }
+  return 0;
+}
+
+int vm_mprotect(int proc, int address, int length, int prot) {
+  int start;
+  int end;
+  int page;
+  int *pd;
+  int pde;
+  int *pt;
+  int pte;
+  int flags;
+  if ((address & 4095) != 0 || length <= 0 ||
+      (prot & ~(CFG_PROT_READ | CFG_PROT_WRITE | CFG_PROT_EXEC)) != 0) {
+    return -CFG_EINVAL;
+  }
+  start = address;
+  end = address + page_align_up(length);
+  if (start < CFG_USER_BASE || end < start || end > CFG_USER_STACK_TOP ||
+      vm_range_mapped(proc, start, end) == 0) {
+    return -CFG_ENOMEM;
+  }
+  pd = proc_table[proc].vm.ptbr;
+  page = start;
+  while (page < end) {
+    pde = pd[(page >> 22) & 0x3ff];
+    pt = pde & 0xfffff000;
+    pte = pt[(page >> 12) & 0x3ff];
+    flags = 1;
+    if (prot != CFG_PROT_NONE) {
+      flags = flags | 4;
+    }
+    if ((prot & CFG_PROT_WRITE) != 0) {
+      flags = flags | 2;
+    }
+    pt[(page >> 12) & 0x3ff] = (pte & 0xfffff000) | flags;
+    page = page + 4096;
+  }
+  return 0;
+}
+
 void copy_space(int src, int dst) {
   int *sp;
   int di;

@@ -43,6 +43,9 @@ test('copyin/copyout translate through the requested process address space', () 
         void serial_putc(int ch) { __out(CFG_CONSOLE_DATA, ch); }
         void serial_write(char *s) { }
         void panic(char *msg) { __halt(); }
+        int file_mmap_read(struct file *file, int offset, int length, int destination) {
+          return -CFG_ENODEV;
+        }
 
         int kmain(void) {
           int *pd0;

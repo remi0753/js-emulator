@@ -5,6 +5,8 @@
 #define CFG_ARGBUF_LEN 512
 #define CFG_BOOT_MAGIC 0x544f4f42
 #define CFG_BUF_DATA_LEN 0x2000
+#define CFG_CLOCK_MONOTONIC 1
+#define CFG_CLOCK_REALTIME 0
 #define CFG_CONSOLE_DATA 1016
 #define CFG_DINODE_SIZE 64
 #define CFG_DIRSIZ 14
@@ -18,14 +20,23 @@
 #define CFG_EINVAL 22
 #define CFG_EMFILE 24
 #define CFG_ENFILE 23
+#define CFG_ENODEV 19
 #define CFG_ENOENT 2
 #define CFG_ENOEXEC 8
 #define CFG_ENOMEM 12
 #define CFG_ENOSYS 38
+#define CFG_ENOTDIR 20
+#define CFG_ENOTTY 25
 #define CFG_EPERM 1
 #define CFG_EPIPE 32
 #define CFG_ESRCH 3
 #define CFG_EXEC_MAGIC 0x35315850
+#define CFG_F_DUPFD 0
+#define CFG_F_GETFD 1
+#define CFG_F_GETFL 3
+#define CFG_F_SETFD 2
+#define CFG_F_SETFL 4
+#define CFG_FD_CLOEXEC 1
 #define CFG_FLAG_IF 8
 #define CFG_FRAME_POOL_BASE 0x100000
 #define CFG_FRAME_POOL_END 0x380000
@@ -46,7 +57,12 @@
 #define CFG_KBD_VECTOR 33
 #define CFG_KERNEL_PT 0x41000
 #define CFG_KSTACK_TOP 0x50000
+#define CFG_MAP_ANONYMOUS 32
+#define CFG_MAP_FIXED 16
+#define CFG_MAP_PRIVATE 2
+#define CFG_MAP_SHARED 1
 #define CFG_MAX_PROC 8
+#define CFG_MAX_VMAS 16
 #define CFG_MAXARG 16
 #define CFG_MODE_USER 1
 #define CFG_NBUF 16
@@ -55,11 +71,16 @@
 #define CFG_NFILE 128
 #define CFG_NPIPE 8
 #define CFG_NSIG 32
-#define CFG_NSYS 24
+#define CFG_NSYS 36
+#define CFG_O_NONBLOCK 2048
 #define CFG_PAGEFAULT_VECTOR 14
 #define CFG_PIPESZ 512
 #define CFG_POWER 1540
 #define CFG_POWER_OFF 0x2000
+#define CFG_PROT_EXEC 4
+#define CFG_PROT_NONE 0
+#define CFG_PROT_READ 1
+#define CFG_PROT_WRITE 2
 #define CFG_PTE_KERNEL 3
 #define CFG_PTE_USER 7
 #define CFG_ROOTINO 1
@@ -84,13 +105,24 @@
 #define CFG_ST_STOPPED 4
 #define CFG_ST_UNUSED 0
 #define CFG_ST_ZOMBIE 2
+#define CFG_SYS_BRK 26
+#define CFG_SYS_CLOCK_GETTIME 33
 #define CFG_SYS_CLOSE 8
 #define CFG_SYS_DUP 11
 #define CFG_SYS_EXEC 5
 #define CFG_SYS_EXIT 0
+#define CFG_SYS_FCNTL 30
 #define CFG_SYS_FORK 4
+#define CFG_SYS_GETDENTS 35
 #define CFG_SYS_GETPID 3
+#define CFG_SYS_GETPPID 24
+#define CFG_SYS_GETTIMEOFDAY 32
+#define CFG_SYS_IOCTL 31
 #define CFG_SYS_KILL 15
+#define CFG_SYS_MMAP 27
+#define CFG_SYS_MPROTECT 29
+#define CFG_SYS_MUNMAP 28
+#define CFG_SYS_NANOSLEEP 25
 #define CFG_SYS_OPEN 7
 #define CFG_SYS_PIPE 10
 #define CFG_SYS_READ 9
@@ -103,6 +135,8 @@
 #define CFG_SYS_TCGETPGRP 23
 #define CFG_SYS_TCSETPGRP 22
 #define CFG_SYS_TIME 13
+#define CFG_SYS_UNAME 34
+#define CFG_SYS_UPTIME 12
 #define CFG_SYS_WAIT 6
 #define CFG_SYS_WAITPID 19
 #define CFG_SYS_WRITE 1
@@ -111,8 +145,11 @@
 #define CFG_SYSCALL_VECTOR 128
 #define CFG_T_DIR 1
 #define CFG_T_FILE 2
+#define CFG_TICKS_PER_SEC 100
 #define CFG_TIMER_PERIOD 0x1f40
 #define CFG_TIMER_VECTOR 32
+#define CFG_TIOCGPGRP 0x540f
+#define CFG_TIOCSPGRP 0x5410
 #define CFG_USER_BASE 0x400000
 #define CFG_USER_END 0x800000
 #define CFG_USER_LOAD_BASE 0x400000
@@ -156,6 +193,7 @@ int wait(void);
 int waitpid(int pid, int *status, int options);
 int exec(char *path, char **argv);
 int getpid(void);
+int getppid(void);
 int kill(int pid, int signal);
 typedef void (*sighandler_t)(int signal);
 struct sigaction {
@@ -173,6 +211,49 @@ int tcsetpgrp(int pgid);
 int tcgetpgrp(void);
 int pipe(int *fds);
 int dup(int fd);
+int fcntl(int fd, int command, int argument);
+int ioctl(int fd, int request, int argument);
+struct timespec {
+  int tv_sec;
+  int tv_nsec;
+};
+struct timeval {
+  int tv_sec;
+  int tv_usec;
+};
+struct mmap_args {
+  int address;
+  int length;
+  int protection;
+  int flags;
+  int fd;
+  int offset;
+};
+struct utsname {
+  char sysname[32];
+  char nodename[32];
+  char release[32];
+  char version[32];
+  char machine[32];
+  char domainname[32];
+};
+struct dirent {
+  int ino;
+  int offset;
+  int reclen;
+  int type;
+  char name[16];
+};
+int nanosleep(struct timespec *request, struct timespec *remaining);
+int brk(void *address);
+void *sbrk(int increment);
+void *mmap(void *address, int length, int protection, int flags, int fd, int offset);
+int munmap(void *address, int length);
+int mprotect(void *address, int length, int protection);
+int gettimeofday(struct timeval *value, void *timezone);
+int clock_gettime(int clock_id, struct timespec *value);
+int uname(struct utsname *name);
+int getdents(int fd, struct dirent *entries, int count);
 void exit(int code);
 int time(void);
 void shutdown(void);

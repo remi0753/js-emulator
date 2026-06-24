@@ -54,6 +54,71 @@ int vnode_read_op(int file_addr, int caller, int buf, int len) {
   return got;
 }
 
+int file_mmap_read(struct file *file, int offset, int length, int destination) {
+  struct open_file *open;
+  if (file->type != CFG_FT_FILE || file->object < 0 ||
+      file->object >= CFG_NFILE) {
+    return -CFG_ENODEV;
+  }
+  open = &open_file_table[file->object];
+  if (open->used == 0 || open->vnode.inode.type != CFG_T_FILE) {
+    return -CFG_ENODEV;
+  }
+  return vnode_read(&open->vnode, offset, length, destination);
+}
+
+int file_getdents(struct file *file, int caller, int destination, int count) {
+  struct open_file *open;
+  struct guest_dirent entry;
+  char raw[16];
+  int written;
+  int inum;
+  int i;
+  if (file->type != CFG_FT_FILE || file->object < 0 ||
+      file->object >= CFG_NFILE) {
+    return -CFG_EBADF;
+  }
+  open = &open_file_table[file->object];
+  if (open->used == 0 || open->vnode.inode.type != CFG_T_DIR) {
+    return -CFG_ENOTDIR;
+  }
+  if (count < sizeof(struct guest_dirent)) {
+    return -CFG_EINVAL;
+  }
+  written = 0;
+  while (written + sizeof(struct guest_dirent) <= count &&
+      open->offset + 16 <= open->vnode.inode.size) {
+    vnode_read(&open->vnode, open->offset, 16, raw);
+    open->offset = open->offset + 16;
+    inum = read16_at(raw);
+    if (inum != 0) {
+      entry.ino = inum;
+      entry.offset = open->offset;
+      entry.reclen = sizeof(struct guest_dirent);
+      entry.type = inode_type(inum);
+      i = 0;
+      while (i < 16) {
+        if (i < CFG_DIRSIZ) {
+          entry.name[i] = raw[i + 2];
+        } else {
+          entry.name[i] = 0;
+        }
+        i = i + 1;
+      }
+      if (copyout(caller, destination + written, &entry,
+          sizeof(struct guest_dirent)) < 0) {
+        return -CFG_EFAULT;
+      }
+      written = written + sizeof(struct guest_dirent);
+    }
+  }
+  return written;
+}
+
+int file_is_tty(struct file *file) {
+  return file->type == CFG_FT_KBD || file->type == CFG_FT_CONS;
+}
+
 void vnode_close_op(int file_addr) {
   struct file *file;
   struct open_file *open;
@@ -198,6 +263,8 @@ void file_reset(struct file *file) {
   file->writable = 0;
   file->pipe_end = 0;
   file->object = 0;
+  file->fd_flags = 0;
+  file->status_flags = 0;
 }
 
 void file_set_console(struct file *file) {
@@ -205,6 +272,7 @@ void file_set_console(struct file *file) {
   file->ops = &console_file_ops;
   file->type = CFG_FT_CONS;
   file->writable = 1;
+  file->status_flags = 1;
 }
 
 void file_set_keyboard(struct file *file) {
@@ -212,6 +280,7 @@ void file_set_keyboard(struct file *file) {
   file->ops = &keyboard_file_ops;
   file->type = CFG_FT_KBD;
   file->readable = 1;
+  file->status_flags = 0;
 }
 
 int file_set_vnode(struct file *file, int inum) {
@@ -237,8 +306,10 @@ void file_set_pipe(struct file *file, int pipe, int end) {
   file->pipe_end = end;
   if (end == 0) {
     file->readable = 1;
+    file->status_flags = 0;
   } else {
     file->writable = 1;
+    file->status_flags = 1;
   }
 }
 
@@ -282,8 +353,15 @@ void init_fds(int idx) {
 }
 
 int alloc_fd(int idx) {
+  return alloc_fd_from(idx, 0);
+}
+
+int alloc_fd_from(int idx, int minimum) {
   int fd;
-  fd = 0;
+  fd = minimum;
+  if (fd < 0) {
+    fd = 0;
+  }
   while (fd < CFG_NFD) {
     if (proc_table[idx].files[fd].type == CFG_FT_NONE) {
       return fd;
@@ -315,6 +393,8 @@ void copy_file(struct file *dst, struct file *src) {
   dst->writable = src->writable;
   dst->pipe_end = src->pipe_end;
   dst->object = src->object;
+  dst->fd_flags = src->fd_flags;
+  dst->status_flags = src->status_flags;
   file_retain(dst);
 }
 
@@ -323,6 +403,17 @@ void copy_fds(int dst, int src) {
   fd = 0;
   while (fd < CFG_NFD) {
     copy_file(&proc_table[dst].files[fd], &proc_table[src].files[fd]);
+    fd = fd + 1;
+  }
+}
+
+void close_exec_fds(int idx) {
+  int fd;
+  fd = 0;
+  while (fd < CFG_NFD) {
+    if ((proc_table[idx].files[fd].fd_flags & CFG_FD_CLOEXEC) != 0) {
+      fd_close(idx, fd);
+    }
     fd = fd + 1;
   }
 }

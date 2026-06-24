@@ -66,6 +66,38 @@ Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 | 21| `SETSID` | — | create a session and become its process-group leader |
 | 22| `TCSETPGRP` | R1 = pgid | set the terminal foreground process group |
 | 23| `TCGETPGRP` | — | return the terminal foreground process group |
+| 24| `GETPPID` | — | return the parent pid (`0` for init) |
+| 25| `NANOSLEEP` | R1 = request, R2 = remaining | sleep for a `timespec`; interruptible by signals |
+| 26| `BRK` | R1 = new break (`0` queries) | query or change the process heap end |
+| 27| `MMAP` | R1 = `mmap_args` pointer | create a private anonymous or file-backed mapping |
+| 28| `MUNMAP` | R1 = address, R2 = length | remove pages and update/split VM areas |
+| 29| `MPROTECT` | R1 = address, R2 = length, R3 = protection | change user/read-write accessibility |
+| 30| `FCNTL` | R1 = fd, R2 = command, R3 = argument | duplicate/query/control a descriptor |
+| 31| `IOCTL` | R1 = fd, R2 = request, R3 = argument | terminal foreground-group requests |
+| 32| `GETTIMEOFDAY` | R1 = timeval, R2 = timezone | realtime seconds and microseconds |
+| 33| `CLOCK_GETTIME` | R1 = clock id, R2 = timespec | realtime or monotonic guest time |
+| 34| `UNAME` | R1 = utsname | return guest system identity |
+| 35| `GETDENTS` | R1 = fd, R2 = dirent buffer, R3 = bytes | read Linux-shaped directory records |
+
+## Linux compatibility table
+
+| Surface | Status | Notes |
+|---------|--------|-------|
+| negative errno / libc `errno` | implemented | raw `-errno`; wrappers return `-1` |
+| `getpid`, `getppid`, `fork`, `exec`, `waitpid`, `exit` | implemented | guest-owned process lifecycle |
+| signals and process groups | implemented subset | Phase 17 signal/job-control model |
+| `nanosleep` | implemented | tick-resolution, signal-interruptible, reports remaining time |
+| `brk`, `sbrk` | implemented | eagerly maps and frees heap pages |
+| anonymous private `mmap` | implemented | eager allocation; `MAP_FIXED` requires an unused range |
+| private file-backed `mmap` | implemented | eager read; no shared write-back or page cache yet |
+| `munmap`, `mprotect` | implemented | page-granular VMA split/trim and PTE permissions |
+| `fcntl` | implemented subset | `F_DUPFD`, `F_GETFD`, `F_SETFD`, `F_GETFL`; nonblocking deferred |
+| `ioctl` | implemented subset | `TIOCGPGRP` and `TIOCSPGRP` on terminal descriptors |
+| `gettimeofday`, `clock_gettime`, `uname` | implemented | 32-bit time values on this ISA |
+| `getdents` | implemented | fixed 32-byte guest `dirent` records |
+| `MAP_SHARED`, lazy mappings, COW mappings | unsupported | planned for Phase 22 |
+| `O_NONBLOCK`, general terminal ioctls | unsupported | planned with polling/TTY phases |
+| Linux binary ABI compatibility | intentionally unsupported | programs are compiled for custom32 |
 
 ### Signals and job control (Phase 17)
 
@@ -94,8 +126,8 @@ for writing. `open` flags (`O.*` in abi.ts): `RDONLY=0`, `WRONLY=1`, `RDWR=2`,
   `open` resolves an absolute path to an inode (creating the file with `O.CREATE`),
   and installs an entry in the per-process fd table; `read`/`write` advance the
   open file's offset.
-- Directories are ordinary readable files: `read` on a directory fd returns raw
-  16-byte entries `{ inum:u16, name[14] }` (this is how a future `ls` lists files).
+- Directories remain readable as raw on-disk entries for compatibility, while
+  normal userland uses `getdents` and its stable 32-byte guest `dirent` records.
 - `fork` shares open files with the child (reference-counted); `exec` keeps them
   open; `exit` closes them all. `dup` and `fork` refer to the same open-file
   description, so they share the current file offset.

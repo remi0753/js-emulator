@@ -26,6 +26,7 @@ const NFILE = MAX_PROC * NFD;
 const NPIPE = 8;
 const PIPESZ = 512;
 const MAXARG = 16;
+const MAX_VMAS = 16;
 const ARGBUF_LEN = 512;
 const DINODE_SIZE = 64;
 const IPB = SECTOR_SIZE / DINODE_SIZE;
@@ -65,11 +66,14 @@ const ERRNO = {
   ECHILD: 10,
   ENOMEM: 12,
   EFAULT: 14,
+  ENODEV: 19,
+  ENOTDIR: 20,
   EINVAL: 22,
   ENFILE: 23,
   EMFILE: 24,
   EPIPE: 32,
   EINTR: 4,
+  ENOTTY: 25,
   ENOSYS: 38,
 } as const;
 
@@ -120,6 +124,7 @@ export const GUEST_SYSCALL_DEFINES: Defines = {
   CFG_SYS_CLOSE: SYS.CLOSE,
   CFG_SYS_PIPE: SYS.PIPE,
   CFG_SYS_DUP: SYS.DUP,
+  CFG_SYS_UPTIME: SYS.UPTIME,
   CFG_SYS_TIME: SYS.TIME,
   CFG_SYS_SHUTDOWN: SYS.SHUTDOWN,
   CFG_SYS_KILL: SYS.KILL,
@@ -131,6 +136,18 @@ export const GUEST_SYSCALL_DEFINES: Defines = {
   CFG_SYS_SETSID: SYS.SETSID,
   CFG_SYS_TCSETPGRP: SYS.TCSETPGRP,
   CFG_SYS_TCGETPGRP: SYS.TCGETPGRP,
+  CFG_SYS_GETPPID: SYS.GETPPID,
+  CFG_SYS_NANOSLEEP: SYS.NANOSLEEP,
+  CFG_SYS_BRK: SYS.BRK,
+  CFG_SYS_MMAP: SYS.MMAP,
+  CFG_SYS_MUNMAP: SYS.MUNMAP,
+  CFG_SYS_MPROTECT: SYS.MPROTECT,
+  CFG_SYS_FCNTL: SYS.FCNTL,
+  CFG_SYS_IOCTL: SYS.IOCTL,
+  CFG_SYS_GETTIMEOFDAY: SYS.GETTIMEOFDAY,
+  CFG_SYS_CLOCK_GETTIME: SYS.CLOCK_GETTIME,
+  CFG_SYS_UNAME: SYS.UNAME,
+  CFG_SYS_GETDENTS: SYS.GETDENTS,
 };
 
 const ERRNO_DEFINES: Defines = Object.fromEntries(
@@ -157,6 +174,7 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_NPIPE: NPIPE,
   CFG_PIPESZ: PIPESZ,
   CFG_MAXARG: MAXARG,
+  CFG_MAX_VMAS: MAX_VMAS,
   CFG_ARGBUF_LEN: ARGBUF_LEN,
   CFG_FRAME_POOL_BASE: GUEST_KERNEL_LAYOUT.framePoolBase,
   CFG_FRAME_POOL_END: GUEST_KERNEL_LAYOUT.framePoolEnd,
@@ -220,6 +238,26 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_WNOHANG: 1,
   CFG_WUNTRACED: 2,
   CFG_WCONTINUED: 4,
+  CFG_TICKS_PER_SEC: 100,
+  CFG_PROT_NONE: 0,
+  CFG_PROT_READ: 1,
+  CFG_PROT_WRITE: 2,
+  CFG_PROT_EXEC: 4,
+  CFG_MAP_SHARED: 1,
+  CFG_MAP_PRIVATE: 2,
+  CFG_MAP_FIXED: 16,
+  CFG_MAP_ANONYMOUS: 32,
+  CFG_F_DUPFD: 0,
+  CFG_F_GETFD: 1,
+  CFG_F_SETFD: 2,
+  CFG_F_GETFL: 3,
+  CFG_F_SETFL: 4,
+  CFG_FD_CLOEXEC: 1,
+  CFG_O_NONBLOCK: 0x800,
+  CFG_TIOCGPGRP: 0x540f,
+  CFG_TIOCSPGRP: 0x5410,
+  CFG_CLOCK_REALTIME: 0,
+  CFG_CLOCK_MONOTONIC: 1,
 };
 
 function cInteger(value: number): string {
@@ -272,6 +310,7 @@ int wait(void);
 int waitpid(int pid, int *status, int options);
 int exec(char *path, char **argv);
 int getpid(void);
+int getppid(void);
 int kill(int pid, int signal);
 typedef void (*sighandler_t)(int signal);
 struct sigaction {
@@ -289,6 +328,49 @@ int tcsetpgrp(int pgid);
 int tcgetpgrp(void);
 int pipe(int *fds);
 int dup(int fd);
+int fcntl(int fd, int command, int argument);
+int ioctl(int fd, int request, int argument);
+struct timespec {
+  int tv_sec;
+  int tv_nsec;
+};
+struct timeval {
+  int tv_sec;
+  int tv_usec;
+};
+struct mmap_args {
+  int address;
+  int length;
+  int protection;
+  int flags;
+  int fd;
+  int offset;
+};
+struct utsname {
+  char sysname[32];
+  char nodename[32];
+  char release[32];
+  char version[32];
+  char machine[32];
+  char domainname[32];
+};
+struct dirent {
+  int ino;
+  int offset;
+  int reclen;
+  int type;
+  char name[16];
+};
+int nanosleep(struct timespec *request, struct timespec *remaining);
+int brk(void *address);
+void *sbrk(int increment);
+void *mmap(void *address, int length, int protection, int flags, int fd, int offset);
+int munmap(void *address, int length);
+int mprotect(void *address, int length, int protection);
+int gettimeofday(struct timeval *value, void *timezone);
+int clock_gettime(int clock_id, struct timespec *value);
+int uname(struct utsname *name);
+int getdents(int fd, struct dirent *entries, int count);
 void exit(int code);
 int time(void);
 void shutdown(void);

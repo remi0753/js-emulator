@@ -19,6 +19,42 @@ struct sigaction {
   int restorer;
 };
 
+struct timespec {
+  int tv_sec;
+  int tv_nsec;
+};
+
+struct timeval {
+  int tv_sec;
+  int tv_usec;
+};
+
+struct mmap_args {
+  int address;
+  int length;
+  int protection;
+  int flags;
+  int fd;
+  int offset;
+};
+
+struct utsname {
+  char sysname[32];
+  char nodename[32];
+  char release[32];
+  char version[32];
+  char machine[32];
+  char domainname[32];
+};
+
+struct dirent {
+  int ino;
+  int offset;
+  int reclen;
+  int type;
+  char name[16];
+};
+
 sighandler_t signal_handlers[32];
 int signal_current;
 
@@ -79,6 +115,10 @@ int exec(char *path, char **argv) {
 
 int getpid() {
   return ret_errno(__syscall(CFG_SYS_GETPID, 0, 0, 0));
+}
+
+int getppid() {
+  return ret_errno(__syscall(CFG_SYS_GETPPID, 0, 0, 0));
 }
 
 int kill(int pid, int sig) {
@@ -164,13 +204,89 @@ int dup(int fd) {
   return ret_errno(__syscall(CFG_SYS_DUP, fd, 0, 0));
 }
 
+int fcntl(int fd, int command, int argument) {
+  return ret_errno(__syscall(CFG_SYS_FCNTL, fd, command, argument));
+}
+
+int ioctl(int fd, int request, int argument) {
+  return ret_errno(__syscall(CFG_SYS_IOCTL, fd, request, argument));
+}
+
+int nanosleep(struct timespec *request, struct timespec *remaining) {
+  return ret_errno(__syscall(CFG_SYS_NANOSLEEP, request, remaining, 0));
+}
+
+int brk(void *address) {
+  int result;
+  result = ret_errno(__syscall(CFG_SYS_BRK, address, 0, 0));
+  if (result < 0) {
+    return -1;
+  }
+  return 0;
+}
+
+void *sbrk(int increment) {
+  int old_break;
+  int new_break;
+  old_break = ret_errno(__syscall(CFG_SYS_BRK, 0, 0, 0));
+  if (old_break < 0) {
+    return -1;
+  }
+  new_break = ret_errno(
+    __syscall(CFG_SYS_BRK, old_break + increment, 0, 0));
+  if (new_break < 0) {
+    return -1;
+  }
+  return old_break;
+}
+
+void *mmap(void *address, int length, int protection, int flags, int fd, int offset) {
+  struct mmap_args arguments;
+  int result;
+  arguments.address = address;
+  arguments.length = length;
+  arguments.protection = protection;
+  arguments.flags = flags;
+  arguments.fd = fd;
+  arguments.offset = offset;
+  result = ret_errno(__syscall(CFG_SYS_MMAP, &arguments, 0, 0));
+  if (result < 0) {
+    return -1;
+  }
+  return result;
+}
+
+int munmap(void *address, int length) {
+  return ret_errno(__syscall(CFG_SYS_MUNMAP, address, length, 0));
+}
+
+int mprotect(void *address, int length, int protection) {
+  return ret_errno(__syscall(CFG_SYS_MPROTECT, address, length, protection));
+}
+
+int gettimeofday(struct timeval *value, void *timezone) {
+  return ret_errno(__syscall(CFG_SYS_GETTIMEOFDAY, value, timezone, 0));
+}
+
+int clock_gettime(int clock_id, struct timespec *value) {
+  return ret_errno(__syscall(CFG_SYS_CLOCK_GETTIME, clock_id, value, 0));
+}
+
+int uname(struct utsname *name) {
+  return ret_errno(__syscall(CFG_SYS_UNAME, name, 0, 0));
+}
+
+int getdents(int fd, struct dirent *entries, int count) {
+  return ret_errno(__syscall(CFG_SYS_GETDENTS, fd, entries, count));
+}
+
 void exit(int code) {
   __syscall(CFG_SYS_EXIT, code, 0, 0);
 }
 
 // Current wall-clock time in whole seconds (Unix epoch), from the RTC device.
 int time() {
-  return __syscall(CFG_SYS_TIME, 0, 0, 0);
+  return ret_errno(__syscall(CFG_SYS_TIME, 0, 0, 0));
 }
 
 // Power the machine off cleanly. Does not return.

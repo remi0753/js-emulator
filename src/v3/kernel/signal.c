@@ -21,6 +21,8 @@ void signal_init_proc(int idx) {
   proc_table[idx].in_signal = 0;
   proc_table[idx].wait_event = 0;
   proc_table[idx].wait_signal = 0;
+  proc_table[idx].sleep_deadline = 0;
+  proc_table[idx].sleep_remaining = 0;
   signal = 0;
   while (signal < CFG_NSIG) {
     proc_table[idx].signal_handlers[signal] = CFG_SIG_DFL;
@@ -37,6 +39,8 @@ void signal_fork_proc(int child, int parent) {
   proc_table[child].in_signal = 0;
   proc_table[child].wait_event = 0;
   proc_table[child].wait_signal = 0;
+  proc_table[child].sleep_deadline = 0;
+  proc_table[child].sleep_remaining = 0;
   signal = 0;
   while (signal < CFG_NSIG) {
     proc_table[child].signal_handlers[signal] =
@@ -95,8 +99,25 @@ int send_signal(int idx, int signal) {
   if (proc_table[idx].state == CFG_ST_SLEEPING) {
     // Blocking operations rewind PC to retry their INT. A signal interrupts the
     // operation instead: resume after INT with -EINTR after the handler returns.
-    proc_table[idx].ctx.pc =
-      proc_table[idx].ctx.pc + CFG_SYSCALL_INSTR_SIZE;
+    if (proc_table[idx].sleep_deadline != 0) {
+      int remaining;
+      int value[2];
+      remaining = proc_table[idx].sleep_deadline - ticks;
+      if (remaining < 0) {
+        remaining = 0;
+      }
+      value[0] = remaining / CFG_TICKS_PER_SEC;
+      value[1] = (remaining % CFG_TICKS_PER_SEC) *
+        (1000000000 / CFG_TICKS_PER_SEC);
+      if (proc_table[idx].sleep_remaining != 0) {
+        copyout(idx, proc_table[idx].sleep_remaining, value, 8);
+      }
+      proc_table[idx].sleep_deadline = 0;
+      proc_table[idx].sleep_remaining = 0;
+    } else {
+      proc_table[idx].ctx.pc =
+        proc_table[idx].ctx.pc + CFG_SYSCALL_INSTR_SIZE;
+    }
     proc_table[idx].ctx.regs[0] = -CFG_EINTR;
     proc_table[idx].state = CFG_ST_RUNNABLE;
   }

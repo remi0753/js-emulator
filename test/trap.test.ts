@@ -396,6 +396,23 @@ test('the in-CPU timer does not overwrite an already-pending device IRQ', () => 
   assert.deepEqual(second, { reason: 'irq', line: 0 });
 });
 
+test('disabling the in-CPU timer cancels a pending timer IRQ', () => {
+  const machine = new Machine({ physSize: 64 * 1024 });
+  const { bytes } = assemble(`
+    DI
+    MOV R1, 1
+    STMR R1
+    MOV R1, 0
+    STMR R1
+    EI
+    HLT
+  `);
+  machine.load(0, bytes);
+  machine.reset();
+
+  assert.deepEqual(machine.run(100), { reason: 'halt' });
+});
+
 // Write an 8-byte IDT gate descriptor: [handler offset, Present].
 function installGate(
   phys: { write32(a: number, v: number): void },

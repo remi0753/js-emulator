@@ -8,6 +8,7 @@ char exec_hdr[12];            // the executable header (magic, entry, memSize)
 char argbuf[CFG_ARGBUF_LEN];  // packed NUL-terminated argv strings
 int arg_off[CFG_MAXARG];      // start offset of each arg in argbuf
 int g_argc;                   // argument count staged for the next spawn
+int g_exec_image_end;
 
 // Copy a NUL-terminated path from user memory into the kpath kernel buffer.
 int copy_path_in(int proc, int upath) {
@@ -105,6 +106,7 @@ int load_exec_image(int pd, int path) {
     return -CFG_ENOEXEC;
   }
   npages = (memsz + 4095) / 4096;
+  g_exec_image_end = CFG_USER_LOAD_BASE + npages * 4096;
   if (npages + 2 > free_frame_count()) {
     return -CFG_ENOMEM;
   }
@@ -189,7 +191,7 @@ int spawn(int idx, int path) {
     free_space(pd);
     return result;
   }
-  proc_table[idx].vm.ptbr = pd;
+  vm_init(idx, pd, g_exec_image_end);
   proc_table[idx].ctx.pc = entry;
   proc_table[idx].ctx.mode = CFG_MODE_USER;
   proc_table[idx].ctx.flags = CFG_FLAG_IF;
@@ -216,5 +218,6 @@ int do_exec(int idx, int upath, int uargv) {
     return 0;
   }
   signal_exec_proc(idx);
+  close_exec_fds(idx);
   return old_pd;
 }

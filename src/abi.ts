@@ -27,6 +27,18 @@ export const SYS = {
   SETSID: 21, // create a session and process group -> session id
   TCSETPGRP: 22, // R1 = foreground process group
   TCGETPGRP: 23, // -> foreground process group
+  GETPPID: 24, // -> R0 = parent pid (0 for init)
+  NANOSLEEP: 25, // R1 = timespec request, R2 = remaining timespec
+  BRK: 26, // R1 = new program break (0 queries) -> current/new break
+  MMAP: 27, // R1 = pointer to mmap_args -> mapped address / -errno
+  MUNMAP: 28, // R1 = address, R2 = length
+  MPROTECT: 29, // R1 = address, R2 = length, R3 = PROT_*
+  FCNTL: 30, // R1 = fd, R2 = command, R3 = argument
+  IOCTL: 31, // R1 = fd, R2 = request, R3 = argument pointer/value
+  GETTIMEOFDAY: 32, // R1 = timeval pointer, R2 = timezone (must be 0)
+  CLOCK_GETTIME: 33, // R1 = clock id, R2 = timespec pointer
+  UNAME: 34, // R1 = utsname pointer
+  GETDENTS: 35, // R1 = directory fd, R2 = buffer, R3 = byte count
 } as const;
 
 // File descriptors wired up in Phase 2 (real fd table comes with the FS).
@@ -39,4 +51,18 @@ export const O = {
   RDWR: 0x002,
   CREATE: 0x200,
   TRUNC: 0x400,
+  NONBLOCK: 0x800,
 } as const;
+
+export const PROT = { NONE: 0, READ: 1, WRITE: 2, EXEC: 4 } as const;
+export const MAP = { SHARED: 0x01, PRIVATE: 0x02, FIXED: 0x10, ANONYMOUS: 0x20 } as const;
+export const FCNTL = {
+  DUPFD: 0,
+  GETFD: 1,
+  SETFD: 2,
+  GETFL: 3,
+  SETFL: 4,
+  FD_CLOEXEC: 1,
+} as const;
+export const IOCTL = { TIOCGPGRP: 0x540f, TIOCSPGRP: 0x5410 } as const;
+export const CLOCK = { REALTIME: 0, MONOTONIC: 1 } as const;

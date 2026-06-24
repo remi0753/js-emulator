@@ -521,17 +521,32 @@ For every milestone, use the same completion workflow:
   return through `sigreturn`, interrupted pipe reads report `EINTR`, and
   `waitpid` observes stopped/continued children before reaping their final exit.
 
-- **Phase 18** ⬜ add Linux-shaped syscall conventions and errno behavior.
+- **Phase 18** ✅ add Linux-shaped syscall conventions and errno behavior.
 
-  Replace the current coarse `-1` failures with stable negative errno values or
-  a libc-visible `errno`. Add Linux-like calls where they matter: `getppid`,
-  `waitpid`, `nanosleep`, `brk`, `mmap`, `munmap`, `mprotect`, `fcntl`, `ioctl`,
-  `gettimeofday`/`clock_gettime`, `uname`, and `getdents`-style directory reads.
-  Keep a compatibility table documenting which Linux calls are implemented,
-  stubbed, or intentionally unsupported.
+  The raw guest ABI now consistently returns stable negative Linux errno values,
+  and libc translates them to `-1` plus a positive global `errno`. Added
+  `getppid`, `nanosleep`, `brk`/`sbrk`, `mmap`, `munmap`, `mprotect`, `fcntl`,
+  `ioctl`, `gettimeofday`, `clock_gettime`, `uname`, and `getdents`; the Phase 17
+  `waitpid` implementation remains the process-wait interface.
 
-  Done when userland can use libc wrappers instead of hard-coded raw syscall
-  stubs for normal process, file, time, and terminal operations.
+  Memory mappings are tracked as per-process VM areas rather than one-off page
+  table edits. The Phase 18 implementation eagerly allocates anonymous private
+  mappings and eagerly reads private file-backed mappings; `fork` copies their
+  pages and VMA metadata. `mprotect` updates user/write permissions and
+  `munmap` handles whole, trimmed, and split areas. Lazy faults, shared
+  write-back, COW mappings, and the page cache remain Phase 22 work.
+
+  `fcntl` provides descriptor duplication, close-on-exec, and status/descriptor
+  flag queries. `ioctl` exposes the existing foreground process-group terminal
+  operations through Linux request numbers. `getdents` returns a stable
+  libc-visible directory-entry structure, and `/bin/ls` now uses it instead of
+  parsing raw on-disk entries. The compatibility table is maintained in
+  `docs/syscalls.md`; end-to-end coverage is in
+  `test/guest-linux-abi.test.ts`.
+
+  Done: compiled userland uses libc wrappers for normal process, file,
+  directory, memory, time, and terminal operations, with specific errno values
+  observable on every failure path.
 
 - **Phase 19** ⬜ implement permissions, credentials, and file metadata.
 
