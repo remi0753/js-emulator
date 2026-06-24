@@ -1,3 +1,5 @@
+import { SYS } from '../abi.ts';
+import { BOOT_MAGIC } from '../formats/bootblock.ts';
 import {
   ARG_SIZE,
   FLAG,
@@ -9,9 +11,7 @@ import {
   TIMER_IRQ,
   TRAP,
 } from '../isa.ts';
-import { SYS } from '../v2/kernel/abi.ts';
-import { BOOT_MAGIC } from '../v2/kernel/bootblock.ts';
-import { DIRSIZ, FSMAGIC, NDIRECT, ROOTINO, T_DIR, T_FILE } from '../v2/kernel/fs.ts';
+import { DIRSIZ, FSMAGIC, NDIRECT, ROOTINO, T_DIR, T_FILE } from '../storage/fs.ts';
 import { MODE } from '../vm/custom32/cpu.ts';
 import { SECTOR_SIZE } from '../vm/custom32/devices/disk.ts';
 import { POWER_OFF } from '../vm/custom32/devices/power.ts';

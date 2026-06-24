@@ -292,7 +292,7 @@ disk device は `src/vm/custom32/devices/disk.ts` にあります。
 - `DISK_DATA`
 - `DISK_SECTORS`
 
-kernel 側の block driver は `src/v2/kernel/disk.ts` にあります。
+共有の block-device adapter は `src/storage/port-block-device.ts` にあります。
 
 disk への read/write は port bus 経由で行われます。これは「device driver が port I/O で device を操作する」という仕組みを小さく再現しています。
 
@@ -300,7 +300,7 @@ disk への read/write は port bus 経由で行われます。これは「devic
 
 ### 3.8 Filesystem
 
-filesystem は `src/v2/kernel/fs.ts` にあります。
+filesystem は `src/storage/fs.ts` にあります。
 
 xv6 風の小さな filesystem です。
 
@@ -352,7 +352,7 @@ directory entry:
 
 ### 3.9 Executable format
 
-executable format は `src/v2/kernel/exec.ts` にあります。
+executable format は `src/formats/executable.ts` にあります。
 
 独自の minimal ELF-like format です。
 

@@ -8,8 +8,8 @@
 // Run: node demo/v2-fork-exec.ts
 
 import { assemble } from '../src/assembler.ts';
-import { LAYOUT } from '../src/v2/kernel/abi.ts';
 import { Kernel } from '../src/v2/kernel/kernel.ts';
+import { LAYOUT } from '../src/v2/layout.ts';
 
 // A child program: print a label line, then exit with `code`.
 function worker(label: string, code: number): Uint8Array {

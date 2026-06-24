@@ -1,12 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-
+import { encodeBootBlock, makeBootBlock } from '../formats/bootblock.ts';
+import { Fs } from '../storage/fs.ts';
+import { PortBlockDevice } from '../storage/port-block-device.ts';
 import { type CompiledObject, compileC } from '../toolchain/c.ts';
 import { type KernelImage, linkExecutable, linkKernelImage } from '../toolchain/linker.ts';
 import { preprocess } from '../toolchain/preprocess.ts';
-import { encodeBootBlock, makeBootBlock } from '../v2/kernel/bootblock.ts';
-import { BlockDriver } from '../v2/kernel/disk.ts';
-import { Fs } from '../v2/kernel/fs.ts';
 import { BlockDisk } from '../vm/custom32/devices/disk.ts';
 import { PORT } from '../vm/custom32/platform.ts';
 import { PortBus } from '../vm/custom32/ports.ts';
@@ -75,7 +74,7 @@ export function buildGuestDiskImage(): Uint8Array {
   ports.register(PORT.DISK_POS, 1, disk);
   ports.register(PORT.DISK_SECTORS, 1, disk);
 
-  const driver = new BlockDriver(ports);
+  const driver = new PortBlockDevice(ports);
   const fs = new Fs(driver);
   fs.mkfs();
   for (const name of ['init', 'sh', 'echo', 'cat', 'ls', 'date', 'shutdown']) {

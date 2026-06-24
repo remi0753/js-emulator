@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { BlockDriver } from '../src/v2/kernel/disk.ts';
-import { Fs } from '../src/v2/kernel/fs.ts';
+import { Fs } from '../src/storage/fs.ts';
+import { PortBlockDevice } from '../src/storage/port-block-device.ts';
 import {
   buildGuestDiskImage,
   buildGuestKernelImage,
@@ -59,7 +59,7 @@ test('a fresh disk image contains the device utilities', () => {
   ports.register(PORT.DISK_DATA, 1, blk);
   ports.register(PORT.DISK_POS, 1, blk);
   ports.register(PORT.DISK_SECTORS, 1, blk);
-  const fs = new Fs(new BlockDriver(ports));
+  const fs = new Fs(new PortBlockDevice(ports));
   fs.mount();
 
   for (const path of ['/bin/init', '/bin/sh', '/bin/date', '/bin/shutdown']) {
@@ -79,7 +79,7 @@ test('bad user inputs return errors without panicking the kernel', () => {
   ports.register(PORT.DISK_DATA, 1, blk);
   ports.register(PORT.DISK_POS, 1, blk);
   ports.register(PORT.DISK_SECTORS, 1, blk);
-  const fs = new Fs(new BlockDriver(ports));
+  const fs = new Fs(new PortBlockDevice(ports));
   fs.mount();
   fs.writeFile(
     '/bin/probe',
@@ -136,7 +136,7 @@ test('a large pipeline transfers every byte across a blocking pipe', () => {
   ports.register(PORT.DISK_DATA, 1, blk);
   ports.register(PORT.DISK_POS, 1, blk);
   ports.register(PORT.DISK_SECTORS, 1, blk);
-  const fs = new Fs(new BlockDriver(ports));
+  const fs = new Fs(new PortBlockDevice(ports));
   fs.mount();
   const count = 20_000;
   fs.writeFile('/big', new TextEncoder().encode(`${'X'.repeat(count)}\n`));

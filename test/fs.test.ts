@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PORT } from '../src/v2/kernel/abi.ts';
-import { BlockDriver, BSIZE } from '../src/v2/kernel/disk.ts';
-import { Fs, MAXFILE, NDIRECT, ROOTINO, T_DIR, T_FILE } from '../src/v2/kernel/fs.ts';
+import { BSIZE } from '../src/storage/block.ts';
+import { Fs, MAXFILE, NDIRECT, ROOTINO, T_DIR, T_FILE } from '../src/storage/fs.ts';
+import { PortBlockDevice } from '../src/storage/port-block-device.ts';
 import { BlockDisk } from '../src/vm/custom32/devices/disk.ts';
+import { PORT } from '../src/vm/custom32/platform.ts';
 import { PortBus } from '../src/vm/custom32/ports.ts';
 
 function newDisk(sectors = 2048) {
@@ -12,7 +13,7 @@ function newDisk(sectors = 2048) {
   ports.register(PORT.DISK_DATA, 1, disk);
   ports.register(PORT.DISK_POS, 1, disk);
   ports.register(PORT.DISK_SECTORS, 1, disk);
-  return new BlockDriver(ports);
+  return new PortBlockDevice(ports);
 }
 
 function newFs(sectors = 2048) {

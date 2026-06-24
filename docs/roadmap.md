@@ -55,12 +55,12 @@ descriptors, `fork`/`exec`, and userland.
   managers, timer-driven preemptive scheduler, syscall dispatch, console driver;
   user-mode programs syscall and get preempted (see `src/v2/kernel/`).
 - **Phase 3** ✅ process model: `fork`/`exec`/`wait`/`exit`, ELF-like loader,
-  multiple user programs (see `src/v2/kernel/exec.ts` + the process syscalls in
+  multiple user programs (see `src/formats/executable.ts` + the process syscalls in
   `kernel.ts`; demo `node demo/v2-fork-exec.ts`).
 - **Phase 4** ✅ storage: block driver over `disk.img`, on-disk FS (superblock,
   inodes, block bitmap, direct + indirect blocks, directories), file descriptors,
   `open`/`read`/`write`/`close`, exec from the FS (see `src/vm/custom32/devices/disk.ts`,
-  `src/v2/kernel/{disk,fs}.ts`; demo `node demo/v2-fs.ts`).
+  `src/storage/{port-block-device,fs}.ts`; demo `node demo/v2-fs.ts`).
 - **Phase 5** ✅ userland: `init`, a shell, and coreutils (`echo`, `cat`, `ls`),
   all hand-written guest assembly; `exec` delivers `argv`; byte load/store (`LB`/
   `SB`) added to the ISA for string code (see `src/v2/userland/programs.ts`; demo
@@ -176,7 +176,7 @@ subsystems over one at a time.
   reserves) holds a manifest — magic + boot-sector signature, the filesystem
   superblock location, a reserved raw kernel-image region (`kernelStart`/
   `kernelBlocks`, empty until model B has a guest kernel to load), and the path of
-  the program to start as init (see `src/v2/kernel/bootblock.ts`). The stable disk
+  the program to start as init (see `src/formats/bootblock.ts`). The stable disk
   layout is `[boot block | superblock | inodes | bitmap | data (/bin/* + files)]`.
   `Kernel.boot()` reads the manifest and starts the named init — a manifest-driven
   handoff, not a hard-coded path. The image builder is now first-class:
@@ -316,7 +316,7 @@ subsystems over one at a time.
   space. At boot the kernel mounts the disk, reads the boot block's manifest to
   learn which program is init (honoring the Phase 9 handoff), loads that file,
   and runs it — no embedded user image. The Phase 14 disk image is built with
-  the existing `Fs`/`BlockDriver` against a `BlockDisk`, installing flat
+  the existing `Fs`/`PortBlockDevice` against a `BlockDisk`, installing flat
   assembled `/bin/init` and `/bin/hello` plus a seed `/etc/motd`.
 
   Done: the guest kernel mounts the disk image, loads `/bin/init` from the

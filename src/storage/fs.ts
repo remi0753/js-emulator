@@ -1,4 +1,4 @@
-// A small Unix-like filesystem (v2), xv6-flavored, on the block device.
+// A small Unix-like filesystem, xv6-flavored, on a generic block device.
 //
 // On-disk layout (each block is BSIZE = 512 bytes):
 //
@@ -11,7 +11,7 @@
 // - Files/dirs: NDIRECT direct block pointers + 1 singly-indirect block.
 // - Directories: arrays of fixed 16-byte entries { inum(u16), name[14] }.
 
-import { type BlockDriver, BSIZE } from './disk.ts';
+import { type BlockDevice, BLOCK_SIZE as BSIZE } from './block.ts';
 
 export const ROOTINO = 1; // root directory inode number
 export const NDIRECT = 12;
@@ -51,10 +51,10 @@ export interface Dinode {
 export class FsError extends Error {}
 
 export class Fs {
-  private disk: BlockDriver;
+  private disk: BlockDevice;
   sb!: Superblock;
 
-  constructor(disk: BlockDriver) {
+  constructor(disk: BlockDevice) {
     this.disk = disk;
   }
 

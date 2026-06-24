@@ -2,9 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { assemble } from '../src/assembler.ts';
-import { LAYOUT } from '../src/v2/kernel/abi.ts';
-import { type Executable, encodeExecutable, parseExecutable, SEG } from '../src/v2/kernel/exec.ts';
+import {
+  type Executable,
+  encodeExecutable,
+  parseExecutable,
+  SEG,
+} from '../src/formats/executable.ts';
 import { Kernel } from '../src/v2/kernel/kernel.ts';
+import { LAYOUT } from '../src/v2/layout.ts';
 import { Machine } from '../src/vm/custom32/machine.ts';
 import { PTE } from '../src/vm/custom32/mmu.ts';
 

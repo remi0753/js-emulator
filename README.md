@@ -35,13 +35,16 @@ implementation language stays the host (TypeScript). **It boots to a shell and
 
 ```
 src/isa.ts         ISA table — single source of truth shared by CPU & assembler
+src/abi.ts         stable userspace/kernel syscall and file ABI
 src/assembler.ts   assembly text -> bytecode (two-pass, label resolution)
+src/formats/       shared executable and boot-block formats
+src/storage/       generic block-device contract, filesystem, and VM port adapter
 src/v1/            v1 — register machine + JS round-robin OS (working demo)
   cpu.ts           register machine: fetch-decode-execute, memory, interrupts
   os.ts            PCB, round-robin scheduler, syscalls, program loader
 src/vm/custom32/   virtual hardware boundary: machine, cpu, memory, mmu, ports, devices
 src/v2/            v2 — Unix-like OS (in progress)
-  kernel/          pmm (refcounts), vmm (COW), scheduler, syscalls, process model (fork/exec/wait), exec format, block driver, filesystem
+  kernel/          pmm (refcounts), vmm (COW), scheduler, syscalls, process model (fork/exec/wait)
   userland/        guest programs: init, sh, coreutils (echo, cat, ls)
 demo/multitask.ts  two v1 processes printing interleaved
 demo/v2-preempt.ts user-mode preemptive multitasking (paging + traps)

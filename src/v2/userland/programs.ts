@@ -6,8 +6,8 @@
 // Syscalls used: EXIT=0 WRITE=1 FORK=4 EXEC=5 WAIT=6 OPEN=7 CLOSE=8 READ=9.
 
 import { assemble } from '../../assembler.ts';
-import { LAYOUT } from '../kernel/abi.ts';
 import type { Kernel } from '../kernel/kernel.ts';
+import { LAYOUT } from '../layout.ts';
 
 // init: the first user process. Execs the shell; if that fails, exits non-zero.
 const INIT = `

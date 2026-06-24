@@ -90,8 +90,8 @@ export class BlockDisk implements PortDevice {
   }
 }
 
-// The disk's three port numbers (wired by the kernel; see abi.ts PORT).
-// Re-exported there so all port assignments live in one table.
+// The disk's three port numbers. The canonical platform table is in
+// ../platform.ts; these aliases keep the device implementation self-contained.
 export const PORT_POS = 0x1f2;
 export const PORT_DATA = 0x1f0;
 export const PORT_SECTORS = 0x1f7;

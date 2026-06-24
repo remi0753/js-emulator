@@ -9,7 +9,7 @@
 // hard-coding which program is init. The userland already lives on the disk, and
 // the manifest says what to run. (See tools/mkimg.ts and tools/boot.ts.)
 
-import { encodeBootBlock, makeBootBlock } from './kernel/bootblock.ts';
+import { encodeBootBlock, makeBootBlock } from '../formats/bootblock.ts';
 import { Kernel, type KernelOptions } from './kernel/kernel.ts';
 import { installUserland } from './userland/programs.ts';
 

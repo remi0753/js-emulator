@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { BlockDriver } from '../src/v2/kernel/disk.ts';
-import { Fs } from '../src/v2/kernel/fs.ts';
+import { Fs } from '../src/storage/fs.ts';
+import { PortBlockDevice } from '../src/storage/port-block-device.ts';
 import {
   buildGuestDiskImage,
   buildGuestKernelImage,
@@ -21,7 +21,7 @@ test('structured file objects dispatch vnode, pipe, terminal, and console operat
   ports.register(PORT.DISK_DATA, 1, blockDisk);
   ports.register(PORT.DISK_POS, 1, blockDisk);
   ports.register(PORT.DISK_SECTORS, 1, blockDisk);
-  const fs = new Fs(new BlockDriver(ports));
+  const fs = new Fs(new PortBlockDevice(ports));
   fs.mount();
   fs.writeFile('/ops-data', new TextEncoder().encode('vnode-data\n'));
   fs.writeFile('/offset-data', new TextEncoder().encode('AB'));

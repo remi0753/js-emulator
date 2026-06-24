@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { BlockDriver } from '../src/v2/kernel/disk.ts';
-import { Fs } from '../src/v2/kernel/fs.ts';
+import { Fs } from '../src/storage/fs.ts';
+import { PortBlockDevice } from '../src/storage/port-block-device.ts';
 import {
   buildGuestDiskImage,
   buildGuestKernelImage,
@@ -60,7 +60,7 @@ test('a fresh disk image contains the compiled userland under /bin', () => {
   ports.register(PORT.DISK_DATA, 1, blk);
   ports.register(PORT.DISK_POS, 1, blk);
   ports.register(PORT.DISK_SECTORS, 1, blk);
-  const fs = new Fs(new BlockDriver(ports));
+  const fs = new Fs(new PortBlockDevice(ports));
   fs.mount();
 
   for (const path of ['/bin/init', '/bin/sh', '/bin/echo', '/bin/cat', '/bin/ls']) {
@@ -81,7 +81,7 @@ test('failed libc calls preserve specific kernel errno values', () => {
   ports.register(PORT.DISK_DATA, 1, blk);
   ports.register(PORT.DISK_POS, 1, blk);
   ports.register(PORT.DISK_SECTORS, 1, blk);
-  const fs = new Fs(new BlockDriver(ports));
+  const fs = new Fs(new PortBlockDevice(ports));
   fs.mount();
   fs.writeFile('/bad-exec', new TextEncoder().encode('not an executable'));
   fs.writeFile(

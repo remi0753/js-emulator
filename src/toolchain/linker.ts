@@ -1,14 +1,13 @@
 import { assemble } from '../assembler.ts';
-import { LAYOUT } from '../v2/kernel/abi.ts';
-import { type Executable, SEG } from '../v2/kernel/exec.ts';
+import { type Executable, SEG } from '../formats/executable.ts';
 import {
-  cTypesEqual,
-  functionTypesEqual,
   type BssSymbol,
   type CompiledObject,
   type CType,
+  cTypesEqual,
   type DataSymbol,
   type FunctionSig,
+  functionTypesEqual,
   type SourceLocation,
 } from './c.ts';
 
@@ -54,9 +53,10 @@ const SHARED_TEXT_LABELS = new Set([
 ]);
 
 const SHARED_DATA_SYMBOLS = new Set(['__csp', '__stack']);
+const DEFAULT_TEXT_ORIGIN = 0x1000;
 
 export function linkExecutable(objects: CompiledObject[], options: LinkOptions = {}): LinkedImage {
-  const textOrigin = options.textOrigin ?? LAYOUT.USER_TEXT;
+  const textOrigin = options.textOrigin ?? DEFAULT_TEXT_ORIGIN;
   const entryName = options.entry ?? '_start';
   validateCrossObjectTypes(objects);
   rejectReservedRuntimeDefinitions(objects);

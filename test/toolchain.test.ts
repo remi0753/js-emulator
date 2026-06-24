@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { SEG } from '../src/formats/executable.ts';
 import { compileC } from '../src/toolchain/c.ts';
 import { linkExecutable, linkKernelImage } from '../src/toolchain/linker.ts';
 import { preprocess } from '../src/toolchain/preprocess.ts';
-import { SEG } from '../src/v2/kernel/exec.ts';
 import { Kernel } from '../src/v2/kernel/kernel.ts';
 import { Machine } from '../src/vm/custom32/machine.ts';
 

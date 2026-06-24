@@ -1,9 +1,4 @@
-// Kernel ABI and layout constants (v2).
-
-import { SYSCALL_INT } from '../../isa.ts';
-import { PORT } from '../../vm/custom32/platform.ts';
-
-export { PORT, SYSCALL_INT };
+// Stable userspace/kernel ABI shared by the TypeScript and guest kernels.
 
 // syscall numbers (passed in R0; return value comes back in R0).
 // Args are in R1, R2, R3. Invoked with `INT 0x80`.
@@ -35,11 +30,4 @@ export const O = {
   RDWR: 0x002,
   CREATE: 0x200,
   TRUNC: 0x400,
-} as const;
-
-// Per-process user virtual address space layout.
-export const LAYOUT = {
-  USER_TEXT: 0x1000, // program image is loaded here (page 0 left unmapped = null guard)
-  USER_STACK_TOP: 0x10000, // stack grows down from here
-  USER_STACK_PAGES: 4,
 } as const;

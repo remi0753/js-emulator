@@ -11,8 +11,8 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 import { assemble } from '../src/assembler.ts';
-import { LAYOUT } from '../src/v2/kernel/abi.ts';
 import { Kernel } from '../src/v2/kernel/kernel.ts';
+import { LAYOUT } from '../src/v2/layout.ts';
 
 const DISK_IMG = new URL('../disk.img', import.meta.url);
 

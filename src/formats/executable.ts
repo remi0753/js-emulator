@@ -1,9 +1,9 @@
-// Minimal ELF-like executable format for v2.
+// Minimal ELF-like executable format shared by the toolchain and kernels.
 //
 // A program is a header plus one or more segments. Each segment is a chunk of
 // the address space to populate: `fileSize` bytes are copied from the file and
-// the remaining `memSize - fileSize` bytes are zero-filled (BSS). The loader
-// (see kernel.ts) maps each segment into a fresh address space and starts the
+// the remaining `memSize - fileSize` bytes are zero-filled (BSS). A loader maps
+// each segment into a fresh address space and starts the
 // process at `entry` in USER mode.
 //
 // On-disk layout (little-endian):
@@ -15,8 +15,6 @@
 //
 // This is deliberately tiny but real: it serializes to bytes and parses back, so
 // in Phase 4 an executable is simply a file read off the disk.
-
-import { LAYOUT } from './abi.ts';
 
 export const EXE_MAGIC = 0x3158454a; // "JEX1" (little-endian)
 
@@ -99,7 +97,7 @@ export function parseExecutable(bytes: Uint8Array): Executable {
 // Wrap a flat assembled image (text + data combined) as a single RWX segment
 // loaded at the standard user text address. This is the bridge from the simple
 // `assemble()` output to the executable format used by the loader.
-export function flatExecutable(image: Uint8Array, vaddr = LAYOUT.USER_TEXT): Executable {
+export function flatExecutable(image: Uint8Array, vaddr: number): Executable {
   return {
     entry: vaddr,
     segments: [{ vaddr, data: image, memSize: image.length, flags: SEG.R | SEG.W | SEG.X }],

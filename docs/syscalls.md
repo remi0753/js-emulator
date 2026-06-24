@@ -35,7 +35,7 @@ INT  0x80       ; trap into the kernel; R0 holds the return value afterwards
 
 ## v2 calls
 
-These are the numbers defined in [`src/v2/kernel/abi.ts`](../src/v2/kernel/abi.ts).
+These are the numbers defined in [`src/abi.ts`](../src/abi.ts).
 Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 (`copyin`/`copyout`), so a bad pointer returns `-1` instead of crashing.
 
@@ -61,7 +61,7 @@ for writing. `open` flags (`O.*` in abi.ts): `RDONLY=0`, `WRONLY=1`, `RDWR=2`,
 
 ### Files & descriptors (Phase 4)
 
-- The kernel mounts an xv6-style filesystem on the block disk (`src/v2/kernel/fs.ts`).
+- The kernel mounts an xv6-style filesystem on the block disk (`src/storage/fs.ts`).
   `open` resolves an absolute path to an inode (creating the file with `O.CREATE`),
   and installs an entry in the per-process fd table; `read`/`write` advance the
   open file's offset.
@@ -102,7 +102,7 @@ for writing. `open` flags (`O.*` in abi.ts): `RDONLY=0`, `WRONLY=1`, `RDWR=2`,
   every mapped frame). Both processes resume just after the `INT`; they differ
   only in `R0`. Copy-on-write is a later optimization (Phase 6).
 - `EXEC` loads an installed program — an ELF-like executable (see
-  [v2.md](v2.md#executable-format) and `src/v2/kernel/exec.ts`) — into a fresh
+  [v2.md](v2.md#executable-format) and `src/formats/executable.ts`) — into a fresh
   address space, frees the old one, and restarts at the entry point. On success it
   does not return (the new image runs); on failure it returns `-1` to the caller.
 - `WAIT` reaps one zombie child, returning its pid and writing its exit code to

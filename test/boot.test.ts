@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-
-import { bootImage, buildDiskImage } from '../src/v2/boot.ts';
 import {
   BOOT_MAGIC,
   BOOT_SIGNATURE,
   decodeBootBlock,
   encodeBootBlock,
   makeBootBlock,
-} from '../src/v2/kernel/bootblock.ts';
+} from '../src/formats/bootblock.ts';
+import { bootImage, buildDiskImage } from '../src/v2/boot.ts';
 import { Kernel } from '../src/v2/kernel/kernel.ts';
 
 // Phase 9: a boot path and disk-image contract. One call builds a self-describing

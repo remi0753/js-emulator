@@ -7,8 +7,8 @@
 // Run: node demo/v2-preempt.ts
 
 import { assemble } from '../src/assembler.ts';
-import { LAYOUT } from '../src/v2/kernel/abi.ts';
 import { Kernel } from '../src/v2/kernel/kernel.ts';
+import { LAYOUT } from '../src/v2/layout.ts';
 
 // Print `ch` three times, burning CPU between writes so the quantum expires.
 function printer(ch: string): Uint8Array {

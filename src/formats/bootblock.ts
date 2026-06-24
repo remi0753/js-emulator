@@ -1,4 +1,4 @@
-// Boot block / disk manifest (v2, Phase 9).
+// Boot block / disk manifest shared by image builders and kernels.
 //
 // The disk-image contract. Sector 0 (the "boot block", which the filesystem
 // already reserves and never touches) carries a small manifest describing how to
@@ -16,7 +16,7 @@
 // guest kernel exists (model B, Phase 11) the boot ROM will load those blocks
 // into physical memory and jump to the kernel's entry in KERNEL mode.
 
-import { BSIZE } from './disk.ts';
+import { BLOCK_SIZE } from '../storage/block.ts';
 
 export const BOOT_MAGIC = 0x544f4f42; // 'BOOT' little-endian
 export const BOOT_VERSION = 1;
@@ -52,7 +52,7 @@ export function encodeBootBlock(bb: BootBlock): Uint8Array {
   const path = bb.initPath;
   if (path.length > INITPATH_MAX) throw new Error(`boot: initPath too long: ${path}`);
 
-  const buf = new Uint8Array(BSIZE);
+  const buf = new Uint8Array(BLOCK_SIZE);
   const dv = new DataView(buf.buffer);
   dv.setUint32(0, bb.magic, true);
   dv.setUint32(4, bb.version, true);
@@ -61,7 +61,7 @@ export function encodeBootBlock(bb: BootBlock): Uint8Array {
   dv.setUint32(16, bb.kernelBlocks, true);
   dv.setUint32(20, path.length, true);
   for (let i = 0; i < path.length; i++) buf[24 + i] = path.charCodeAt(i) & 0xff;
-  dv.setUint16(BSIZE - 2, bb.signature, true);
+  dv.setUint16(BLOCK_SIZE - 2, bb.signature, true);
   return buf;
 }
 
@@ -75,7 +75,7 @@ export function decodeBootBlock(buf: Uint8Array): BootBlock {
   return {
     magic: dv.getUint32(0, true),
     version: dv.getUint32(4, true),
-    signature: dv.getUint16(BSIZE - 2, true),
+    signature: dv.getUint16(BLOCK_SIZE - 2, true),
     fsBlock: dv.getUint32(8, true),
     kernelStart: dv.getUint32(12, true),
     kernelBlocks: dv.getUint32(16, true),

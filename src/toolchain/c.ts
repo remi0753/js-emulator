@@ -1,4 +1,6 @@
-import { PORT, SYS, SYSCALL_INT } from '../v2/kernel/abi.ts';
+import { SYS } from '../abi.ts';
+import { SYSCALL_INT } from '../isa.ts';
+import { PORT } from '../vm/custom32/platform.ts';
 
 export interface CompileOptions {
   start?: 'user' | 'kernel' | 'none';

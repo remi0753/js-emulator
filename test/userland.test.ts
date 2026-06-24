@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { assemble } from '../src/assembler.ts';
-import { LAYOUT } from '../src/v2/kernel/abi.ts';
 import { Kernel } from '../src/v2/kernel/kernel.ts';
+import { LAYOUT } from '../src/v2/layout.ts';
 import { installUserland } from '../src/v2/userland/programs.ts';
 
 function bytes(s: string): Uint8Array {

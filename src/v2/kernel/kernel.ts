@@ -4,18 +4,32 @@
 // scheduler, syscall dispatch, and device drivers. User programs run as guest
 // bytecode in USER mode; they enter the kernel only via trap / fault / IRQ.
 
+import { FD, O, SYS } from '../../abi.ts';
+import {
+  BOOT_MAGIC,
+  BOOT_SIGNATURE,
+  BOOT_VERSION,
+  decodeBootBlock,
+} from '../../formats/bootblock.ts';
+import {
+  type Executable,
+  encodeExecutable,
+  flatExecutable,
+  parseExecutable,
+  SEG,
+} from '../../formats/executable.ts';
+import { SYSCALL_INT } from '../../isa.ts';
+import { Fs, T_DIR } from '../../storage/fs.ts';
+import { PortBlockDevice } from '../../storage/port-block-device.ts';
 import { type CPU, type CpuState, MODE, type RunResult } from '../../vm/custom32/cpu.ts';
 import type { Console } from '../../vm/custom32/devices/console.ts';
 import type { BlockDisk } from '../../vm/custom32/devices/disk.ts';
 import type { Keyboard } from '../../vm/custom32/devices/keyboard.ts';
 import { Machine } from '../../vm/custom32/machine.ts';
 import { PAGE_SIZE, type PhysicalMemory } from '../../vm/custom32/memory.ts';
+import { PORT } from '../../vm/custom32/platform.ts';
 import type { PortBus } from '../../vm/custom32/ports.ts';
-import { FD, LAYOUT, O, PORT, SYS, SYSCALL_INT } from './abi.ts';
-import { BOOT_MAGIC, BOOT_SIGNATURE, BOOT_VERSION, decodeBootBlock } from './bootblock.ts';
-import { BlockDriver } from './disk.ts';
-import { type Executable, encodeExecutable, flatExecutable, parseExecutable, SEG } from './exec.ts';
-import { Fs, T_DIR } from './fs.ts';
+import { LAYOUT } from '../layout.ts';
 import { Pmm } from './pmm.ts';
 import type { OpenFile, PendingRead, Pipe, Process } from './process.ts';
 import { BadAddress, PTE, Vmm } from './vmm.ts';
@@ -43,7 +57,7 @@ export class Kernel {
   readonly console: Console;
   readonly keyboard: Keyboard;
   readonly disk: BlockDisk;
-  readonly bio: BlockDriver;
+  readonly bio: PortBlockDevice;
   readonly fs: Fs;
 
   readonly processes = new Map<number, Process>();
@@ -81,7 +95,7 @@ export class Kernel {
     this.keyboard.onInput = () => this.serviceInputReaders();
 
     // Block disk + filesystem. Mount a supplied image, or format a fresh disk.
-    this.bio = new BlockDriver(this.ports);
+    this.bio = new PortBlockDevice(this.ports);
     this.fs = new Fs(this.bio);
     if (opts.diskImage) this.fs.mount();
     else this.fs.mkfs();
@@ -92,7 +106,7 @@ export class Kernel {
   // Write an executable to the filesystem at `path` (creating parent dirs) so it
   // can later be exec()'d. A flat assembled image is wrapped as one segment.
   install(path: string, prog: Executable | Uint8Array): void {
-    const exe = prog instanceof Uint8Array ? flatExecutable(prog) : prog;
+    const exe = prog instanceof Uint8Array ? flatExecutable(prog, LAYOUT.USER_TEXT) : prog;
     this.fs.writeFile(path, encodeExecutable(exe));
   }
 
@@ -102,7 +116,7 @@ export class Kernel {
   // Accepts a flat assembled image (wrapped as a single segment) or a full
   // Executable. `argv` is delivered to the program (argc in R0, argv ptr in R1).
   spawn(name: string, prog: Uint8Array | Executable, argv: string[] = []): Process {
-    const exe = prog instanceof Uint8Array ? flatExecutable(prog) : prog;
+    const exe = prog instanceof Uint8Array ? flatExecutable(prog, LAYOUT.USER_TEXT) : prog;
     const { pd, entry } = this.loadExecutable(exe);
     const { sp, argvPtr, argc } = this.setupUserStack(pd, argv);
 

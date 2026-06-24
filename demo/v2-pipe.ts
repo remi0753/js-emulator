@@ -8,8 +8,8 @@
 // Run: node demo/v2-pipe.ts
 
 import { assemble } from '../src/assembler.ts';
-import { LAYOUT } from '../src/v2/kernel/abi.ts';
 import { Kernel } from '../src/v2/kernel/kernel.ts';
+import { LAYOUT } from '../src/v2/layout.ts';
 
 const prog = assemble(
   `
