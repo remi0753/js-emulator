@@ -114,6 +114,23 @@ test('function pointers: dispatch through a table and a variable', () => {
   assert.equal(runFull(source), 60);
 });
 
+test('function pointers: a typedef function-pointer array dispatches (standard C)', () => {
+  // The same shape the kernel's syscall_table uses: a typedef'd function-pointer
+  // array, populated with function names and called through an index.
+  const source = `
+    typedef int (*op)(int a, int b);
+    int add(int a, int b) { return a + b; }
+    int mul(int a, int b) { return a * b; }
+    op ops[2];
+    int main(int argc, char **argv) {
+      ops[0] = add;
+      ops[1] = mul;
+      return ops[0](4, 5) + ops[1](6, 7); // 9 + 42 = 51
+    }
+  `;
+  assert.equal(runFull(source), 51);
+});
+
 test('Phase 10: pointer arithmetic scales by element size', () => {
   assert.equal(runExit('int xs[2]; xs[0]=11; xs[1]=22; int *p; p=xs; return *(p+1);'), 22);
   assert.equal(runExit('char b[3]; b[0]=65; b[1]=66; b[2]=67; char *p; p=b; return *(p+2);'), 67);

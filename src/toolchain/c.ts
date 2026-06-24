@@ -76,7 +76,8 @@ export type CType =
   | { kind: 'char' }
   | { kind: 'ptr'; to: CType }
   | { kind: 'array'; of: CType; len: number }
-  | { kind: 'struct'; name: string; fields: Field[]; size: number };
+  | { kind: 'struct'; name: string; fields: Field[]; size: number }
+  | { kind: 'funcptr'; returnType: CType; params: Param[] };
 
 interface Field {
   name: string;
@@ -320,6 +321,7 @@ class Lexer {
 class Parser {
   private i = 0;
   readonly structs = new Map<string, CType>();
+  private readonly typedefs = new Map<string, CType>();
   private readonly tokens: Token[];
 
   constructor(tokens: Token[]) {
@@ -331,6 +333,10 @@ class Parser {
     const prototypes: FunctionSig[] = [];
     const functions: FuncDecl[] = [];
     while (!this.at('eof')) {
+      if (this.peekText() === 'typedef') {
+        this.parseTypedef();
+        continue;
+      }
       // A bare `struct name { ... };` is a type definition, not a declaration.
       // Look ahead without consuming so `struct name var;` still parses as a
       // struct-typed declaration below.
@@ -364,6 +370,28 @@ class Parser {
       for (const d of decls) globals.push({ kind: 'global', extern: isExtern, ...d });
     }
     return { structs: this.structs, globals, prototypes, functions };
+  }
+
+  // Supports a function-pointer typedef -- `typedef RET (*NAME)(params);` -- and
+  // a simple alias -- `typedef BASE NAME;` (with optional `*`). Function-pointer
+  // typedefs let a dispatch table be declared in standard C that both this
+  // compiler and an external C parser (editor IntelliSense) accept.
+  private parseTypedef(): void {
+    this.expectText('typedef');
+    const base = this.parseType();
+    if (this.matchText('(')) {
+      this.expectText('*');
+      const name = this.expect('id').text;
+      this.expectText(')');
+      this.expectText('(');
+      const params = this.parseParams();
+      this.expectText(';');
+      this.typedefs.set(name, { kind: 'funcptr', returnType: base, params });
+      return;
+    }
+    const d = this.parseDeclarator(base);
+    this.expectText(';');
+    this.typedefs.set(d.name, d.type);
   }
 
   private parseStructDefinition(): CType {
@@ -402,6 +430,11 @@ class Parser {
       const ty = this.structs.get(name);
       if (!ty) throw new CompileError(`unknown struct '${name}'`, loc(this.previous()));
       return ty;
+    }
+    const named = this.peek();
+    if (named.kind === 'id' && this.typedefs.has(named.text)) {
+      this.advance();
+      return this.typedefs.get(named.text)!;
     }
     throw new CompileError(`expected type, got '${this.peek().text}'`, loc(this.peek()));
   }
@@ -647,7 +680,13 @@ class Parser {
 
   private isTypeStart(): boolean {
     const text = this.peekText();
-    return text === 'int' || text === 'char' || text === 'void' || text === 'struct';
+    return (
+      text === 'int' ||
+      text === 'char' ||
+      text === 'void' ||
+      text === 'struct' ||
+      this.typedefs.has(text)
+    );
   }
 
   private expectNumber(): number {
@@ -763,6 +802,8 @@ function typeSize(type: CType): number {
       return typeSize(type.of) * type.len;
     case 'struct':
       return type.size;
+    case 'funcptr':
+      return 4;
   }
 }
 

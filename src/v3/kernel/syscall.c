@@ -5,7 +5,7 @@
 
 int g_noret;        // set when a handler set R0 itself (don't overwrite it)
 int g_pending_free; // address space to free after switching contexts, or 0
-int syscall_table[CFG_NSYS]; // syscall number -> handler address (0 = unimplemented)
+syscall_fn syscall_table[CFG_NSYS]; // syscall number -> handler (0 = unimplemented)
 
 int sys_write(int caller, int fd, int buf, int len) {
   char *p;

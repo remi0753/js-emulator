@@ -138,7 +138,10 @@ int do_exec(int idx, int upath, int uargv);
 // --- syscall.c ---
 extern int g_noret;        // set when a handler set R0 itself (don't overwrite it)
 extern int g_pending_free; // address space to free after switching, or 0
-extern int syscall_table[CFG_NSYS]; // num -> handler address (0 = unimplemented)
+// A syscall handler: h(caller, a1, a2, a3) -> value for R0. The table maps a
+// syscall number to a handler (a null/zero slot is unimplemented).
+typedef int (*syscall_fn)(int caller, int a1, int a2, int a3);
+extern syscall_fn syscall_table[CFG_NSYS];
 void syscall_init(void);
 int sys_write(int caller, int fd, int buf, int len);
 int sys_read(int caller, int fd, int buf, int len);
