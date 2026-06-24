@@ -80,6 +80,58 @@ int user_access_ok(int proc, int addr, int len, int write) {
   return 1;
 }
 
+// Copy `len` bytes from user address `usrc` (in proc's address space) into the
+// kernel buffer at `kdst`. The caller's page directory is live, so user memory
+// is reachable directly once the range is validated.
+int copyin(int proc, int kdst, int usrc, int len) {
+  int i;
+  if (user_access_ok(proc, usrc, len, 0) == 0) {
+    return -1;
+  }
+  i = 0;
+  while (i < len) {
+    write8_at(kdst + i, read8_at(usrc + i));
+    i = i + 1;
+  }
+  return 0;
+}
+
+// Copy `len` bytes from the kernel buffer at `ksrc` out to user address `udst`.
+int copyout(int proc, int udst, int ksrc, int len) {
+  int i;
+  if (user_access_ok(proc, udst, len, 1) == 0) {
+    return -1;
+  }
+  i = 0;
+  while (i < len) {
+    write8_at(udst + i, read8_at(ksrc + i));
+    i = i + 1;
+  }
+  return 0;
+}
+
+// Copy a NUL-terminated string in from user memory, validating each byte. Stores
+// at most `max` bytes (including the terminator) at `kdst`. Returns the string
+// length (excluding the terminator) on success, or -1 on a bad address or if no
+// terminator is found within `max`.
+int copyinstr(int proc, int kdst, int usrc, int max) {
+  int i;
+  int c;
+  i = 0;
+  while (i < max) {
+    if (user_access_ok(proc, usrc + i, 1, 0) == 0) {
+      return -1;
+    }
+    c = read8_at(usrc + i);
+    write8_at(kdst + i, c);
+    if (c == 0) {
+      return i;
+    }
+    i = i + 1;
+  }
+  return -1;
+}
+
 // --- physical frame allocator: a free list threaded through the free frames ---
 
 void free_frame(int frame) {

@@ -40,12 +40,11 @@ int sys_write(int caller, int fd, int buf, int len) {
     if (pipe_count[pp] == CFG_PIPESZ) {
       g_blocked = 1;
       proc_pc[caller] = proc_pc[caller] - CFG_SYSCALL_INSTR_SIZE;
-      proc_state[caller] = CFG_ST_PIPEWAIT;
-      switch_to_next();
+      sleep(caller, &pipe_used[pp]); // wait for a reader to make space
       return 0;
     }
     n = pipe_write_bytes(pp, buf, len);
-    wake_pipe_waiters();
+    wakeup(&pipe_used[pp]); // data available for a blocked reader
     return n;
   }
   return -1;
@@ -82,8 +81,7 @@ int sys_read(int caller, int fd, int buf, int len) {
       }
       g_blocked = 1;
       proc_pc[caller] = proc_pc[caller] - CFG_SYSCALL_INSTR_SIZE;
-      proc_state[caller] = CFG_ST_PIPEWAIT;
-      switch_to_next();
+      sleep(caller, &kbd_chan); // wait for the keyboard IRQ to deliver input
       return 0;
     }
     write8_at(buf, ch);
@@ -100,7 +98,7 @@ int sys_read(int caller, int fd, int buf, int len) {
     pp = proc_fd_pipe[base + fd];
     if (pipe_count[pp] > 0) {
       n = pipe_read_bytes(pp, buf, len);
-      wake_pipe_waiters();
+      wakeup(&pipe_used[pp]); // space freed for a blocked writer
       return n;
     }
     if (pipe_nwrite[pp] == 0) {
@@ -109,8 +107,7 @@ int sys_read(int caller, int fd, int buf, int len) {
     // Block: rewind to re-execute INT 0x80 when a writer wakes us.
     g_blocked = 1;
     proc_pc[caller] = proc_pc[caller] - CFG_SYSCALL_INSTR_SIZE;
-    proc_state[caller] = CFG_ST_PIPEWAIT;
-    switch_to_next();
+    sleep(caller, &pipe_used[pp]);
     return 0;
   }
   return -1;
@@ -150,8 +147,7 @@ int sys_close(int caller, int fd) {
   if (proc_fd_type[caller * CFG_NFD + fd] == CFG_FT_NONE) {
     return -1;
   }
-  fd_close(caller, fd);
-  wake_pipe_waiters();
+  fd_close(caller, fd); // wakes blocked pipe peers when releasing a pipe end
   return 0;
 }
 
@@ -160,6 +156,7 @@ int sys_pipe(int caller, int ufds) {
   int rfd;
   int wfd;
   int base;
+  int fds[2];
   if (user_access_ok(caller, ufds, 8, 1) == 0) {
     return -1;
   }
@@ -185,8 +182,9 @@ int sys_pipe(int caller, int ufds) {
   proc_fd_type[base + wfd] = CFG_FT_PIPE;
   proc_fd_pipe[base + wfd] = pp;
   proc_fd_pend[base + wfd] = 1;
-  write32_at(ufds, rfd);
-  write32_at(ufds + 4, wfd);
+  fds[0] = rfd;
+  fds[1] = wfd;
+  copyout(caller, ufds, fds, 8); // already validated above; cannot fault here
   return 0;
 }
 

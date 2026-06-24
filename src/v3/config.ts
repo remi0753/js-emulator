@@ -30,13 +30,15 @@ const DINODE_SIZE = 64;
 const IPB = SECTOR_SIZE / DINODE_SIZE;
 const PTE_KERNEL = 3;
 const PTE_USER = 7;
-const PIPEWAIT = 4;
 
 const PROCESS_STATE = {
   unused: 0,
   runnable: 1,
   zombie: 2,
-  blocked: 3,
+  // Blocked on a wait channel; woken by wakeup(chan). One state backs every
+  // kind of blocking (wait/pipe/keyboard) -- the sleeper re-checks its
+  // condition after waking.
+  sleeping: 3,
 } as const;
 
 const FILE_TYPE = {
@@ -126,8 +128,7 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_ST_UNUSED: PROCESS_STATE.unused,
   CFG_ST_RUNNABLE: PROCESS_STATE.runnable,
   CFG_ST_ZOMBIE: PROCESS_STATE.zombie,
-  CFG_ST_BLOCKED: PROCESS_STATE.blocked,
-  CFG_ST_PIPEWAIT: PIPEWAIT,
+  CFG_ST_SLEEPING: PROCESS_STATE.sleeping,
   CFG_FT_NONE: FILE_TYPE.none,
   CFG_FT_CONS: FILE_TYPE.console,
   CFG_FT_KBD: FILE_TYPE.keyboard,

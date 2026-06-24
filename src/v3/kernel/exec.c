@@ -11,25 +11,10 @@ int g_argc;                   // argument count staged for the next spawn
 
 // Copy a NUL-terminated path from user memory into the kpath kernel buffer.
 int copy_path_in(int proc, int upath) {
-  int i;
-  int c;
-  i = 0;
-  while (i < CFG_INITPATH_LEN) {
-    if (user_access_ok(proc, upath + i, 1, 0) == 0) {
-      return -1;
-    }
-    c = read8_at(upath + i);
-    if (c == 0) {
-      kpath[i] = 0;
-      return 0;
-    }
-    if (i == CFG_INITPATH_LEN - 1) {
-      return -1;
-    }
-    kpath[i] = c;
-    i = i + 1;
+  if (copyinstr(proc, kpath, upath, CFG_INITPATH_LEN) < 0) {
+    return -1;
   }
-  return -1;
+  return 0;
 }
 
 // Stage a single argument (used at boot: argv = { path }).
@@ -53,49 +38,31 @@ int build_args_from_user(int proc, int uargv) {
   int argc;
   int total;
   int ptr;
-  int j;
-  int c;
+  int len;
   argc = 0;
   total = 0;
   if (uargv != 0) {
     while (argc < CFG_MAXARG) {
-      if (user_access_ok(proc, uargv + argc * 4, 4, 0) == 0) {
+      if (copyin(proc, &ptr, uargv + argc * 4, 4) < 0) {
         return -1;
       }
-      ptr = read32_at(uargv + argc * 4);
       if (ptr == 0) {
         break;
       }
-      if (total >= CFG_ARGBUF_LEN) {
-        return -1;
-      }
       arg_off[argc] = total;
-      j = 0;
-      if (user_access_ok(proc, ptr, 1, 0) == 0) {
+      len = copyinstr(proc, argbuf + total, ptr, CFG_ARGBUF_LEN - total);
+      if (len < 0) {
         return -1;
       }
-      c = read8_at(ptr);
-      while (c != 0) {
-        if (total >= CFG_ARGBUF_LEN - 1) {
-          return -1;
-        }
-        argbuf[total] = c;
-        total = total + 1;
-        j = j + 1;
-        if (user_access_ok(proc, ptr + j, 1, 0) == 0) {
-          return -1;
-        }
-        c = read8_at(ptr + j);
-      }
-      argbuf[total] = 0;
-      total = total + 1;
+      total = total + len + 1; // advance past the copied string and its NUL
       argc = argc + 1;
     }
+    // Reject argv arrays longer than MAXARG (the slot after the last must be 0).
     if (argc == CFG_MAXARG) {
-      if (user_access_ok(proc, uargv + argc * 4, 4, 0) == 0) {
+      if (copyin(proc, &ptr, uargv + argc * 4, 4) < 0) {
         return -1;
       }
-      if (read32_at(uargv + argc * 4) != 0) {
+      if (ptr != 0) {
         return -1;
       }
     }

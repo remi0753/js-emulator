@@ -90,7 +90,7 @@ int kmain(void) {
     "PUSH R5\n"
     "PUSH R6\n"
     "PUSH R7\n"
-    "CALL wake_pipe_waiters\n"
+    "CALL on_keyboard_irq\n"
     "POP R7\n"
     "POP R6\n"
     "POP R5\n"

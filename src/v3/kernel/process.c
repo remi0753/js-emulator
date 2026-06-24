@@ -15,6 +15,7 @@ int proc_pc[CFG_MAX_PROC];
 int proc_sp[CFG_MAX_PROC];
 int proc_flags[CFG_MAX_PROC];
 int proc_mode[CFG_MAX_PROC];
+int proc_chan[CFG_MAX_PROC]; // wait channel while CFG_ST_SLEEPING
 
 int alloc_proc(void) {
   int i;
@@ -82,15 +83,11 @@ int do_fork(int parent) {
 int do_exit(int idx, int code) {
   int p;
   proc_exit_code[idx] = code;
-  clear_fds(idx);
-  wake_pipe_waiters(); // closing write ends may signal EOF to readers
+  clear_fds(idx); // releasing pipe ends wakes blocked peers (see fd_close)
   proc_state[idx] = CFG_ST_ZOMBIE;
   p = proc_parent[idx];
-  if (p >= 0 && proc_state[p] == CFG_ST_BLOCKED) {
-    proc_regs[p * 8 + 0] = idx;
-    proc_state[p] = CFG_ST_RUNNABLE;
-    proc_state[idx] = CFG_ST_UNUSED;
-    return proc_ptbr[idx];
+  if (p >= 0) {
+    wakeup(&proc_state[p]); // a parent sleeping in wait() re-checks for zombies
   }
   return 0;
 }
@@ -103,7 +100,7 @@ int do_wait(int parent) {
     if (proc_parent[i] == parent && proc_state[i] == CFG_ST_ZOMBIE) {
       proc_regs[parent * 8 + 0] = i;
       proc_state[i] = CFG_ST_UNUSED;
-      return proc_ptbr[i];
+      return proc_ptbr[i]; // reaped child's address space, freed by the caller
     }
     i = i + 1;
   }
@@ -119,7 +116,8 @@ int do_wait(int parent) {
     proc_regs[parent * 8 + 0] = -1;
     return 0;
   }
-  proc_state[parent] = CFG_ST_BLOCKED;
-  switch_to_next();
+  // Block until a child exits, then re-run the syscall to reap it.
+  proc_pc[parent] = proc_pc[parent] - CFG_SYSCALL_INSTR_SIZE;
+  sleep(parent, &proc_state[parent]);
   return 0;
 }

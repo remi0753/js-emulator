@@ -49,9 +49,8 @@
 #define CFG_PTE_USER 7
 #define CFG_ROOTINO 1
 #define CFG_RTC_DATA 112
-#define CFG_ST_BLOCKED 3
-#define CFG_ST_PIPEWAIT 4
 #define CFG_ST_RUNNABLE 1
+#define CFG_ST_SLEEPING 3
 #define CFG_ST_UNUSED 0
 #define CFG_ST_ZOMBIE 2
 #define CFG_SYS_CLOSE 8

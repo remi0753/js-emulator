@@ -53,6 +53,28 @@ int schedule(void) {
   return -1;
 }
 
+// Block process idx on a wait channel and switch away. The caller has already
+// arranged for its condition to be re-checked when it wakes (typically by
+// rewinding pc so the syscall re-runs).
+void sleep(int idx, int chan) {
+  proc_chan[idx] = chan;
+  proc_state[idx] = CFG_ST_SLEEPING;
+  switch_to_next();
+}
+
+// Make every process sleeping on `chan` runnable. Spurious wakeups are harmless:
+// a woken process re-checks its condition and sleeps again if needed.
+void wakeup(int chan) {
+  int i;
+  i = 0;
+  while (i < nproc) {
+    if (proc_state[i] == CFG_ST_SLEEPING && proc_chan[i] == chan) {
+      proc_state[i] = CFG_ST_RUNNABLE;
+    }
+    i = i + 1;
+  }
+}
+
 void switch_to_next(void) {
   int next;
   next = schedule();
@@ -62,7 +84,7 @@ void switch_to_next(void) {
     i = 0;
     blocked = 0;
     while (i < nproc) {
-      if (proc_state[i] == CFG_ST_BLOCKED || proc_state[i] == CFG_ST_PIPEWAIT) {
+      if (proc_state[i] == CFG_ST_SLEEPING) {
         blocked = 1;
       }
       i = i + 1;

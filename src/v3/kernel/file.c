@@ -49,6 +49,9 @@ void fd_close(int idx, int fd) {
     } else {
       pipe_nread[pp] = pipe_nread[pp] - 1;
     }
+    // A closed end may signal EOF (no writers) or free space (no readers) to a
+    // blocked peer; wake it before the pipe might be reclaimed.
+    wakeup(&pipe_used[pp]);
     if (pipe_nread[pp] == 0 && pipe_nwrite[pp] == 0) {
       pipe_used[pp] = 0;
     }

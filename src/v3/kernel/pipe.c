@@ -62,16 +62,3 @@ int pipe_read_bytes(int pp, int buf, int len) {
   }
   return n;
 }
-
-// Wake every process blocked on a pipe so it can re-check (data arrived, or a
-// write end closed, signaling EOF).
-void wake_pipe_waiters(void) {
-  int i;
-  i = 0;
-  while (i < nproc) {
-    if (proc_state[i] == CFG_ST_PIPEWAIT) {
-      proc_state[i] = CFG_ST_RUNNABLE;
-    }
-    i = i + 1;
-  }
-}

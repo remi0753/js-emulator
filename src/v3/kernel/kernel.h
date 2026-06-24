@@ -20,6 +20,12 @@ void load_ctx(int i);
 int schedule(void);
 void switch_to_next(void);
 void on_timer(void);
+// Wait-channel primitive: sleep(idx, chan) blocks process idx on `chan` and
+// switches away; wakeup(chan) makes every process sleeping on `chan` runnable.
+// Channels are object addresses (e.g. &pipe_used[pp], &proc_state[parent]), so
+// distinct objects never collide.
+void sleep(int idx, int chan);
+void wakeup(int chan);
 
 // --- process.c ---
 extern int nproc;
@@ -32,6 +38,7 @@ extern int proc_pc[CFG_MAX_PROC];
 extern int proc_sp[CFG_MAX_PROC];
 extern int proc_flags[CFG_MAX_PROC];
 extern int proc_mode[CFG_MAX_PROC];
+extern int proc_chan[CFG_MAX_PROC]; // wait channel while CFG_ST_SLEEPING
 int alloc_proc(void);
 int fork_process(int parent);
 int setup_process_boot(int path);
@@ -50,6 +57,14 @@ int read8_at(int addr);
 void write32_at(int addr, int v);
 void write8_at(int addr, int v);
 int user_access_ok(int proc, int addr, int len, int write);
+// copyin/copyout are the normal path for moving bytes across the user/kernel
+// boundary: they validate the user range in `proc`'s address space first, then
+// copy. They return 0 on success and a negative errno on a bad address.
+int copyin(int proc, int kdst, int usrc, int len);
+int copyout(int proc, int udst, int ksrc, int len);
+// Copy a NUL-terminated string in from user memory (bounded by `max`, including
+// the terminator). Returns the string length on success, or a negative errno.
+int copyinstr(int proc, int kdst, int usrc, int max);
 void free_frame(int frame);
 int alloc_frame(void);
 int free_frame_count(void);
@@ -105,7 +120,6 @@ extern char pipe_buf[CFG_PIPE_BUF_LEN]; // NPIPE * PIPESZ
 int alloc_pipe(void);
 int pipe_write_bytes(int pp, int buf, int len);
 int pipe_read_bytes(int pp, int buf, int len);
-void wake_pipe_waiters(void);
 
 // --- exec.c ---
 extern char kpath[CFG_INITPATH_LEN]; // a path copied in from user memory
@@ -158,8 +172,10 @@ int kmain(void);
 void serial_putc(int ch);    // drivers/console.c
 void serial_write(char *s);
 void panic(char *msg);
-int kbd_getc(void);          // drivers/keyboard.c
+extern int kbd_chan;         // drivers/keyboard.c -- wait channel for blocked readers
+int kbd_getc(void);
 int kbd_eof(void);
+void on_keyboard_irq(void);  // keyboard IRQ handler body (wakes blocked readers)
 void disk_read_block(int blockno, int dst); // drivers/disk.c
 int rtc_time(void);          // drivers/rtc.c
 void power_off(void);        // drivers/power.c
