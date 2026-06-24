@@ -548,16 +548,31 @@ For every milestone, use the same completion workflow:
   directory, memory, time, and terminal operations, with specific errno values
   observable on every failure path.
 
-- **Phase 19** ⬜ implement permissions, credentials, and file metadata.
+- **Phase 19** ✅ implement permissions, credentials, and file metadata.
 
-  Add uid/gid, mode bits, ownership, timestamps, links, `stat`, `fstat`,
-  `lstat`, `chmod`, `chown` if multi-user support is desired, `mkdir`, `rmdir`,
-  `unlink`, `link`, `rename`, `symlink`/`readlink`, `lseek`, and mount flags.
-  The first pass can be single-user but should preserve Linux-shaped metadata so
-  tools do not need special cases.
+  The on-disk inode format now persists Linux-shaped mode, uid/gid, link count,
+  size, and atime/mtime/ctime fields alongside direct/indirect block pointers.
+  The superblock records filesystem version 2 and the inode size so older images
+  fail explicitly instead of being interpreted with the new layout.
+  The guest filesystem is writable through its PIO disk driver and buffer cache:
+  it allocates/frees blocks and inodes, writes/truncates files, updates
+  directories, and preserves mutations in `disk.img`. The root filesystem tracks
+  mount flags and is mounted read/write; write paths consistently reject a
+  read-only mount.
 
-  Done when `ls -l`-style metadata, directory creation/removal, renames, links,
-  and path traversal behave predictably across reboots.
+  Added single-user root credentials to each process (inherited by `fork`) with
+  permission checks and `getuid`/`getgid`. The Linux-shaped syscall/libc surface
+  includes `stat`, `fstat`, `lstat`, `chmod`, `chown`, `mkdir`, `rmdir`,
+  `unlink`, `link`, `rename`, `symlink`, `readlink`, and `lseek`. Hard links
+  share inode/link state, unlinked-but-open files survive until final close,
+  relative and absolute symlinks are traversed with a bounded loop depth, and
+  directory renames maintain `..` and parent link counts. `/bin/ls -l` displays
+  type/mode, link count, ownership, size, and symlink targets.
+
+  Coverage is in `test/guest-file-metadata.test.ts`, including a second boot from
+  the same mutated disk image. Done: metadata, directory creation/removal,
+  renames, hard/symbolic links, traversal, file offsets, and `ls -l` behavior
+  remain predictable across reboots.
 
 - **Phase 20** ⬜ add a real VFS layer and pseudo filesystems.
 

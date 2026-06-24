@@ -8,27 +8,38 @@
 #define CFG_CLOCK_MONOTONIC 1
 #define CFG_CLOCK_REALTIME 0
 #define CFG_CONSOLE_DATA 1016
-#define CFG_DINODE_SIZE 64
+#define CFG_DINODE_SIZE 80
 #define CFG_DIRSIZ 14
 #define CFG_DISK_DATA 496
 #define CFG_DISK_POS 498
 #define CFG_E2BIG 7
+#define CFG_EACCES 13
 #define CFG_EBADF 9
 #define CFG_ECHILD 10
+#define CFG_EEXIST 17
 #define CFG_EFAULT 14
+#define CFG_EFBIG 27
 #define CFG_EINTR 4
 #define CFG_EINVAL 22
+#define CFG_EISDIR 21
+#define CFG_ELOOP 40
 #define CFG_EMFILE 24
+#define CFG_EMLINK 31
+#define CFG_ENAMETOOLONG 36
 #define CFG_ENFILE 23
 #define CFG_ENODEV 19
 #define CFG_ENOENT 2
 #define CFG_ENOEXEC 8
 #define CFG_ENOMEM 12
+#define CFG_ENOSPC 28
 #define CFG_ENOSYS 38
 #define CFG_ENOTDIR 20
+#define CFG_ENOTEMPTY 39
 #define CFG_ENOTTY 25
 #define CFG_EPERM 1
 #define CFG_EPIPE 32
+#define CFG_EROFS 30
+#define CFG_ESPIPE 29
 #define CFG_ESRCH 3
 #define CFG_EXEC_MAGIC 0x35315850
 #define CFG_F_DUPFD 0
@@ -41,6 +52,7 @@
 #define CFG_FRAME_POOL_BASE 0x100000
 #define CFG_FRAME_POOL_END 0x380000
 #define CFG_FS_MAGIC 0x10203040
+#define CFG_FS_VERSION 2
 #define CFG_FT_CONS 1
 #define CFG_FT_FILE 3
 #define CFG_FT_KBD 2
@@ -51,7 +63,7 @@
 #define CFG_IDT_PRESENT 1
 #define CFG_IDT_USER 2
 #define CFG_INITPATH_LEN 64
-#define CFG_IPB 8
+#define CFG_IPB 6
 #define CFG_KBD_DATA 96
 #define CFG_KBD_STATUS 100
 #define CFG_KBD_VECTOR 33
@@ -64,15 +76,22 @@
 #define CFG_MAX_PROC 8
 #define CFG_MAX_VMAS 16
 #define CFG_MAXARG 16
+#define CFG_MAXFILE 140
 #define CFG_MODE_USER 1
 #define CFG_NBUF 16
 #define CFG_NDIRECT 12
 #define CFG_NFD 16
 #define CFG_NFILE 128
+#define CFG_NINDIRECT 128
 #define CFG_NPIPE 8
 #define CFG_NSIG 32
-#define CFG_NSYS 36
+#define CFG_NSYS 51
+#define CFG_O_ACCMODE 3
+#define CFG_O_CREATE 512
 #define CFG_O_NONBLOCK 2048
+#define CFG_O_RDWR 2
+#define CFG_O_TRUNC 1024
+#define CFG_O_WRONLY 1
 #define CFG_PAGEFAULT_VECTOR 14
 #define CFG_PIPESZ 512
 #define CFG_POWER 1540
@@ -85,6 +104,13 @@
 #define CFG_PTE_USER 7
 #define CFG_ROOTINO 1
 #define CFG_RTC_DATA 112
+#define CFG_S_IFDIR 0x4000
+#define CFG_S_IFLNK 0xa000
+#define CFG_S_IFMT 0xf000
+#define CFG_S_IFREG 0x8000
+#define CFG_SEEK_CUR 1
+#define CFG_SEEK_END 2
+#define CFG_SEEK_SET 0
 #define CFG_SIG_BLOCK 0
 #define CFG_SIG_DFL 0
 #define CFG_SIG_IGN 1
@@ -106,6 +132,8 @@
 #define CFG_ST_UNUSED 0
 #define CFG_ST_ZOMBIE 2
 #define CFG_SYS_BRK 26
+#define CFG_SYS_CHMOD 39
+#define CFG_SYS_CHOWN 40
 #define CFG_SYS_CLOCK_GETTIME 33
 #define CFG_SYS_CLOSE 8
 #define CFG_SYS_DUP 11
@@ -113,12 +141,19 @@
 #define CFG_SYS_EXIT 0
 #define CFG_SYS_FCNTL 30
 #define CFG_SYS_FORK 4
+#define CFG_SYS_FSTAT 37
 #define CFG_SYS_GETDENTS 35
+#define CFG_SYS_GETGID 50
 #define CFG_SYS_GETPID 3
 #define CFG_SYS_GETPPID 24
 #define CFG_SYS_GETTIMEOFDAY 32
+#define CFG_SYS_GETUID 49
 #define CFG_SYS_IOCTL 31
 #define CFG_SYS_KILL 15
+#define CFG_SYS_LINK 44
+#define CFG_SYS_LSEEK 48
+#define CFG_SYS_LSTAT 38
+#define CFG_SYS_MKDIR 41
 #define CFG_SYS_MMAP 27
 #define CFG_SYS_MPROTECT 29
 #define CFG_SYS_MUNMAP 28
@@ -126,16 +161,22 @@
 #define CFG_SYS_OPEN 7
 #define CFG_SYS_PIPE 10
 #define CFG_SYS_READ 9
+#define CFG_SYS_READLINK 47
+#define CFG_SYS_RENAME 45
+#define CFG_SYS_RMDIR 42
 #define CFG_SYS_SETPGID 20
 #define CFG_SYS_SETSID 21
 #define CFG_SYS_SHUTDOWN 14
 #define CFG_SYS_SIGACTION 16
 #define CFG_SYS_SIGPROCMASK 17
 #define CFG_SYS_SIGRETURN 18
+#define CFG_SYS_STAT 36
+#define CFG_SYS_SYMLINK 46
 #define CFG_SYS_TCGETPGRP 23
 #define CFG_SYS_TCSETPGRP 22
 #define CFG_SYS_TIME 13
 #define CFG_SYS_UNAME 34
+#define CFG_SYS_UNLINK 43
 #define CFG_SYS_UPTIME 12
 #define CFG_SYS_WAIT 6
 #define CFG_SYS_WAITPID 19
@@ -145,6 +186,7 @@
 #define CFG_SYSCALL_VECTOR 128
 #define CFG_T_DIR 1
 #define CFG_T_FILE 2
+#define CFG_T_SYMLINK 3
 #define CFG_TICKS_PER_SEC 100
 #define CFG_TIMER_PERIOD 0x1f40
 #define CFG_TIMER_VECTOR 32
@@ -244,6 +286,21 @@ struct dirent {
   int type;
   char name[16];
 };
+struct stat {
+  int dev;
+  int ino;
+  int mode;
+  int nlink;
+  int uid;
+  int gid;
+  int rdev;
+  int size;
+  int blksize;
+  int blocks;
+  int atime;
+  int mtime;
+  int ctime;
+};
 int nanosleep(struct timespec *request, struct timespec *remaining);
 int brk(void *address);
 void *sbrk(int increment);
@@ -254,6 +311,21 @@ int gettimeofday(struct timeval *value, void *timezone);
 int clock_gettime(int clock_id, struct timespec *value);
 int uname(struct utsname *name);
 int getdents(int fd, struct dirent *entries, int count);
+int stat(char *path, struct stat *value);
+int fstat(int fd, struct stat *value);
+int lstat(char *path, struct stat *value);
+int chmod(char *path, int mode);
+int chown(char *path, int uid, int gid);
+int mkdir(char *path, int mode);
+int rmdir(char *path);
+int unlink(char *path);
+int link(char *oldpath, char *newpath);
+int rename(char *oldpath, char *newpath);
+int symlink(char *target, char *linkpath);
+int readlink(char *path, char *buffer, int size);
+int lseek(int fd, int offset, int whence);
+int getuid(void);
+int getgid(void);
 void exit(int code);
 int time(void);
 void shutdown(void);

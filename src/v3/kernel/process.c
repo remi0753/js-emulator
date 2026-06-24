@@ -36,6 +36,8 @@ int setup_process_boot(int path) {
   proc_table[idx].parent = -1;
   proc_table[idx].pgid = idx;
   proc_table[idx].sid = idx;
+  proc_table[idx].uid = 0;
+  proc_table[idx].gid = 0;
   signal_init_proc(idx);
   proc_table[idx].state = CFG_ST_RUNNABLE;
   init_fds(idx);
@@ -65,6 +67,8 @@ int fork_process(int parent) {
   proc_table[idx].ctx.flags = proc_table[parent].ctx.flags;
   proc_table[idx].pgid = proc_table[parent].pgid;
   proc_table[idx].sid = proc_table[parent].sid;
+  proc_table[idx].uid = proc_table[parent].uid;
+  proc_table[idx].gid = proc_table[parent].gid;
   signal_fork_proc(idx, parent);
   return idx;
 }

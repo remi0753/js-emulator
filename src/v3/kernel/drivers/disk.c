@@ -12,3 +12,15 @@ void disk_read_block(int blockno, int dst) {
     i = i + 1;
   }
 }
+
+void disk_write_block(int blockno, int src) {
+  int *p;
+  int i;
+  __out(CFG_DISK_POS, blockno);
+  p = src;
+  i = 0;
+  while (i < 128) {
+    __out(CFG_DISK_DATA, p[i]);
+    i = i + 1;
+  }
+}

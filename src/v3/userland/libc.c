@@ -55,6 +55,22 @@ struct dirent {
   char name[16];
 };
 
+struct stat {
+  int dev;
+  int ino;
+  int mode;
+  int nlink;
+  int uid;
+  int gid;
+  int rdev;
+  int size;
+  int blksize;
+  int blocks;
+  int atime;
+  int mtime;
+  int ctime;
+};
+
 sighandler_t signal_handlers[32];
 int signal_current;
 
@@ -278,6 +294,66 @@ int uname(struct utsname *name) {
 
 int getdents(int fd, struct dirent *entries, int count) {
   return ret_errno(__syscall(CFG_SYS_GETDENTS, fd, entries, count));
+}
+
+int stat(char *path, struct stat *value) {
+  return ret_errno(__syscall(CFG_SYS_STAT, path, value, 0));
+}
+
+int fstat(int fd, struct stat *value) {
+  return ret_errno(__syscall(CFG_SYS_FSTAT, fd, value, 0));
+}
+
+int lstat(char *path, struct stat *value) {
+  return ret_errno(__syscall(CFG_SYS_LSTAT, path, value, 0));
+}
+
+int chmod(char *path, int mode) {
+  return ret_errno(__syscall(CFG_SYS_CHMOD, path, mode, 0));
+}
+
+int chown(char *path, int uid, int gid) {
+  return ret_errno(__syscall(CFG_SYS_CHOWN, path, uid, gid));
+}
+
+int mkdir(char *path, int mode) {
+  return ret_errno(__syscall(CFG_SYS_MKDIR, path, mode, 0));
+}
+
+int rmdir(char *path) {
+  return ret_errno(__syscall(CFG_SYS_RMDIR, path, 0, 0));
+}
+
+int unlink(char *path) {
+  return ret_errno(__syscall(CFG_SYS_UNLINK, path, 0, 0));
+}
+
+int link(char *oldpath, char *newpath) {
+  return ret_errno(__syscall(CFG_SYS_LINK, oldpath, newpath, 0));
+}
+
+int rename(char *oldpath, char *newpath) {
+  return ret_errno(__syscall(CFG_SYS_RENAME, oldpath, newpath, 0));
+}
+
+int symlink(char *target, char *linkpath) {
+  return ret_errno(__syscall(CFG_SYS_SYMLINK, target, linkpath, 0));
+}
+
+int readlink(char *path, char *buffer, int size) {
+  return ret_errno(__syscall(CFG_SYS_READLINK, path, buffer, size));
+}
+
+int lseek(int fd, int offset, int whence) {
+  return ret_errno(__syscall(CFG_SYS_LSEEK, fd, offset, whence));
+}
+
+int getuid() {
+  return ret_errno(__syscall(CFG_SYS_GETUID, 0, 0, 0));
+}
+
+int getgid() {
+  return ret_errno(__syscall(CFG_SYS_GETGID, 0, 0, 0));
 }
 
 void exit(int code) {

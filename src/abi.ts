@@ -39,6 +39,21 @@ export const SYS = {
   CLOCK_GETTIME: 33, // R1 = clock id, R2 = timespec pointer
   UNAME: 34, // R1 = utsname pointer
   GETDENTS: 35, // R1 = directory fd, R2 = buffer, R3 = byte count
+  STAT: 36, // R1 = path, R2 = stat pointer
+  FSTAT: 37, // R1 = fd, R2 = stat pointer
+  LSTAT: 38, // R1 = path, R2 = stat pointer (do not follow final symlink)
+  CHMOD: 39, // R1 = path, R2 = mode
+  CHOWN: 40, // R1 = path, R2 = uid, R3 = gid
+  MKDIR: 41, // R1 = path, R2 = mode
+  RMDIR: 42, // R1 = path
+  UNLINK: 43, // R1 = path
+  LINK: 44, // R1 = old path, R2 = new path
+  RENAME: 45, // R1 = old path, R2 = new path
+  SYMLINK: 46, // R1 = target, R2 = link path
+  READLINK: 47, // R1 = path, R2 = buffer, R3 = size
+  LSEEK: 48, // R1 = fd, R2 = offset, R3 = whence
+  GETUID: 49, // -> R0 = real/effective uid (single-user first pass)
+  GETGID: 50, // -> R0 = real/effective gid (single-user first pass)
 } as const;
 
 // File descriptors wired up in Phase 2 (real fd table comes with the FS).
@@ -66,3 +81,4 @@ export const FCNTL = {
 } as const;
 export const IOCTL = { TIOCGPGRP: 0x540f, TIOCSPGRP: 0x5410 } as const;
 export const CLOCK = { REALTIME: 0, MONOTONIC: 1 } as const;
+export const SEEK = { SET: 0, CUR: 1, END: 2 } as const;

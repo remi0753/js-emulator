@@ -79,6 +79,7 @@ export function buildGuestDiskImage(): Uint8Array {
   fs.mkfs();
   for (const name of ['init', 'sh', 'echo', 'cat', 'ls', 'date', 'shutdown', 'spin']) {
     fs.writeFile(`/bin/${name}`, buildUserExecutable(name, sourceFile(`userland/${name}.c`)));
+    fs.chmod(`/bin/${name}`, 0o755);
   }
   fs.writeFile('/etc/motd', new TextEncoder().encode(GUEST_MOTD));
   driver.write(0, encodeBootBlock(makeBootBlock('/bin/init')));

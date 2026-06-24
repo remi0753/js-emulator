@@ -78,6 +78,21 @@ Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 | 33| `CLOCK_GETTIME` | R1 = clock id, R2 = timespec | realtime or monotonic guest time |
 | 34| `UNAME` | R1 = utsname | return guest system identity |
 | 35| `GETDENTS` | R1 = fd, R2 = dirent buffer, R3 = bytes | read Linux-shaped directory records |
+| 36| `STAT` | R1 = path, R2 = stat buffer | metadata, following the final symlink |
+| 37| `FSTAT` | R1 = fd, R2 = stat buffer | metadata for an open file |
+| 38| `LSTAT` | R1 = path, R2 = stat buffer | metadata without following the final symlink |
+| 39| `CHMOD` | R1 = path, R2 = mode | change permission bits |
+| 40| `CHOWN` | R1 = path, R2 = uid, R3 = gid | change ownership (`-1` preserves a field) |
+| 41| `MKDIR` | R1 = path, R2 = mode | create a directory |
+| 42| `RMDIR` | R1 = path | remove an empty directory |
+| 43| `UNLINK` | R1 = path | remove a non-directory link |
+| 44| `LINK` | R1 = old path, R2 = new path | create a hard link |
+| 45| `RENAME` | R1 = old path, R2 = new path | rename/move a filesystem object |
+| 46| `SYMLINK` | R1 = target, R2 = link path | create a symbolic link |
+| 47| `READLINK` | R1 = path, R2 = buffer, R3 = bytes | read a symlink target without a NUL terminator |
+| 48| `LSEEK` | R1 = fd, R2 = offset, R3 = whence | change a shared open-file offset |
+| 49| `GETUID` | — | return uid (0 in the single-user model) |
+| 50| `GETGID` | — | return gid (0 in the single-user model) |
 
 ## Linux compatibility table
 
@@ -95,6 +110,11 @@ Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 | `ioctl` | implemented subset | `TIOCGPGRP` and `TIOCSPGRP` on terminal descriptors |
 | `gettimeofday`, `clock_gettime`, `uname` | implemented | 32-bit time values on this ISA |
 | `getdents` | implemented | fixed 32-byte guest `dirent` records |
+| inode metadata and credentials | implemented | persistent mode/uid/gid/nlink and 32-bit timestamps; single-user uid/gid 0 |
+| `stat`, `fstat`, `lstat`, `chmod`, `chown` | implemented | stable 13-field custom32 `stat` layout |
+| `mkdir`, `rmdir`, `unlink`, `link`, `rename` | implemented | persistent directory and hard-link mutation |
+| `symlink`, `readlink` | implemented | relative/absolute traversal, bounded to eight expansions |
+| `lseek` | implemented | `SEEK_SET`, `SEEK_CUR`, `SEEK_END`; shared by dup/fork |
 | `MAP_SHARED`, lazy mappings, COW mappings | unsupported | planned for Phase 22 |
 | `O_NONBLOCK`, general terminal ioctls | unsupported | planned with polling/TTY phases |
 | Linux binary ABI compatibility | intentionally unsupported | programs are compiled for custom32 |
@@ -133,6 +153,26 @@ for writing. `open` flags (`O.*` in abi.ts): `RDONLY=0`, `WRONLY=1`, `RDWR=2`,
   description, so they share the current file offset.
 - `exec` reads the executable's bytes from the filesystem and loads its segments,
   so programs are launched straight off the disk.
+
+### Metadata and mutation (Phase 19)
+
+- On-disk inodes store type/mode, uid/gid, link count, size, and 32-bit
+  atime/mtime/ctime values. Regular files default to `0644`, directories to
+  `0755`, symlinks to `0777`, and installed `/bin` programs to `0755`.
+- This is filesystem format version 2. The superblock records the version and
+  inode size; images using the earlier 64-byte inode layout must be rebuilt.
+- The initial credential model is deliberately single-user: processes start as
+  uid/gid 0 and children inherit those credentials. The permission-checking
+  machinery and persistent ownership fields are present so a later multi-user
+  phase does not require an ABI or disk-format redesign.
+- The root filesystem is mounted read/write. Its internal mount-flags field
+  supports a read-only bit, and every mutating filesystem path rejects writes
+  when that bit is active.
+- `unlink` keeps an inode alive while an open-file description still references
+  it. Hard links share inode metadata and data; directory link counts and `..`
+  are maintained across create, remove, and cross-directory rename.
+- `lseek` changes the offset in the shared open-file description, so descriptors
+  inherited through `fork` or created through `dup` observe the same position.
 
 ### Arguments & stdin (Phase 5)
 

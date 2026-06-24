@@ -6,7 +6,7 @@
 //      0      1      inodestart         bmapstart     (rest)
 //
 // - Superblock (block 1): magic + geometry.
-// - Inodes: fixed 64-byte dinodes, IPB per block; inode 1 is the root dir.
+// - Inodes: fixed 80-byte dinodes, IPB per block; inode 1 is the root dir.
 // - Bitmap: one bit per block (1 = allocated).
 // - Files/dirs: NDIRECT direct block pointers + 1 singly-indirect block.
 // - Directories: arrays of fixed 16-byte entries { inum(u16), name[14] }.
@@ -18,8 +18,8 @@ export const NDIRECT = 12;
 export const NINDIRECT = BSIZE / 4; // 128
 export const MAXFILE = NDIRECT + NINDIRECT;
 
-const DINODE_SIZE = 64;
-const IPB = BSIZE / DINODE_SIZE; // inodes per block (8)
+export const DINODE_SIZE = 80;
+const IPB = Math.floor(BSIZE / DINODE_SIZE); // inodes per block (6)
 const NADDR = NDIRECT + 1; // direct pointers + the indirect pointer
 const BPB = BSIZE * 8; // bits (blocks) per bitmap block
 
@@ -27,10 +27,17 @@ export const DIRSIZ = 14;
 const DIRENT_SIZE = 16; // u16 inum + 14-byte name
 
 export const FSMAGIC = 0x10203040;
+export const FS_VERSION = 2;
 
 // Inode types.
 export const T_DIR = 1;
 export const T_FILE = 2;
+export const T_SYMLINK = 3;
+
+export const S_IFMT = 0xf000;
+export const S_IFDIR = 0x4000;
+export const S_IFREG = 0x8000;
+export const S_IFLNK = 0xa000;
 
 export interface Superblock {
   magic: number;
@@ -38,13 +45,21 @@ export interface Superblock {
   ninodes: number;
   inodestart: number;
   bmapstart: number;
+  version: number;
+  inodeSize: number;
 }
 
 // In-memory form of an on-disk inode.
 export interface Dinode {
   type: number; // 0 = free, T_DIR, T_FILE
   nlink: number;
+  mode: number;
+  uid: number;
+  gid: number;
   size: number; // bytes
+  atime: number;
+  mtime: number;
+  ctime: number;
   addrs: number[]; // length NADDR (12 direct + 1 indirect)
 }
 
@@ -64,6 +79,9 @@ export class Fs {
   mount(): void {
     this.sb = decodeSuperblock(this.disk.read(1));
     if (this.sb.magic !== FSMAGIC) throw new FsError('mount: bad filesystem magic');
+    if (this.sb.version !== FS_VERSION || this.sb.inodeSize !== DINODE_SIZE) {
+      throw new FsError('mount: unsupported filesystem version');
+    }
   }
 
   // Format the whole disk: lay out metadata, mark it used, and create an empty
@@ -80,7 +98,15 @@ export class Fs {
     const zero = new Uint8Array(BSIZE);
     for (let b = 0; b < size; b++) this.disk.write(b, zero.slice());
 
-    this.sb = { magic: FSMAGIC, size, ninodes, inodestart, bmapstart };
+    this.sb = {
+      magic: FSMAGIC,
+      size,
+      ninodes,
+      inodestart,
+      bmapstart,
+      version: FS_VERSION,
+      inodeSize: DINODE_SIZE,
+    };
     this.disk.write(1, encodeSuperblock(this.sb));
 
     // Mark all metadata blocks (everything before the data region) as used.
@@ -91,6 +117,7 @@ export class Fs {
     if (root !== ROOTINO) throw new FsError('mkfs: root inode is not ROOTINO');
     const din = this.readInode(root);
     din.nlink = 2; // "." and the parent link
+    din.mode = S_IFDIR | 0o755;
     this.iupdate(root, din);
     this.dirLink(root, '.', root);
     this.dirLink(root, '..', root);
@@ -121,7 +148,23 @@ export class Fs {
       const { block, off } = this.inodeLoc(inum);
       const buf = this.disk.read(block);
       if (decodeDinode(buf, off).type === 0) {
-        encodeDinode({ type, nlink: 0, size: 0, addrs: new Array(NADDR).fill(0) }, buf, off);
+        const mode = type === T_DIR ? S_IFDIR | 0o755 : type === T_SYMLINK ? S_IFLNK | 0o777 : S_IFREG | 0o644;
+        encodeDinode(
+          {
+            type,
+            nlink: 0,
+            mode,
+            uid: 0,
+            gid: 0,
+            size: 0,
+            atime: 0,
+            mtime: 0,
+            ctime: 0,
+            addrs: new Array(NADDR).fill(0),
+          },
+          buf,
+          off,
+        );
         this.disk.write(block, buf);
         return inum;
       }
@@ -134,6 +177,7 @@ export class Fs {
     this.itrunc(inum, din);
     din.type = 0;
     din.nlink = 0;
+    din.mode = 0;
     this.iupdate(inum, din);
   }
 
@@ -372,6 +416,8 @@ export class Fs {
     const inum = this.ialloc(type);
     const din = this.readInode(inum);
     din.nlink = 1;
+    din.mode =
+      type === T_DIR ? S_IFDIR | 0o755 : type === T_SYMLINK ? S_IFLNK | 0o777 : S_IFREG | 0o644;
     this.iupdate(inum, din);
 
     if (type === T_DIR) {
@@ -384,6 +430,14 @@ export class Fs {
 
   mkdir(path: string): number {
     return this.create(path, T_DIR);
+  }
+
+  chmod(path: string, mode: number): void {
+    const inum = this.namei(path);
+    if (inum === 0) throw new FsError(`chmod: no such file: ${path}`);
+    const din = this.readInode(inum);
+    din.mode = (din.mode & S_IFMT) | (mode & 0o7777);
+    this.iupdate(inum, din);
   }
 
   // Create every missing directory along `path` (like `mkdir -p`).
@@ -430,6 +484,8 @@ function encodeSuperblock(sb: Superblock): Uint8Array {
   write32(buf, 8, sb.ninodes);
   write32(buf, 12, sb.inodestart);
   write32(buf, 16, sb.bmapstart);
+  write32(buf, 20, sb.version);
+  write32(buf, 24, sb.inodeSize);
   return buf;
 }
 function decodeSuperblock(buf: Uint8Array): Superblock {
@@ -439,6 +495,8 @@ function decodeSuperblock(buf: Uint8Array): Superblock {
     ninodes: read32(buf, 8),
     inodestart: read32(buf, 12),
     bmapstart: read32(buf, 16),
+    version: read32(buf, 20),
+    inodeSize: read32(buf, 24),
   };
 }
 
@@ -447,16 +505,33 @@ function encodeDinode(din: Dinode, buf: Uint8Array, off: number): void {
   buf[off + 1] = (din.type >>> 8) & 0xff;
   buf[off + 2] = din.nlink & 0xff;
   buf[off + 3] = (din.nlink >>> 8) & 0xff;
-  write32(buf, off + 4, din.size);
-  for (let i = 0; i < NADDR; i++) write32(buf, off + 8 + i * 4, din.addrs[i] ?? 0);
+  buf[off + 4] = din.mode & 0xff;
+  buf[off + 5] = (din.mode >>> 8) & 0xff;
+  buf[off + 6] = din.uid & 0xff;
+  buf[off + 7] = (din.uid >>> 8) & 0xff;
+  buf[off + 8] = din.gid & 0xff;
+  buf[off + 9] = (din.gid >>> 8) & 0xff;
+  buf[off + 10] = 0;
+  buf[off + 11] = 0;
+  write32(buf, off + 12, din.size);
+  write32(buf, off + 16, din.atime);
+  write32(buf, off + 20, din.mtime);
+  write32(buf, off + 24, din.ctime);
+  for (let i = 0; i < NADDR; i++) write32(buf, off + 28 + i * 4, din.addrs[i] ?? 0);
 }
 function decodeDinode(buf: Uint8Array, off: number): Dinode {
   const addrs: number[] = [];
-  for (let i = 0; i < NADDR; i++) addrs.push(read32(buf, off + 8 + i * 4));
+  for (let i = 0; i < NADDR; i++) addrs.push(read32(buf, off + 28 + i * 4));
   return {
     type: buf[off]! | (buf[off + 1]! << 8),
     nlink: buf[off + 2]! | (buf[off + 3]! << 8),
-    size: read32(buf, off + 4),
+    mode: buf[off + 4]! | (buf[off + 5]! << 8),
+    uid: buf[off + 6]! | (buf[off + 7]! << 8),
+    gid: buf[off + 8]! | (buf[off + 9]! << 8),
+    size: read32(buf, off + 12),
+    atime: read32(buf, off + 16),
+    mtime: read32(buf, off + 20),
+    ctime: read32(buf, off + 24),
     addrs,
   };
 }

@@ -44,11 +44,35 @@ int sys_open(int caller, int upath, int flags) {
   }
   inum = namei(kpath);
   if (inum == 0) {
-    return -CFG_ENOENT;
+    if ((flags & CFG_O_CREATE) == 0) {
+      return -CFG_ENOENT;
+    }
+    inum = create_inode(kpath, CFG_T_FILE, 438);
+    if (inum < 0) {
+      return inum;
+    }
   }
   t = inode_type(inum);
   if (t != CFG_T_FILE && t != CFG_T_DIR) {
     return -CFG_EINVAL;
+  }
+  if (t == CFG_T_DIR && (flags & CFG_O_ACCMODE) != 0) {
+    return -CFG_EISDIR;
+  }
+  if ((flags & CFG_O_ACCMODE) == CFG_O_WRONLY) {
+    if (inode_access(inum, proc_table[caller].uid,
+        proc_table[caller].gid, 2) == 0) return -CFG_EACCES;
+  } else if ((flags & CFG_O_ACCMODE) == CFG_O_RDWR) {
+    if (inode_access(inum, proc_table[caller].uid,
+        proc_table[caller].gid, 6) == 0) return -CFG_EACCES;
+  } else if (inode_access(inum, proc_table[caller].uid,
+      proc_table[caller].gid, 4) == 0) {
+    return -CFG_EACCES;
+  }
+  if ((flags & CFG_O_TRUNC) != 0) {
+    if ((flags & CFG_O_ACCMODE) == 0) return -CFG_EINVAL;
+    if ((fs_mount_flags & 1) != 0) return -CFG_EROFS;
+    itrunc(inum);
   }
   fd = alloc_fd(caller);
   if (fd < 0) {
@@ -58,6 +82,13 @@ int sys_open(int caller, int upath, int flags) {
     return -CFG_ENFILE;
   }
   proc_table[caller].files[fd].status_flags = flags;
+  if ((flags & CFG_O_ACCMODE) == CFG_O_WRONLY) {
+    proc_table[caller].files[fd].readable = 0;
+    proc_table[caller].files[fd].writable = 1;
+  } else if ((flags & CFG_O_ACCMODE) == CFG_O_RDWR) {
+    proc_table[caller].files[fd].readable = 1;
+    proc_table[caller].files[fd].writable = 1;
+  }
   return fd;
 }
 
@@ -192,6 +223,120 @@ int sys_getdents(int caller, int fd, int destination, int count) {
   }
   return file_getdents(&proc_table[caller].files[fd],
     caller, destination, count);
+}
+
+int sys_stat_path(int caller, int upath, int destination, int follow) {
+  struct guest_stat value;
+  int result;
+  int inum;
+  result = copy_path_in(caller, upath);
+  if (result < 0) return result;
+  if (follow != 0) inum = namei(kpath);
+  else inum = namei_nofollow(kpath);
+  if (inum == 0) return -CFG_ENOENT;
+  inode_stat(inum, &value);
+  return copyout(caller, destination, &value, sizeof(struct guest_stat));
+}
+
+int sys_fstat(int caller, int fd, int destination) {
+  struct guest_stat value;
+  int result;
+  if (fd < 0 || fd >= CFG_NFD ||
+      proc_table[caller].files[fd].type == CFG_FT_NONE) {
+    return -CFG_EBADF;
+  }
+  result = file_stat(&proc_table[caller].files[fd], &value);
+  if (result < 0) return result;
+  return copyout(caller, destination, &value, sizeof(struct guest_stat));
+}
+
+int sys_chmod(int caller, int upath, int mode) {
+  int result;
+  result = copy_path_in(caller, upath);
+  if (result < 0) return result;
+  return chmod_path(kpath, mode);
+}
+
+int sys_chown(int caller, int upath, int uid, int gid) {
+  int result;
+  if (proc_table[caller].uid != 0) return -CFG_EPERM;
+  result = copy_path_in(caller, upath);
+  if (result < 0) return result;
+  return chown_path(kpath, uid, gid);
+}
+
+int sys_mkdir(int caller, int upath, int mode) {
+  int result;
+  result = copy_path_in(caller, upath);
+  if (result < 0) return result;
+  result = create_inode(kpath, CFG_T_DIR, mode);
+  if (result < 0) return result;
+  return 0;
+}
+
+int sys_remove_path(int caller, int upath, int remove_dir) {
+  int result;
+  result = copy_path_in(caller, upath);
+  if (result < 0) return result;
+  return unlink_path(kpath, remove_dir);
+}
+
+int copy_second_path(int caller, int upath, int destination) {
+  return copyinstr(caller, destination, upath, CFG_INITPATH_LEN);
+}
+
+int sys_link(int caller, int uold, int unew) {
+  char oldpath[CFG_INITPATH_LEN];
+  char newpath[CFG_INITPATH_LEN];
+  int result;
+  result = copy_second_path(caller, uold, oldpath);
+  if (result < 0) return result;
+  result = copy_second_path(caller, unew, newpath);
+  if (result < 0) return result;
+  return link_path(oldpath, newpath);
+}
+
+int sys_rename(int caller, int uold, int unew) {
+  char oldpath[CFG_INITPATH_LEN];
+  char newpath[CFG_INITPATH_LEN];
+  int result;
+  result = copy_second_path(caller, uold, oldpath);
+  if (result < 0) return result;
+  result = copy_second_path(caller, unew, newpath);
+  if (result < 0) return result;
+  return rename_path(oldpath, newpath);
+}
+
+int sys_symlink(int caller, int utarget, int ulink) {
+  char target[CFG_INITPATH_LEN];
+  char linkpath[CFG_INITPATH_LEN];
+  int result;
+  result = copy_second_path(caller, utarget, target);
+  if (result < 0) return result;
+  result = copy_second_path(caller, ulink, linkpath);
+  if (result < 0) return result;
+  return symlink_path(target, linkpath);
+}
+
+int sys_readlink(int caller, int upath, int destination, int size) {
+  char value[CFG_INITPATH_LEN];
+  int result;
+  if (size < 0) return -CFG_EINVAL;
+  result = copy_path_in(caller, upath);
+  if (result < 0) return result;
+  if (size > CFG_INITPATH_LEN) size = CFG_INITPATH_LEN;
+  result = readlink_path(kpath, value, size);
+  if (result < 0) return result;
+  if (copyout(caller, destination, value, result) < 0) return -CFG_EFAULT;
+  return result;
+}
+
+int sys_lseek(int caller, int fd, int offset, int whence) {
+  if (fd < 0 || fd >= CFG_NFD ||
+      proc_table[caller].files[fd].type == CFG_FT_NONE) {
+    return -CFG_EBADF;
+  }
+  return file_lseek(&proc_table[caller].files[fd], offset, whence);
 }
 
 int copy_fixed_string(int destination, int source, int size) {
@@ -442,6 +587,66 @@ int h_getdents(int caller, int a1, int a2, int a3) {
   return sys_getdents(caller, a1, a2, a3);
 }
 
+int h_stat(int caller, int a1, int a2, int a3) {
+  return sys_stat_path(caller, a1, a2, 1);
+}
+
+int h_fstat(int caller, int a1, int a2, int a3) {
+  return sys_fstat(caller, a1, a2);
+}
+
+int h_lstat(int caller, int a1, int a2, int a3) {
+  return sys_stat_path(caller, a1, a2, 0);
+}
+
+int h_chmod(int caller, int a1, int a2, int a3) {
+  return sys_chmod(caller, a1, a2);
+}
+
+int h_chown(int caller, int a1, int a2, int a3) {
+  return sys_chown(caller, a1, a2, a3);
+}
+
+int h_mkdir(int caller, int a1, int a2, int a3) {
+  return sys_mkdir(caller, a1, a2);
+}
+
+int h_rmdir(int caller, int a1, int a2, int a3) {
+  return sys_remove_path(caller, a1, 1);
+}
+
+int h_unlink(int caller, int a1, int a2, int a3) {
+  return sys_remove_path(caller, a1, 0);
+}
+
+int h_link(int caller, int a1, int a2, int a3) {
+  return sys_link(caller, a1, a2);
+}
+
+int h_rename(int caller, int a1, int a2, int a3) {
+  return sys_rename(caller, a1, a2);
+}
+
+int h_symlink(int caller, int a1, int a2, int a3) {
+  return sys_symlink(caller, a1, a2);
+}
+
+int h_readlink(int caller, int a1, int a2, int a3) {
+  return sys_readlink(caller, a1, a2, a3);
+}
+
+int h_lseek(int caller, int a1, int a2, int a3) {
+  return sys_lseek(caller, a1, a2, a3);
+}
+
+int h_getuid(int caller, int a1, int a2, int a3) {
+  return proc_table[caller].uid;
+}
+
+int h_getgid(int caller, int a1, int a2, int a3) {
+  return proc_table[caller].gid;
+}
+
 int h_time(int caller, int a1, int a2, int a3) {
   return rtc_time();
 }
@@ -497,6 +702,21 @@ void syscall_init(void) {
   syscall_table[CFG_SYS_CLOCK_GETTIME] = h_clock_gettime;
   syscall_table[CFG_SYS_UNAME] = h_uname;
   syscall_table[CFG_SYS_GETDENTS] = h_getdents;
+  syscall_table[CFG_SYS_STAT] = h_stat;
+  syscall_table[CFG_SYS_FSTAT] = h_fstat;
+  syscall_table[CFG_SYS_LSTAT] = h_lstat;
+  syscall_table[CFG_SYS_CHMOD] = h_chmod;
+  syscall_table[CFG_SYS_CHOWN] = h_chown;
+  syscall_table[CFG_SYS_MKDIR] = h_mkdir;
+  syscall_table[CFG_SYS_RMDIR] = h_rmdir;
+  syscall_table[CFG_SYS_UNLINK] = h_unlink;
+  syscall_table[CFG_SYS_LINK] = h_link;
+  syscall_table[CFG_SYS_RENAME] = h_rename;
+  syscall_table[CFG_SYS_SYMLINK] = h_symlink;
+  syscall_table[CFG_SYS_READLINK] = h_readlink;
+  syscall_table[CFG_SYS_LSEEK] = h_lseek;
+  syscall_table[CFG_SYS_GETUID] = h_getuid;
+  syscall_table[CFG_SYS_GETGID] = h_getgid;
 }
 
 void on_syscall(void) {

@@ -52,7 +52,14 @@ struct file_ops {
 struct inode {
   int inum;
   int type;
+  int nlink;
+  int mode;
+  int uid;
+  int gid;
   int size;
+  int atime;
+  int mtime;
+  int ctime;
 };
 
 struct vnode {
@@ -65,6 +72,24 @@ struct guest_dirent {
   int reclen;
   int type;
   char name[16];
+};
+
+// Stable 32-bit userspace metadata layout. All fields are four bytes on the
+// custom32 ABI, including timestamps.
+struct guest_stat {
+  int dev;
+  int ino;
+  int mode;
+  int nlink;
+  int uid;
+  int gid;
+  int rdev;
+  int size;
+  int blksize;
+  int blocks;
+  int atime;
+  int mtime;
+  int ctime;
 };
 
 // A descriptor points at an open-file object. The latter owns the shared file
@@ -95,6 +120,8 @@ struct proc {
   int chan;
   int pgid;
   int sid;
+  int uid;
+  int gid;
   int pending_signals;
   int blocked_signals;
   int signal_handlers[CFG_NSIG];
@@ -204,6 +231,7 @@ extern int fs_size;
 extern int fs_ninodes;
 extern int fs_inodestart;
 extern int fs_bmapstart;
+extern int fs_mount_flags;
 extern int buf_block[CFG_NBUF];
 extern int buf_valid[CFG_NBUF];
 extern int buf_next;
@@ -214,15 +242,43 @@ int bread(int blockno);
 void fs_mount(void);
 int inode_addr(int inum);
 int inode_type(int inum);
+int inode_nlink(int inum);
+int inode_mode(int inum);
+int inode_uid(int inum);
+int inode_gid(int inum);
 int inode_size(int inum);
+int inode_atime(int inum);
+int inode_mtime(int inum);
+int inode_ctime(int inum);
 int inode_slot(int inum, int k);
+void inode_set16(int inum, int offset, int value);
+void inode_set32(int inum, int offset, int value);
 void vnode_init(struct vnode *node, int inum);
 int bmap(int inum, int bn);
+int bmap_alloc(int inum, int bn);
 int readi(int inum, int off, int n, int dst);
+int writei(int inum, int off, int n, int src);
+void itrunc(int inum);
 int vnode_read(struct vnode *node, int off, int n, int dst);
+int vnode_write(struct vnode *node, int off, int n, int src);
 int name_eq(int dname, int want, int wlen);
 int dirlookup(int dir, int name, int namelen);
+int dirlink(int dir, int name, int namelen, int inum);
+int dirunlink(int dir, int name, int namelen);
+int dir_is_empty(int dir);
 int namei(int path);
+int namei_nofollow(int path);
+int nameiparent(int path, int name);
+int create_inode(int path, int type, int mode);
+int unlink_path(int path, int remove_dir);
+int link_path(int oldpath, int newpath);
+int rename_path(int oldpath, int newpath);
+int symlink_path(int target, int linkpath);
+int readlink_path(int path, int dst, int size);
+int chmod_path(int path, int mode);
+int chown_path(int path, int uid, int gid);
+void inode_stat(int inum, struct guest_stat *st);
+int inode_access(int inum, int uid, int gid, int mask);
 
 // --- file.c (per-process file descriptors) ---
 extern struct file_ops console_file_ops;
@@ -251,6 +307,8 @@ void close_exec_fds(int idx);
 int file_mmap_read(struct file *file, int offset, int length, int destination);
 int file_getdents(struct file *file, int caller, int destination, int count);
 int file_is_tty(struct file *file);
+int file_stat(struct file *file, struct guest_stat *st);
+int file_lseek(struct file *file, int offset, int whence);
 
 // --- pipe.c ---
 extern struct pipe pipe_table[CFG_NPIPE];
@@ -290,6 +348,8 @@ int sys_dup(int caller, int oldfd);
 int sys_fcntl(int caller, int fd, int command, int argument);
 int sys_ioctl(int caller, int fd, int request, int argument);
 int sys_getdents(int caller, int fd, int destination, int count);
+int sys_stat_path(int caller, int upath, int destination, int follow);
+int sys_fstat(int caller, int fd, int destination);
 void on_syscall(void);
 
 // --- trap.c ---
@@ -325,6 +385,7 @@ int kbd_eof(void);
 void keyboard_init(void);
 void on_keyboard_irq(void);  // keyboard IRQ handler body (wakes blocked readers)
 void disk_read_block(int blockno, int dst); // drivers/disk.c
+void disk_write_block(int blockno, int src);
 int rtc_time(void);          // drivers/rtc.c
 void power_off(void);        // drivers/power.c
 

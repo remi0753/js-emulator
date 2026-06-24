@@ -11,7 +11,21 @@ import {
   TIMER_IRQ,
   TRAP,
 } from '../isa.ts';
-import { DIRSIZ, FSMAGIC, NDIRECT, ROOTINO, T_DIR, T_FILE } from '../storage/fs.ts';
+import {
+  DINODE_SIZE,
+  DIRSIZ,
+  FS_VERSION,
+  FSMAGIC,
+  NDIRECT,
+  ROOTINO,
+  S_IFDIR,
+  S_IFLNK,
+  S_IFMT,
+  S_IFREG,
+  T_DIR,
+  T_FILE,
+  T_SYMLINK,
+} from '../storage/fs.ts';
 import { MODE } from '../vm/custom32/cpu.ts';
 import { SECTOR_SIZE } from '../vm/custom32/devices/disk.ts';
 import { POWER_OFF } from '../vm/custom32/devices/power.ts';
@@ -28,8 +42,7 @@ const PIPESZ = 512;
 const MAXARG = 16;
 const MAX_VMAS = 16;
 const ARGBUF_LEN = 512;
-const DINODE_SIZE = 64;
-const IPB = SECTOR_SIZE / DINODE_SIZE;
+const IPB = Math.floor(SECTOR_SIZE / DINODE_SIZE);
 const PTE_KERNEL = 3;
 const PTE_USER = 7;
 
@@ -65,15 +78,26 @@ const ERRNO = {
   EBADF: 9,
   ECHILD: 10,
   ENOMEM: 12,
+  EEXIST: 17,
   EFAULT: 14,
+  EACCES: 13,
   ENODEV: 19,
   ENOTDIR: 20,
+  EISDIR: 21,
   EINVAL: 22,
   ENFILE: 23,
   EMFILE: 24,
   EPIPE: 32,
   EINTR: 4,
   ENOTTY: 25,
+  EFBIG: 27,
+  ENOSPC: 28,
+  ESPIPE: 29,
+  EROFS: 30,
+  EMLINK: 31,
+  ENAMETOOLONG: 36,
+  ENOTEMPTY: 39,
+  ELOOP: 40,
   ENOSYS: 38,
 } as const;
 
@@ -148,6 +172,21 @@ export const GUEST_SYSCALL_DEFINES: Defines = {
   CFG_SYS_CLOCK_GETTIME: SYS.CLOCK_GETTIME,
   CFG_SYS_UNAME: SYS.UNAME,
   CFG_SYS_GETDENTS: SYS.GETDENTS,
+  CFG_SYS_STAT: SYS.STAT,
+  CFG_SYS_FSTAT: SYS.FSTAT,
+  CFG_SYS_LSTAT: SYS.LSTAT,
+  CFG_SYS_CHMOD: SYS.CHMOD,
+  CFG_SYS_CHOWN: SYS.CHOWN,
+  CFG_SYS_MKDIR: SYS.MKDIR,
+  CFG_SYS_RMDIR: SYS.RMDIR,
+  CFG_SYS_UNLINK: SYS.UNLINK,
+  CFG_SYS_LINK: SYS.LINK,
+  CFG_SYS_RENAME: SYS.RENAME,
+  CFG_SYS_SYMLINK: SYS.SYMLINK,
+  CFG_SYS_READLINK: SYS.READLINK,
+  CFG_SYS_LSEEK: SYS.LSEEK,
+  CFG_SYS_GETUID: SYS.GETUID,
+  CFG_SYS_GETGID: SYS.GETGID,
 };
 
 const ERRNO_DEFINES: Defines = Object.fromEntries(
@@ -210,15 +249,26 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_BUF_DATA_LEN: NBUF * SECTOR_SIZE,
   CFG_INITPATH_LEN: 64,
   CFG_FS_MAGIC: FSMAGIC,
+  CFG_FS_VERSION: FS_VERSION,
   CFG_BOOT_MAGIC: BOOT_MAGIC,
   CFG_EXEC_MAGIC: GUEST_EXECUTABLE_MAGIC,
   CFG_IPB: IPB,
   CFG_DINODE_SIZE: DINODE_SIZE,
   CFG_NDIRECT: NDIRECT,
+  CFG_NINDIRECT: SECTOR_SIZE / 4,
+  CFG_MAXFILE: NDIRECT + SECTOR_SIZE / 4,
   CFG_DIRSIZ: DIRSIZ,
   CFG_ROOTINO: ROOTINO,
   CFG_T_FILE: T_FILE,
   CFG_T_DIR: T_DIR,
+  CFG_T_SYMLINK: T_SYMLINK,
+  CFG_S_IFMT: S_IFMT,
+  CFG_S_IFDIR: S_IFDIR,
+  CFG_S_IFREG: S_IFREG,
+  CFG_S_IFLNK: S_IFLNK,
+  CFG_SEEK_SET: 0,
+  CFG_SEEK_CUR: 1,
+  CFG_SEEK_END: 2,
   CFG_NSIG: 32,
   CFG_SIG_DFL: 0,
   CFG_SIG_IGN: 1,
@@ -254,6 +304,11 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_F_SETFL: 4,
   CFG_FD_CLOEXEC: 1,
   CFG_O_NONBLOCK: 0x800,
+  CFG_O_ACCMODE: 3,
+  CFG_O_WRONLY: 1,
+  CFG_O_RDWR: 2,
+  CFG_O_CREATE: 0x200,
+  CFG_O_TRUNC: 0x400,
   CFG_TIOCGPGRP: 0x540f,
   CFG_TIOCSPGRP: 0x5410,
   CFG_CLOCK_REALTIME: 0,
@@ -361,6 +416,21 @@ struct dirent {
   int type;
   char name[16];
 };
+struct stat {
+  int dev;
+  int ino;
+  int mode;
+  int nlink;
+  int uid;
+  int gid;
+  int rdev;
+  int size;
+  int blksize;
+  int blocks;
+  int atime;
+  int mtime;
+  int ctime;
+};
 int nanosleep(struct timespec *request, struct timespec *remaining);
 int brk(void *address);
 void *sbrk(int increment);
@@ -371,6 +441,21 @@ int gettimeofday(struct timeval *value, void *timezone);
 int clock_gettime(int clock_id, struct timespec *value);
 int uname(struct utsname *name);
 int getdents(int fd, struct dirent *entries, int count);
+int stat(char *path, struct stat *value);
+int fstat(int fd, struct stat *value);
+int lstat(char *path, struct stat *value);
+int chmod(char *path, int mode);
+int chown(char *path, int uid, int gid);
+int mkdir(char *path, int mode);
+int rmdir(char *path);
+int unlink(char *path);
+int link(char *oldpath, char *newpath);
+int rename(char *oldpath, char *newpath);
+int symlink(char *target, char *linkpath);
+int readlink(char *path, char *buffer, int size);
+int lseek(int fd, int offset, int whence);
+int getuid(void);
+int getgid(void);
 void exit(int code);
 int time(void);
 void shutdown(void);
