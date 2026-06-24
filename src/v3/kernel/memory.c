@@ -86,7 +86,7 @@ int user_access_ok(int proc, int addr, int len, int write) {
 int copyin(int proc, int kdst, int usrc, int len) {
   int i;
   if (user_access_ok(proc, usrc, len, 0) == 0) {
-    return -1;
+    return -CFG_EFAULT;
   }
   i = 0;
   while (i < len) {
@@ -100,7 +100,7 @@ int copyin(int proc, int kdst, int usrc, int len) {
 int copyout(int proc, int udst, int ksrc, int len) {
   int i;
   if (user_access_ok(proc, udst, len, 1) == 0) {
-    return -1;
+    return -CFG_EFAULT;
   }
   i = 0;
   while (i < len) {
@@ -112,15 +112,15 @@ int copyout(int proc, int udst, int ksrc, int len) {
 
 // Copy a NUL-terminated string in from user memory, validating each byte. Stores
 // at most `max` bytes (including the terminator) at `kdst`. Returns the string
-// length (excluding the terminator) on success, or -1 on a bad address or if no
-// terminator is found within `max`.
+// length (excluding the terminator) on success, or -EFAULT on a bad address or
+// if no terminator is found within `max`.
 int copyinstr(int proc, int kdst, int usrc, int max) {
   int i;
   int c;
   i = 0;
   while (i < max) {
     if (user_access_ok(proc, usrc + i, 1, 0) == 0) {
-      return -1;
+      return -CFG_EFAULT;
     }
     c = read8_at(usrc + i);
     write8_at(kdst + i, c);
@@ -129,7 +129,7 @@ int copyinstr(int proc, int kdst, int usrc, int max) {
     }
     i = i + 1;
   }
-  return -1;
+  return -CFG_EFAULT;
 }
 
 // --- physical frame allocator: a free list threaded through the free frames ---

@@ -13,13 +13,13 @@ int sys_write(int caller, int fd, int buf, int len) {
   int pp;
   int n;
   if (len < 0) {
-    return -1;
+    return -CFG_EINVAL;
   }
   if (user_access_ok(caller, buf, len, 0) == 0) {
-    return -1;
+    return -CFG_EFAULT;
   }
   if (fd < 0 || fd >= CFG_NFD) {
-    return -1;
+    return -CFG_EBADF;
   }
   base = caller * CFG_NFD;
   t = proc_fd_type[base + fd];
@@ -35,7 +35,7 @@ int sys_write(int caller, int fd, int buf, int len) {
   if (t == CFG_FT_PIPE && proc_fd_pend[base + fd] == 1) {
     pp = proc_fd_pipe[base + fd];
     if (pipe_nread[pp] == 0) {
-      return -1; // broken pipe: no readers
+      return -CFG_EPIPE; // broken pipe: no readers
     }
     if (pipe_count[pp] == CFG_PIPESZ) {
       g_blocked = 1;
@@ -47,7 +47,7 @@ int sys_write(int caller, int fd, int buf, int len) {
     wakeup(&pipe_used[pp]); // data available for a blocked reader
     return n;
   }
-  return -1;
+  return -CFG_EBADF;
 }
 
 int sys_read(int caller, int fd, int buf, int len) {
@@ -60,13 +60,13 @@ int sys_read(int caller, int fd, int buf, int len) {
   int pp;
   int n;
   if (len < 0) {
-    return -1;
+    return -CFG_EINVAL;
   }
   if (user_access_ok(caller, buf, len, 1) == 0) {
-    return -1;
+    return -CFG_EFAULT;
   }
   if (fd < 0 || fd >= CFG_NFD) {
-    return -1;
+    return -CFG_EBADF;
   }
   base = caller * CFG_NFD;
   t = proc_fd_type[base + fd];
@@ -110,7 +110,7 @@ int sys_read(int caller, int fd, int buf, int len) {
     sleep(caller, &pipe_used[pp]);
     return 0;
   }
-  return -1;
+  return -CFG_EBADF;
 }
 
 int sys_open(int caller, int upath, int flags) {
@@ -119,19 +119,19 @@ int sys_open(int caller, int upath, int flags) {
   int fd;
   int base;
   if (copy_path_in(caller, upath) < 0) {
-    return -1;
+    return -CFG_EFAULT;
   }
   inum = namei(kpath);
   if (inum == 0) {
-    return -1;
+    return -CFG_ENOENT;
   }
   t = inode_type(inum);
   if (t != CFG_T_FILE && t != CFG_T_DIR) {
-    return -1;
+    return -CFG_EINVAL;
   }
   fd = alloc_fd(caller);
   if (fd < 0) {
-    return -1;
+    return -CFG_EMFILE;
   }
   base = caller * CFG_NFD;
   proc_fd_type[base + fd] = CFG_FT_FILE;
@@ -142,10 +142,10 @@ int sys_open(int caller, int upath, int flags) {
 
 int sys_close(int caller, int fd) {
   if (fd < 0 || fd >= CFG_NFD) {
-    return -1;
+    return -CFG_EBADF;
   }
   if (proc_fd_type[caller * CFG_NFD + fd] == CFG_FT_NONE) {
-    return -1;
+    return -CFG_EBADF;
   }
   fd_close(caller, fd); // wakes blocked pipe peers when releasing a pipe end
   return 0;
@@ -158,17 +158,17 @@ int sys_pipe(int caller, int ufds) {
   int base;
   int fds[2];
   if (user_access_ok(caller, ufds, 8, 1) == 0) {
-    return -1;
+    return -CFG_EFAULT;
   }
   pp = alloc_pipe();
   if (pp < 0) {
-    return -1;
+    return -CFG_ENFILE;
   }
   base = caller * CFG_NFD;
   rfd = alloc_fd(caller);
   if (rfd < 0) {
     pipe_used[pp] = 0;
-    return -1;
+    return -CFG_EMFILE;
   }
   proc_fd_type[base + rfd] = CFG_FT_PIPE;
   proc_fd_pipe[base + rfd] = pp;
@@ -177,7 +177,7 @@ int sys_pipe(int caller, int ufds) {
   if (wfd < 0) {
     proc_fd_type[base + rfd] = CFG_FT_NONE;
     pipe_used[pp] = 0;
-    return -1;
+    return -CFG_EMFILE;
   }
   proc_fd_type[base + wfd] = CFG_FT_PIPE;
   proc_fd_pipe[base + wfd] = pp;
@@ -194,16 +194,16 @@ int sys_dup(int caller, int oldfd) {
   int newfd;
   int pp;
   if (oldfd < 0 || oldfd >= CFG_NFD) {
-    return -1;
+    return -CFG_EBADF;
   }
   base = caller * CFG_NFD;
   t = proc_fd_type[base + oldfd];
   if (t == CFG_FT_NONE) {
-    return -1;
+    return -CFG_EBADF;
   }
   newfd = alloc_fd(caller);
   if (newfd < 0) {
-    return -1;
+    return -CFG_EMFILE;
   }
   proc_fd_type[base + newfd] = t;
   proc_fd_inum[base + newfd] = proc_fd_inum[base + oldfd];
@@ -279,7 +279,7 @@ void on_syscall(void) {
     serial_write("kernel: shutdown\n");
     power_off(); // the machine stops at the next instruction boundary
   } else {
-    proc_regs[caller * 8 + 0] = -1;
+    proc_regs[caller * 8 + 0] = -CFG_ENOSYS;
   }
 
   load_ctx(current);

@@ -10,6 +10,20 @@
 #define CFG_DIRSIZ 14
 #define CFG_DISK_DATA 496
 #define CFG_DISK_POS 498
+#define CFG_E2BIG 7
+#define CFG_EBADF 9
+#define CFG_ECHILD 10
+#define CFG_EFAULT 14
+#define CFG_EINVAL 22
+#define CFG_EMFILE 24
+#define CFG_ENFILE 23
+#define CFG_ENOENT 2
+#define CFG_ENOEXEC 8
+#define CFG_ENOMEM 12
+#define CFG_ENOSYS 38
+#define CFG_EPERM 1
+#define CFG_EPIPE 32
+#define CFG_ESRCH 3
 #define CFG_EXEC_MAGIC 0x35315850
 #define CFG_FD_TABLE_LEN 128
 #define CFG_FLAG_IF 8
@@ -95,6 +109,9 @@ int __rdpfla(void);
 int __rderr(void);
 int __ei(void);
 int __di(void);
+
+// Guest libc errno: a negative syscall return becomes errno + a -1 result.
+extern int errno;
 
 // Freestanding runtime and guest libc functions.
 void *memcpy(void *destination, const void *source, int length);

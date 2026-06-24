@@ -49,6 +49,27 @@ const FILE_TYPE = {
   pipe: 4,
 } as const;
 
+// Stable negative errno values (Linux numbers). Syscalls return -ERRNO on
+// failure; libc translates that into the classic -1 return plus a `errno`
+// global. Kept here as the single source of truth, shared with the editor
+// header via gen:c-headers.
+const ERRNO = {
+  EPERM: 1,
+  ENOENT: 2,
+  ESRCH: 3,
+  E2BIG: 7,
+  ENOEXEC: 8,
+  EBADF: 9,
+  ECHILD: 10,
+  ENOMEM: 12,
+  EFAULT: 14,
+  EINVAL: 22,
+  ENFILE: 23,
+  EMFILE: 24,
+  EPIPE: 32,
+  ENOSYS: 38,
+} as const;
+
 export const GUEST_EXECUTABLE_MAGIC = 0x35315850;
 
 export const GUEST_KERNEL_LAYOUT = {
@@ -83,8 +104,13 @@ export const GUEST_SYSCALL_DEFINES: Defines = {
   CFG_SYS_SHUTDOWN: SYS.SHUTDOWN,
 };
 
+const ERRNO_DEFINES: Defines = Object.fromEntries(
+  Object.entries(ERRNO).map(([name, value]) => [`CFG_${name}`, value]),
+);
+
 export const GUEST_KERNEL_DEFINES: Defines = {
   ...GUEST_SYSCALL_DEFINES,
+  ...ERRNO_DEFINES,
   CFG_CONSOLE_DATA: PORT.CONSOLE_DATA,
   CFG_KBD_DATA: PORT.KBD_DATA,
   CFG_KBD_STATUS: PORT.KBD_STATUS,
@@ -181,6 +207,9 @@ int __rdpfla(void);
 int __rderr(void);
 int __ei(void);
 int __di(void);
+
+// Guest libc errno: a negative syscall return becomes errno + a -1 result.
+extern int errno;
 
 // Freestanding runtime and guest libc functions.
 void *memcpy(void *destination, const void *source, int length);

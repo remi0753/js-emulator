@@ -198,16 +198,16 @@ int spawn(int idx, int path) {
 int do_exec(int idx, int upath, int uargv) {
   int old_pd;
   if (copy_path_in(idx, upath) < 0) {
-    proc_regs[idx * 8 + 0] = -1;
+    proc_regs[idx * 8 + 0] = -CFG_EFAULT;
     return 0;
   }
   if (build_args_from_user(idx, uargv) < 0) {
-    proc_regs[idx * 8 + 0] = -1;
+    proc_regs[idx * 8 + 0] = -CFG_EFAULT;
     return 0;
   }
   old_pd = proc_ptbr[idx];
   if (spawn(idx, kpath) < 0) {
-    proc_regs[idx * 8 + 0] = -1;
+    proc_regs[idx * 8 + 0] = -CFG_ENOEXEC;
     return 0;
   }
   return old_pd;

@@ -113,7 +113,7 @@ int do_wait(int parent) {
     i = i + 1;
   }
   if (alive == 0) {
-    proc_regs[parent * 8 + 0] = -1;
+    proc_regs[parent * 8 + 0] = -CFG_ECHILD;
     return 0;
   }
   // Block until a child exits, then re-run the syscall to reap it.

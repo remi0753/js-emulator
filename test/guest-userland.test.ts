@@ -6,6 +6,7 @@ import { Fs } from '../src/v2/kernel/fs.ts';
 import {
   buildGuestDiskImage,
   buildGuestKernelImage,
+  buildUserExecutable,
   GUEST_EXECUTABLE_MAGIC,
   GUEST_KERNEL_LAYOUT,
   GUEST_MOTD,
@@ -71,6 +72,54 @@ test('a fresh disk image contains the compiled userland under /bin', () => {
     const magic = bytes[0]! | (bytes[1]! << 8) | (bytes[2]! << 16) | (bytes[3]! << 24);
     assert.equal(magic >>> 0, GUEST_EXECUTABLE_MAGIC, `${path} missing executable magic`);
   }
+});
+
+test('a failed libc call reports the error through errno', () => {
+  // open() of a missing path returns -1 and sets errno to ENOENT (2). The
+  // program reads `errno` (declared extern, defined in libc) to distinguish.
+  const disk = buildGuestDiskImage();
+  const ports = new PortBus();
+  const blk = new BlockDisk(disk);
+  ports.register(PORT.DISK_DATA, 1, blk);
+  ports.register(PORT.DISK_POS, 1, blk);
+  ports.register(PORT.DISK_SECTORS, 1, blk);
+  const fs = new Fs(new BlockDriver(ports));
+  fs.mount();
+  fs.writeFile(
+    '/bin/errcheck',
+    buildUserExecutable(
+      'errcheck',
+      `
+        extern int errno;
+        int main(int argc, char **argv) {
+          int fd;
+          fd = open("/nope", 0);
+          if (fd != -1) { write(1, "bad-ret\\n", 8); return 1; }
+          if (errno != 2) { write(1, "bad-errno\\n", 10); return 2; }
+          write(1, "ENOENT-ok\\n", 10);
+          return 0;
+        }
+      `,
+    ),
+  );
+
+  const image = buildGuestKernelImage();
+  let out = '';
+  const machine = new Machine({
+    physSize: GUEST_KERNEL_LAYOUT.physSize,
+    diskImage: disk,
+    consoleSink: (s) => (out += s),
+  });
+  machine.keyboard.feed('errcheck\n');
+  machine.keyboard.close();
+  machine.load(0, image.flat);
+  machine.reset({ pc: image.entry, sp: GUEST_KERNEL_LAYOUT.kstackTop });
+
+  const r = machine.run(20_000_000);
+  assert.equal(r.reason, 'halt');
+  assert.equal(out.includes('ENOENT-ok\n'), true);
+  assert.equal(out.includes('bad-ret\n'), false);
+  assert.equal(out.includes('bad-errno\n'), false);
 });
 
 test('keyboard read blocks until input arrives, then resumes through IRQ', () => {

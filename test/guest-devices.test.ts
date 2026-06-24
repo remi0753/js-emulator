@@ -90,7 +90,7 @@ test('bad user inputs return errors without panicking the kernel', () => {
         char *av[2];
         int main(int argc, char **argv) {
           int i;
-          if (__syscall(999, 0, 0, 0) != -1) return 1;
+          if (__syscall(999, 0, 0, 0) >= 0) return 1; // unknown syscall -> -ENOSYS
           if (write(1, 0x700000, 4) != -1) return 2;
           if (write(1, 0x7ffff0, 0x7fffffff) != -1) return 3;
           if (exec("/missing", 0) != -1) return 4;
