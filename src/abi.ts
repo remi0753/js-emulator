@@ -18,6 +18,15 @@ export const SYS = {
   UPTIME: 12, // -> R0 = scheduler ticks since boot
   TIME: 13, // -> R0 = current wall-clock time (Unix seconds) from the RTC device
   SHUTDOWN: 14, // power the machine off cleanly (does not return)
+  KILL: 15, // R1 = pid/process-group selector, R2 = signal -> R0 = 0 / -1
+  SIGACTION: 16, // R1 = signal, R2 = action ptr, R3 = old-action ptr
+  SIGPROCMASK: 17, // R1 = how, R2 = mask, R3 = old-mask ptr
+  SIGRETURN: 18, // restore the context saved by signal delivery
+  WAITPID: 19, // R1 = pid selector, R2 = status ptr, R3 = options
+  SETPGID: 20, // R1 = pid (0 = self), R2 = pgid (0 = pid)
+  SETSID: 21, // create a session and process group -> session id
+  TCSETPGRP: 22, // R1 = foreground process group
+  TCGETPGRP: 23, // -> foreground process group
 } as const;
 
 // File descriptors wired up in Phase 2 (real fd table comes with the FS).

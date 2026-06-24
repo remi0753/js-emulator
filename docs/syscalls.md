@@ -9,7 +9,8 @@ errno numbers from the raw syscall ABI (for example `-ENOENT == -2` and
 store the positive error number in the global `errno`. In particular, guest
 `exec` distinguishes a missing path (`ENOENT`), an invalid executable
 (`ENOEXEC`), an oversized argument vector (`E2BIG`), and insufficient memory
-(`ENOMEM`).
+(`ENOMEM`). A caught signal that interrupts a blocking syscall produces
+`EINTR`.
 
 ## ABI
 
@@ -54,6 +55,34 @@ Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 | 10| `PIPE`   | R1 = int[2] ptr               | create a pipe; writes [readfd, writefd]; R0 = 0 / -1       |
 | 11| `DUP`    | R1 = fd                       | duplicate fd to the lowest free fd; R0 = new fd / -1       |
 | 12| `UPTIME` | —                             | R0 = scheduler ticks since boot                            |
+| 13| `TIME` | — | current RTC Unix timestamp |
+| 14| `SHUTDOWN` | — | power off the virtual machine |
+| 15| `KILL` | R1 = pid selector, R2 = signal | signal a process or process group |
+| 16| `SIGACTION` | R1 = signal, R2 = action, R3 = old action | install/query a signal action |
+| 17| `SIGPROCMASK` | R1 = how, R2 = mask, R3 = old mask | change the blocked-signal mask |
+| 18| `SIGRETURN` | — | restore the context saved for a caught signal |
+| 19| `WAITPID` | R1 = pid selector, R2 = status, R3 = options | wait for exit/stop/continue |
+| 20| `SETPGID` | R1 = pid, R2 = pgid | create or join a process group |
+| 21| `SETSID` | — | create a session and become its process-group leader |
+| 22| `TCSETPGRP` | R1 = pgid | set the terminal foreground process group |
+| 23| `TCGETPGRP` | — | return the terminal foreground process group |
+
+### Signals and job control (Phase 17)
+
+- Signals 1–31 use bit masks (`1 << signal`). Implemented default semantics
+  include `SIGINT` (2), `SIGKILL` (9), `SIGTERM` (15), `SIGCHLD` (17),
+  `SIGCONT` (18), `SIGSTOP` (19), and `SIGTSTP` (20).
+- `SIGKILL` and `SIGSTOP` cannot be caught or blocked. Caught handlers execute
+  through libc's dispatcher and return through a `SIGRETURN` restorer.
+- `kill(pid, sig)` follows Unix-style selectors: positive pid, `0` for the
+  caller's process group, `< -1` for process group `-pid`, and `-1` for all
+  processes.
+- `waitpid` supports `WNOHANG=1`, `WUNTRACED=2`, and `WCONTINUED=4`. Exit status
+  uses the conventional high-byte exit code; signaled exits use the low signal
+  bits, stopped status has low byte `0x7f`, and continued status is `0xffff`.
+- The TTY converts Ctrl-C into `SIGINT` for its foreground process group. The
+  shell gives each command/pipeline a process group, transfers foreground
+  ownership while waiting, and supports a trailing `&` for background jobs.
 
 `WRITE` (call 1) writes to any writable fd: the console (fd 1/2) or a file opened
 for writing. `open` flags (`O.*` in abi.ts): `RDONLY=0`, `WRONLY=1`, `RDWR=2`,

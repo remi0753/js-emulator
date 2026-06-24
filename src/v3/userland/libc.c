@@ -10,6 +10,30 @@
 // the specific cause declare `extern int errno;` and read it after a -1 return.
 int errno;
 
+typedef void (*sighandler_t)(int signal);
+
+struct sigaction {
+  sighandler_t handler;
+  int mask;
+  int flags;
+  int restorer;
+};
+
+sighandler_t signal_handlers[32];
+int signal_current;
+
+// The kernel enters caught handlers with the signal number in R0. This common
+// dispatcher moves it into normal C calling-convention storage, invokes the
+// application handler, then RETs to signal_restorer on the user hardware stack.
+void signal_dispatch() {
+  asm("STORE R0, signal_current\n");
+  signal_handlers[signal_current](signal_current);
+}
+
+void signal_restorer() {
+  __syscall(CFG_SYS_SIGRETURN, 0, 0, 0);
+}
+
 // Translate a raw syscall result into the classic libc convention: a negative
 // kernel return is an errno, reported as errno + a -1 return; a non-negative
 // result passes through unchanged.
@@ -45,12 +69,91 @@ int wait() {
   return ret_errno(__syscall(CFG_SYS_WAIT, 0, 0, 0));
 }
 
+int waitpid(int pid, int *status, int options) {
+  return ret_errno(__syscall(CFG_SYS_WAITPID, pid, status, options));
+}
+
 int exec(char *path, char **argv) {
   return ret_errno(__syscall(CFG_SYS_EXEC, path, argv, 0));
 }
 
 int getpid() {
   return ret_errno(__syscall(CFG_SYS_GETPID, 0, 0, 0));
+}
+
+int kill(int pid, int sig) {
+  return ret_errno(__syscall(CFG_SYS_KILL, pid, sig, 0));
+}
+
+int sigaction(int sig, struct sigaction *action, struct sigaction *old_action) {
+  struct sigaction kernel_action;
+  struct sigaction kernel_old;
+  struct sigaction *kernel_action_ptr;
+  struct sigaction *kernel_old_ptr;
+  int result;
+  kernel_action_ptr = 0;
+  kernel_old_ptr = 0;
+  if (action != 0) {
+    kernel_action.mask = action->mask;
+    kernel_action.flags = action->flags;
+    kernel_action.restorer = signal_restorer;
+    if (action->handler == 0 || action->handler == 1) {
+      kernel_action.handler = action->handler;
+    } else {
+      signal_handlers[sig] = action->handler;
+      kernel_action.handler = signal_dispatch;
+    }
+    kernel_action_ptr = &kernel_action;
+  }
+  if (old_action != 0) {
+    kernel_old_ptr = &kernel_old;
+  }
+  result = ret_errno(
+    __syscall(CFG_SYS_SIGACTION, sig, kernel_action_ptr, kernel_old_ptr));
+  if (result == 0 && old_action != 0) {
+    old_action->mask = kernel_old.mask;
+    old_action->flags = kernel_old.flags;
+    old_action->restorer = 0;
+    if (kernel_old.handler == signal_dispatch) {
+      old_action->handler = signal_handlers[sig];
+    } else {
+      old_action->handler = kernel_old.handler;
+    }
+  }
+  return result;
+}
+
+int signal(int sig, sighandler_t handler) {
+  struct sigaction action;
+  struct sigaction old_action;
+  action.handler = handler;
+  action.mask = 0;
+  action.flags = 0;
+  action.restorer = 0;
+  if (sigaction(sig, &action, &old_action) < 0) {
+    return -1;
+  }
+  return old_action.handler;
+}
+
+int sigprocmask(int how, int mask, int *old_mask) {
+  return ret_errno(__syscall(CFG_SYS_SIGPROCMASK, how, mask, old_mask));
+}
+
+int setpgid(int pid, int pgid) {
+  return ret_errno(__syscall(CFG_SYS_SETPGID, pid, pgid, 0));
+}
+
+int setsid() {
+  return ret_errno(__syscall(CFG_SYS_SETSID, 0, 0, 0));
+}
+
+int tcsetpgrp(int pgid) {
+  return ret_errno(__syscall(CFG_SYS_TCSETPGRP, pgid, 0, 0));
+}
+
+int tcgetpgrp() {
+  return ret_errno(__syscall(CFG_SYS_TCGETPGRP, 0, 0, 0));
 }
 
 int pipe(int *fds) {

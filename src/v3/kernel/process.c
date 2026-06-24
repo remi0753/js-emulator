@@ -34,6 +34,9 @@ int setup_process_boot(int path) {
     panic("boot: invalid init executable");
   }
   proc_table[idx].parent = -1;
+  proc_table[idx].pgid = idx;
+  proc_table[idx].sid = idx;
+  signal_init_proc(idx);
   proc_table[idx].state = CFG_ST_RUNNABLE;
   init_fds(idx);
   return idx;
@@ -59,6 +62,9 @@ int fork_process(int parent) {
   proc_table[idx].ctx.sp = proc_table[parent].ctx.sp;
   proc_table[idx].ctx.mode = proc_table[parent].ctx.mode;
   proc_table[idx].ctx.flags = proc_table[parent].ctx.flags;
+  proc_table[idx].pgid = proc_table[parent].pgid;
+  proc_table[idx].sid = proc_table[parent].sid;
+  signal_fork_proc(idx, parent);
   return idx;
 }
 
@@ -73,6 +79,7 @@ int do_fork(int parent) {
 }
 
 int do_exit(int idx, int code) {
+  int i;
   int p;
   proc_table[idx].exit_code = code;
   clear_fds(idx); // releasing pipe ends wakes blocked peers (see fd_close)
@@ -81,31 +88,104 @@ int do_exit(int idx, int code) {
   if (p >= 0) {
     wakeup(&proc_table[p]); // a parent sleeping in wait() re-checks for zombies
   }
+  // Orphans are adopted by init (slot 0), including zombies that still need
+  // reaping after their original parent exits.
+  i = 0;
+  while (i < nproc) {
+    if (proc_table[i].parent == idx &&
+        proc_table[i].state != CFG_ST_UNUSED) {
+      proc_table[i].parent = 0;
+      if (proc_table[i].state == CFG_ST_ZOMBIE) {
+        wakeup(&proc_table[0]);
+      }
+    }
+    i = i + 1;
+  }
   return 0;
 }
 
 int do_wait(int parent) {
+  return do_waitpid(parent, -1, 0, 0);
+}
+
+int wait_matches(int parent, int child, int pid) {
+  if (proc_table[child].parent != parent) {
+    return 0;
+  }
+  if (pid > 0) {
+    return child == pid;
+  }
+  if (pid == 0) {
+    return proc_table[child].pgid == proc_table[parent].pgid;
+  }
+  if (pid < -1) {
+    return proc_table[child].pgid == 0 - pid;
+  }
+  return 1;
+}
+
+int do_waitpid(int parent, int pid, int status, int options) {
   int i;
   int alive;
+  int value;
   i = 0;
   while (i < nproc) {
-    if (proc_table[i].parent == parent && proc_table[i].state == CFG_ST_ZOMBIE) {
+    if (wait_matches(parent, i, pid) &&
+        proc_table[i].state == CFG_ST_ZOMBIE) {
+      if (proc_table[i].wait_signal != 0) {
+        value = proc_table[i].wait_signal;
+      } else {
+        value = proc_table[i].exit_code << 8;
+      }
+      if (status != 0 && copyout(parent, status, &value, 4) < 0) {
+        proc_table[parent].ctx.regs[0] = -CFG_EFAULT;
+        return 0;
+      }
       proc_table[parent].ctx.regs[0] = i;
       proc_table[i].state = CFG_ST_UNUSED;
       return proc_table[i].vm.ptbr; // reaped child's address space, freed by the caller
+    }
+    if (wait_matches(parent, i, pid) &&
+        proc_table[i].wait_event == CFG_WUNTRACED &&
+        (options & CFG_WUNTRACED) != 0) {
+      value = (proc_table[i].wait_signal << 8) | 127;
+      if (status != 0 && copyout(parent, status, &value, 4) < 0) {
+        proc_table[parent].ctx.regs[0] = -CFG_EFAULT;
+        return 0;
+      }
+      proc_table[i].wait_event = 0;
+      proc_table[parent].ctx.regs[0] = i;
+      return 0;
+    }
+    if (wait_matches(parent, i, pid) &&
+        proc_table[i].wait_event == CFG_WCONTINUED &&
+        (options & CFG_WCONTINUED) != 0) {
+      value = 65535;
+      if (status != 0 && copyout(parent, status, &value, 4) < 0) {
+        proc_table[parent].ctx.regs[0] = -CFG_EFAULT;
+        return 0;
+      }
+      proc_table[i].wait_event = 0;
+      proc_table[parent].ctx.regs[0] = i;
+      return 0;
     }
     i = i + 1;
   }
   alive = 0;
   i = 0;
   while (i < nproc) {
-    if (proc_table[i].parent == parent && proc_table[i].state != CFG_ST_UNUSED) {
+    if (wait_matches(parent, i, pid) &&
+        proc_table[i].state != CFG_ST_UNUSED) {
       alive = 1;
     }
     i = i + 1;
   }
   if (alive == 0) {
     proc_table[parent].ctx.regs[0] = -CFG_ECHILD;
+    return 0;
+  }
+  if ((options & CFG_WNOHANG) != 0) {
+    proc_table[parent].ctx.regs[0] = 0;
     return 0;
   }
   // Block until a child exits, then re-run the syscall to reap it.

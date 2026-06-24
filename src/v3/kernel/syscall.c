@@ -161,9 +161,52 @@ int h_exec(int caller, int a1, int a2, int a3) {
 }
 
 int h_wait(int caller, int a1, int a2, int a3) {
-  g_pending_free = do_wait(caller);
+  g_pending_free = do_waitpid(caller, -1, a1, 0);
   g_noret = 1; // do_wait set R0 (child pid / -ECHILD) or blocked the caller
   return 0;
+}
+
+int h_waitpid(int caller, int a1, int a2, int a3) {
+  g_pending_free = do_waitpid(caller, a1, a2, a3);
+  g_noret = 1;
+  return 0;
+}
+
+int h_kill(int caller, int a1, int a2, int a3) {
+  return send_signal_selector(caller, a1, a2);
+}
+
+int h_sigaction(int caller, int a1, int a2, int a3) {
+  return sys_sigaction(caller, a1, a2, a3);
+}
+
+int h_sigprocmask(int caller, int a1, int a2, int a3) {
+  return sys_sigprocmask(caller, a1, a2, a3);
+}
+
+int h_sigreturn(int caller, int a1, int a2, int a3) {
+  int result;
+  result = sys_sigreturn(caller);
+  if (result == 0) {
+    g_noret = 1;
+  }
+  return result;
+}
+
+int h_setpgid(int caller, int a1, int a2, int a3) {
+  return sys_setpgid(caller, a1, a2);
+}
+
+int h_setsid(int caller, int a1, int a2, int a3) {
+  return sys_setsid(caller);
+}
+
+int h_tcsetpgrp(int caller, int a1, int a2, int a3) {
+  return tty_set_foreground(caller, a1);
+}
+
+int h_tcgetpgrp(int caller, int a1, int a2, int a3) {
+  return tty_get_foreground();
 }
 
 int h_open(int caller, int a1, int a2, int a3) {
@@ -215,6 +258,15 @@ void syscall_init(void) {
   syscall_table[CFG_SYS_DUP] = h_dup;
   syscall_table[CFG_SYS_TIME] = h_time;
   syscall_table[CFG_SYS_SHUTDOWN] = h_shutdown;
+  syscall_table[CFG_SYS_KILL] = h_kill;
+  syscall_table[CFG_SYS_SIGACTION] = h_sigaction;
+  syscall_table[CFG_SYS_SIGPROCMASK] = h_sigprocmask;
+  syscall_table[CFG_SYS_SIGRETURN] = h_sigreturn;
+  syscall_table[CFG_SYS_WAITPID] = h_waitpid;
+  syscall_table[CFG_SYS_SETPGID] = h_setpgid;
+  syscall_table[CFG_SYS_SETSID] = h_setsid;
+  syscall_table[CFG_SYS_TCSETPGRP] = h_tcsetpgrp;
+  syscall_table[CFG_SYS_TCGETPGRP] = h_tcgetpgrp;
 }
 
 void on_syscall(void) {
@@ -245,6 +297,7 @@ void on_syscall(void) {
     proc_table[caller].ctx.regs[0] = -CFG_ENOSYS;
   }
 
+  prepare_signal(current);
   load_ctx(current);
   __lptbr(proc_table[current].vm.ptbr);
   if (g_pending_free != 0) {

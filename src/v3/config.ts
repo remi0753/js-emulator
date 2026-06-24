@@ -40,6 +40,7 @@ const PROCESS_STATE = {
   // kind of blocking (wait/pipe/keyboard) -- the sleeper re-checks its
   // condition after waking.
   sleeping: 3,
+  stopped: 4,
 } as const;
 
 const FILE_TYPE = {
@@ -68,7 +69,21 @@ const ERRNO = {
   ENFILE: 23,
   EMFILE: 24,
   EPIPE: 32,
+  EINTR: 4,
   ENOSYS: 38,
+} as const;
+
+const SIGNAL = {
+  SIGHUP: 1,
+  SIGINT: 2,
+  SIGKILL: 9,
+  SIGUSR1: 10,
+  SIGSEGV: 11,
+  SIGTERM: 15,
+  SIGCHLD: 17,
+  SIGCONT: 18,
+  SIGSTOP: 19,
+  SIGTSTP: 20,
 } as const;
 
 export const GUEST_EXECUTABLE_MAGIC = 0x35315850;
@@ -107,6 +122,15 @@ export const GUEST_SYSCALL_DEFINES: Defines = {
   CFG_SYS_DUP: SYS.DUP,
   CFG_SYS_TIME: SYS.TIME,
   CFG_SYS_SHUTDOWN: SYS.SHUTDOWN,
+  CFG_SYS_KILL: SYS.KILL,
+  CFG_SYS_SIGACTION: SYS.SIGACTION,
+  CFG_SYS_SIGPROCMASK: SYS.SIGPROCMASK,
+  CFG_SYS_SIGRETURN: SYS.SIGRETURN,
+  CFG_SYS_WAITPID: SYS.WAITPID,
+  CFG_SYS_SETPGID: SYS.SETPGID,
+  CFG_SYS_SETSID: SYS.SETSID,
+  CFG_SYS_TCSETPGRP: SYS.TCSETPGRP,
+  CFG_SYS_TCGETPGRP: SYS.TCGETPGRP,
 };
 
 const ERRNO_DEFINES: Defines = Object.fromEntries(
@@ -158,6 +182,7 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_ST_RUNNABLE: PROCESS_STATE.runnable,
   CFG_ST_ZOMBIE: PROCESS_STATE.zombie,
   CFG_ST_SLEEPING: PROCESS_STATE.sleeping,
+  CFG_ST_STOPPED: PROCESS_STATE.stopped,
   CFG_FT_NONE: FILE_TYPE.none,
   CFG_FT_CONS: FILE_TYPE.console,
   CFG_FT_KBD: FILE_TYPE.keyboard,
@@ -176,6 +201,25 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_ROOTINO: ROOTINO,
   CFG_T_FILE: T_FILE,
   CFG_T_DIR: T_DIR,
+  CFG_NSIG: 32,
+  CFG_SIG_DFL: 0,
+  CFG_SIG_IGN: 1,
+  CFG_SIGHUP: SIGNAL.SIGHUP,
+  CFG_SIGINT: SIGNAL.SIGINT,
+  CFG_SIGKILL: SIGNAL.SIGKILL,
+  CFG_SIGUSR1: SIGNAL.SIGUSR1,
+  CFG_SIGSEGV: SIGNAL.SIGSEGV,
+  CFG_SIGTERM: SIGNAL.SIGTERM,
+  CFG_SIGCHLD: SIGNAL.SIGCHLD,
+  CFG_SIGCONT: SIGNAL.SIGCONT,
+  CFG_SIGSTOP: SIGNAL.SIGSTOP,
+  CFG_SIGTSTP: SIGNAL.SIGTSTP,
+  CFG_SIG_BLOCK: 0,
+  CFG_SIG_UNBLOCK: 1,
+  CFG_SIG_SETMASK: 2,
+  CFG_WNOHANG: 1,
+  CFG_WUNTRACED: 2,
+  CFG_WCONTINUED: 4,
 };
 
 function cInteger(value: number): string {
@@ -225,8 +269,24 @@ int open(char *path, int flags);
 int close(int fd);
 int fork(void);
 int wait(void);
+int waitpid(int pid, int *status, int options);
 int exec(char *path, char **argv);
 int getpid(void);
+int kill(int pid, int signal);
+typedef void (*sighandler_t)(int signal);
+struct sigaction {
+  sighandler_t handler;
+  int mask;
+  int flags;
+  int restorer;
+};
+int signal(int signal, sighandler_t handler);
+int sigaction(int signal, struct sigaction *action, struct sigaction *old_action);
+int sigprocmask(int how, int mask, int *old_mask);
+int setpgid(int pid, int pgid);
+int setsid(void);
+int tcsetpgrp(int pgid);
+int tcgetpgrp(void);
 int pipe(int *fds);
 int dup(int fd);
 void exit(int code);

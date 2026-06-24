@@ -133,6 +133,7 @@ int kmain(void) {
   setup_traps();
   syscall_init();
   file_init();
+  keyboard_init();
   pmm_init();
   build_kernel_pt();
 

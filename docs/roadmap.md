@@ -495,16 +495,31 @@ For every milestone, use the same completion workflow:
 5. run type checking, linting, and the complete test suite;
 6. update this roadmap and tag the completed commit.
 
-- **Phase 17** ⬜ complete the process and signal model.
+- **Phase 17** ✅ complete the process and signal model.
 
-  Add `kill`, `signal`/`sigaction`-style handlers, default signal actions,
-  blocked signal masks, interrupted syscalls, process groups, sessions, and
-  terminal foreground process groups. Extend `wait` into `waitpid`-like behavior
-  and track stopped/continued children. This is required before an interactive
-  shell can behave like a real Unix shell rather than a command loop.
+  Added guest-owned signal state and delivery (`src/v3/kernel/signal.c`):
+  `kill`, caught/default/ignored actions, blocked masks, a libc signal
+  dispatcher and `sigreturn` restorer, and `EINTR` returns when a signal wakes a
+  process blocked in a syscall. `SIGKILL`/`SIGSTOP` cannot be caught; default
+  actions terminate, stop, continue, or ignore as appropriate. `exec` resets
+  caught actions while `fork` inherits actions and masks.
 
-  Done when the shell can launch foreground/background jobs, interrupt a
-  foreground job with Ctrl-C, reap children correctly, and keep running.
+  Processes now carry process-group and session IDs. The kernel implements
+  `setpgid`, `setsid`, terminal foreground-group operations, group-directed
+  signals, and `waitpid` selectors/options with exit, stop, and continue status
+  reporting. The keyboard driver buffers TTY input and converts Ctrl-C into
+  `SIGINT` for the foreground process group.
+
+  The compiled shell creates a session, assigns each command or pipeline its own
+  process group, transfers the terminal for foreground jobs, supports trailing
+  `&` background jobs, reaps them without blocking, and survives foreground
+  interrupts. `/bin/spin` provides a deterministic CPU-bound foreground job for
+  integration testing. Coverage is in `test/guest-signals.test.ts`.
+
+  Done: the shell launches foreground/background jobs, Ctrl-C terminates a
+  foreground job without terminating the shell, caught and blocked signals
+  return through `sigreturn`, interrupted pipe reads report `EINTR`, and
+  `waitpid` observes stopped/continued children before reaping their final exit.
 
 - **Phase 18** ⬜ add Linux-shaped syscall conventions and errno behavior.
 

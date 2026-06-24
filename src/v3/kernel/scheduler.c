@@ -80,7 +80,8 @@ void switch_to_next(void) {
     i = 0;
     blocked = 0;
     while (i < nproc) {
-      if (proc_table[i].state == CFG_ST_SLEEPING) {
+      if (proc_table[i].state == CFG_ST_SLEEPING ||
+          proc_table[i].state == CFG_ST_STOPPED) {
         blocked = 1;
       }
       i = i + 1;
@@ -97,6 +98,7 @@ void switch_to_next(void) {
   }
   __stmr(CFG_TIMER_PERIOD);
   current = next;
+  prepare_signal(current);
 }
 
 void on_timer(void) {
@@ -111,6 +113,7 @@ void on_timer(void) {
     panic("no runnable process in timer");
   }
   current = next;
+  prepare_signal(current);
   load_ctx(current);
   __lptbr(proc_table[current].vm.ptbr);
 }

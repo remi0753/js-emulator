@@ -77,7 +77,7 @@ export function buildGuestDiskImage(): Uint8Array {
   const driver = new PortBlockDevice(ports);
   const fs = new Fs(driver);
   fs.mkfs();
-  for (const name of ['init', 'sh', 'echo', 'cat', 'ls', 'date', 'shutdown']) {
+  for (const name of ['init', 'sh', 'echo', 'cat', 'ls', 'date', 'shutdown', 'spin']) {
     fs.writeFile(`/bin/${name}`, buildUserExecutable(name, sourceFile(`userland/${name}.c`)));
   }
   fs.writeFile('/etc/motd', new TextEncoder().encode(GUEST_MOTD));
@@ -94,6 +94,7 @@ const KERNEL_SOURCE_FILES = [
   'trap.c',
   'scheduler.c',
   'process.c',
+  'signal.c',
   'exec.c',
   'syscall.c',
   'memory.c',

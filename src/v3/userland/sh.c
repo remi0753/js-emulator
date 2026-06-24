@@ -1,7 +1,7 @@
 // sh: a small shell. Reads a line from stdin, splits it on spaces into argv,
-// and runs it. Supports one pipeline stage: `cmd1 args | cmd2 args`. Commands
-// are run by fork + exec; the shell waits for them. End of input (read returns
-// 0) ends the shell. No prompt is printed (it runs non-interactively here).
+// and runs it. Supports one pipeline stage and a trailing `&`. Foreground jobs
+// receive the terminal foreground process group; background jobs are reaped
+// without blocking the command loop.
 
 char line[128];
 char *args[20];
@@ -90,26 +90,37 @@ int tokenize() {
   return argc;
 }
 
-void run_single(char **av) {
+void run_single(char **av, int background) {
   int pid;
+  int status;
   pid = fork();
   if (pid == 0) {
+    setpgid(0, 0);
+    signal(2, 0);
     exec_cmd(av);
     write(2, "sh: exec failed\n", 16);
     exit(1);
   }
-  wait();
+  setpgid(pid, pid);
+  if (background == 0) {
+    tcsetpgrp(pid);
+    waitpid(pid, &status, 2);
+    tcsetpgrp(getpid());
+  }
 }
 
 // cmd1 | cmd2: wire cmd1's stdout to cmd2's stdin through a pipe. The
 // close(fd)/dup() dance relies on dup() returning the lowest free descriptor.
-void run_pipe(char **av1, char **av2) {
+void run_pipe(char **av1, char **av2, int background) {
   int fds[2];
   int pid1;
   int pid2;
+  int status;
   pipe(fds);
   pid1 = fork();
   if (pid1 == 0) {
+    setpgid(0, 0);
+    signal(2, 0);
     close(1);
     dup(fds[1]); // -> fd 1 (stdout to pipe write end)
     close(fds[0]);
@@ -117,8 +128,11 @@ void run_pipe(char **av1, char **av2) {
     exec_cmd(av1);
     exit(1);
   }
+  setpgid(pid1, pid1);
   pid2 = fork();
   if (pid2 == 0) {
+    setpgid(0, pid1);
+    signal(2, 0);
     close(0);
     dup(fds[0]); // -> fd 0 (stdin from pipe read end)
     close(fds[0]);
@@ -126,10 +140,15 @@ void run_pipe(char **av1, char **av2) {
     exec_cmd(av2);
     exit(1);
   }
+  setpgid(pid2, pid1);
   close(fds[0]);
   close(fds[1]);
-  wait();
-  wait();
+  if (background == 0) {
+    tcsetpgrp(pid1);
+    waitpid(pid1, &status, 2);
+    waitpid(pid2, &status, 2);
+    tcsetpgrp(getpid());
+  }
 }
 
 int main(int argc, char **argv) {
@@ -137,7 +156,14 @@ int main(int argc, char **argv) {
   int i;
   int nargs;
   int pipe_at;
+  int background;
+  int status;
+  setsid();
+  tcsetpgrp(getpid());
+  signal(2, 1); // the shell itself survives Ctrl-C; children reset SIGINT
   while (1) {
+    while (waitpid(-1, &status, 1) > 0) {
+    }
     n = readline();
     if (n < 0) {
       break;
@@ -149,6 +175,15 @@ int main(int argc, char **argv) {
     if (nargs == 0) {
       continue;
     }
+    background = 0;
+    if (args[nargs - 1][0] == 38 && args[nargs - 1][1] == 0) {
+      background = 1;
+      nargs = nargs - 1;
+      args[nargs] = 0;
+      if (nargs == 0) {
+        continue;
+      }
+    }
     pipe_at = -1;
     i = 0;
     while (i < nargs) {
@@ -158,10 +193,10 @@ int main(int argc, char **argv) {
       i = i + 1;
     }
     if (pipe_at < 0) {
-      run_single(args);
+      run_single(args, background);
     } else {
       args[pipe_at] = 0;
-      run_pipe(args, args + pipe_at + 1);
+      run_pipe(args, args + pipe_at + 1, background);
     }
   }
   return 0;

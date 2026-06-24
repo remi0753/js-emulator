@@ -72,6 +72,18 @@ struct proc {
   int parent;
   int exit_code;
   int chan;
+  int pgid;
+  int sid;
+  int pending_signals;
+  int blocked_signals;
+  int signal_handlers[CFG_NSIG];
+  int signal_masks[CFG_NSIG];
+  int signal_restorers[CFG_NSIG];
+  int in_signal;
+  int signal_saved_mask;
+  struct cpu_context signal_saved_ctx;
+  int wait_event;
+  int wait_signal;
   struct vm_space vm;
   struct cpu_context ctx;
   struct file files[CFG_NFD];
@@ -110,6 +122,23 @@ int setup_process_boot(int path);
 int do_fork(int parent);
 int do_exit(int idx, int code);
 int do_wait(int parent);
+int do_waitpid(int parent, int pid, int status, int options);
+
+// --- signal.c / process groups / controlling terminal ---
+void signal_init_proc(int idx);
+void signal_fork_proc(int child, int parent);
+void signal_exec_proc(int idx);
+int send_signal(int idx, int signal);
+int send_signal_selector(int caller, int pid, int signal);
+int send_signal_group(int pgid, int signal);
+void prepare_signal(int idx);
+int sys_sigaction(int caller, int signal, int action, int old_action);
+int sys_sigprocmask(int caller, int how, int mask, int old_mask);
+int sys_sigreturn(int caller);
+int sys_setpgid(int caller, int pid, int pgid);
+int sys_setsid(int caller);
+int tty_set_foreground(int caller, int pgid);
+int tty_get_foreground(void);
 
 // --- memory.c ---
 extern int free_list;
@@ -255,6 +284,7 @@ void panic(char *msg);
 extern int kbd_chan;         // drivers/keyboard.c -- wait channel for blocked readers
 int kbd_getc(void);
 int kbd_eof(void);
+void keyboard_init(void);
 void on_keyboard_irq(void);  // keyboard IRQ handler body (wakes blocked readers)
 void disk_read_block(int blockno, int dst); // drivers/disk.c
 int rtc_time(void);          // drivers/rtc.c

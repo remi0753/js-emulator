@@ -14,6 +14,7 @@
 #define CFG_EBADF 9
 #define CFG_ECHILD 10
 #define CFG_EFAULT 14
+#define CFG_EINTR 4
 #define CFG_EINVAL 22
 #define CFG_EMFILE 24
 #define CFG_ENFILE 23
@@ -53,7 +54,8 @@
 #define CFG_NFD 16
 #define CFG_NFILE 128
 #define CFG_NPIPE 8
-#define CFG_NSYS 15
+#define CFG_NSIG 32
+#define CFG_NSYS 24
 #define CFG_PAGEFAULT_VECTOR 14
 #define CFG_PIPESZ 512
 #define CFG_POWER 1540
@@ -62,8 +64,24 @@
 #define CFG_PTE_USER 7
 #define CFG_ROOTINO 1
 #define CFG_RTC_DATA 112
+#define CFG_SIG_BLOCK 0
+#define CFG_SIG_DFL 0
+#define CFG_SIG_IGN 1
+#define CFG_SIG_SETMASK 2
+#define CFG_SIG_UNBLOCK 1
+#define CFG_SIGCHLD 17
+#define CFG_SIGCONT 18
+#define CFG_SIGHUP 1
+#define CFG_SIGINT 2
+#define CFG_SIGKILL 9
+#define CFG_SIGSEGV 11
+#define CFG_SIGSTOP 19
+#define CFG_SIGTERM 15
+#define CFG_SIGTSTP 20
+#define CFG_SIGUSR1 10
 #define CFG_ST_RUNNABLE 1
 #define CFG_ST_SLEEPING 3
+#define CFG_ST_STOPPED 4
 #define CFG_ST_UNUSED 0
 #define CFG_ST_ZOMBIE 2
 #define CFG_SYS_CLOSE 8
@@ -72,12 +90,21 @@
 #define CFG_SYS_EXIT 0
 #define CFG_SYS_FORK 4
 #define CFG_SYS_GETPID 3
+#define CFG_SYS_KILL 15
 #define CFG_SYS_OPEN 7
 #define CFG_SYS_PIPE 10
 #define CFG_SYS_READ 9
+#define CFG_SYS_SETPGID 20
+#define CFG_SYS_SETSID 21
 #define CFG_SYS_SHUTDOWN 14
+#define CFG_SYS_SIGACTION 16
+#define CFG_SYS_SIGPROCMASK 17
+#define CFG_SYS_SIGRETURN 18
+#define CFG_SYS_TCGETPGRP 23
+#define CFG_SYS_TCSETPGRP 22
 #define CFG_SYS_TIME 13
 #define CFG_SYS_WAIT 6
+#define CFG_SYS_WAITPID 19
 #define CFG_SYS_WRITE 1
 #define CFG_SYS_YIELD 2
 #define CFG_SYSCALL_INSTR_SIZE 5
@@ -91,6 +118,9 @@
 #define CFG_USER_LOAD_BASE 0x400000
 #define CFG_USER_STACK_PAGE 0x7ff000
 #define CFG_USER_STACK_TOP 0x800000
+#define CFG_WCONTINUED 4
+#define CFG_WNOHANG 1
+#define CFG_WUNTRACED 2
 
 // Intrinsics recognized by src/toolchain/c.ts.
 int __syscall(int number, int arg1, int arg2, int arg3);
@@ -123,8 +153,24 @@ int open(char *path, int flags);
 int close(int fd);
 int fork(void);
 int wait(void);
+int waitpid(int pid, int *status, int options);
 int exec(char *path, char **argv);
 int getpid(void);
+int kill(int pid, int signal);
+typedef void (*sighandler_t)(int signal);
+struct sigaction {
+  sighandler_t handler;
+  int mask;
+  int flags;
+  int restorer;
+};
+int signal(int signal, sighandler_t handler);
+int sigaction(int signal, struct sigaction *action, struct sigaction *old_action);
+int sigprocmask(int how, int mask, int *old_mask);
+int setpgid(int pid, int pgid);
+int setsid(void);
+int tcsetpgrp(int pgid);
+int tcgetpgrp(void);
 int pipe(int *fds);
 int dup(int fd);
 void exit(int code);

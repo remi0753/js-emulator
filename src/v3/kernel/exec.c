@@ -215,5 +215,6 @@ int do_exec(int idx, int upath, int uargv) {
     proc_table[idx].ctx.regs[0] = result;
     return 0;
   }
+  signal_exec_proc(idx);
   return old_pd;
 }
