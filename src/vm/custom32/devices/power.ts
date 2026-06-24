@@ -18,7 +18,7 @@ export class Power implements PortDevice {
   onPowerOff: (() => void) | null = null;
 
   write(_port: number, value: number): void {
-    if ((value >>> 0) !== POWER_OFF) return;
+    if (value >>> 0 !== POWER_OFF) return;
     this.poweredOff = true;
     this.onPowerOff?.();
   }

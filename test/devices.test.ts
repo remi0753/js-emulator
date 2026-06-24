@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { assemble } from '../src/assembler.ts';
 import { BlockDisk } from '../src/vm/custom32/devices/disk.ts';
-import { Power, POWER_OFF } from '../src/vm/custom32/devices/power.ts';
+import { POWER_OFF, Power } from '../src/vm/custom32/devices/power.ts';
 import { Rtc } from '../src/vm/custom32/devices/rtc.ts';
 import { Machine } from '../src/vm/custom32/machine.ts';
 import { PORT } from '../src/vm/custom32/platform.ts';

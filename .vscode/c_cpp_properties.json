@@ -5,12 +5,8 @@
       "compilerPath": "/usr/bin/clang",
       "cStandard": "c11",
       "intelliSenseMode": "macos-clang-arm64",
-      "includePath": [
-        "${workspaceFolder}/src/v3"
-      ],
-      "forcedInclude": [
-        "${workspaceFolder}/src/v3/generated-config.h"
-      ]
+      "includePath": ["${workspaceFolder}/src/v3"],
+      "forcedInclude": ["${workspaceFolder}/src/v3/generated-config.h"]
     }
   ],
   "version": 4
