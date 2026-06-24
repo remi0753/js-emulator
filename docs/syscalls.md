@@ -3,6 +3,14 @@
 Syscalls are invoked with `INT 0x80` (Linux-style). The CPU returns to the kernel
 and the kernel reads the call number and arguments from registers.
 
+The maintained guest kernel in `src/v3/kernel/` returns stable negative Linux
+errno numbers from the raw syscall ABI (for example `-ENOENT == -2` and
+`-EFAULT == -14`). Its libc wrappers translate any negative result to `-1` and
+store the positive error number in the global `errno`. In particular, guest
+`exec` distinguishes a missing path (`ENOENT`), an invalid executable
+(`ENOEXEC`), an oversized argument vector (`E2BIG`), and insufficient memory
+(`ENOMEM`).
+
 ## ABI
 
 | Register      | Role                                      |
@@ -60,7 +68,8 @@ for writing. `open` flags (`O.*` in abi.ts): `RDONLY=0`, `WRONLY=1`, `RDWR=2`,
 - Directories are ordinary readable files: `read` on a directory fd returns raw
   16-byte entries `{ inum:u16, name[14] }` (this is how a future `ls` lists files).
 - `fork` shares open files with the child (reference-counted); `exec` keeps them
-  open; `exit` closes them all.
+  open; `exit` closes them all. `dup` and `fork` refer to the same open-file
+  description, so they share the current file offset.
 - `exec` reads the executable's bytes from the filesystem and loads its segments,
   so programs are launched straight off the disk.
 

@@ -51,6 +51,7 @@
 #define CFG_NBUF 16
 #define CFG_NDIRECT 12
 #define CFG_NFD 16
+#define CFG_NFILE 128
 #define CFG_NPIPE 8
 #define CFG_NSYS 15
 #define CFG_PAGEFAULT_VECTOR 14

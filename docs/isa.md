@@ -81,6 +81,7 @@ never disagree on operand layout.
 | `JZ` / `JNZ`          | `addr`   | `ZF==1` / `ZF==0`                  |
 | `JG` `JGE` `JL` `JLE` | `addr`   | signed comparison (SF/ZF)          |
 | `CALL`                | `addr`   | push `PC`, then jump               |
+| `CALLR`               | `rs`     | push `PC`, then jump to `rs`       |
 | `RET`                 | —        | pop `PC`                           |
 
 ### Stack

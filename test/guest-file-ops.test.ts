@@ -24,6 +24,7 @@ test('structured file objects dispatch vnode, pipe, terminal, and console operat
   const fs = new Fs(new BlockDriver(ports));
   fs.mount();
   fs.writeFile('/ops-data', new TextEncoder().encode('vnode-data\n'));
+  fs.writeFile('/offset-data', new TextEncoder().encode('AB'));
   fs.writeFile(
     '/bin/fileops',
     buildUserExecutable(
@@ -35,6 +36,7 @@ test('structured file objects dispatch vnode, pipe, terminal, and console operat
           int p[2];
           int copy;
           int n;
+          int pid;
           fd = open("/ops-data", 0);
           if (fd < 0) return 1;
           n = read(fd, buf, 32);
@@ -50,6 +52,32 @@ test('structured file objects dispatch vnode, pipe, terminal, and console operat
           if (n != 11) return 6;
           close(p[0]);
           if (write(1, buf, n) != n) return 7;
+
+          // dup() aliases one open-file description, including its offset.
+          fd = open("/offset-data", 0);
+          if (fd < 0) return 8;
+          copy = dup(fd);
+          if (copy < 0) return 9;
+          if (read(fd, buf, 1) != 1) return 10;
+          if (read(copy, buf + 1, 1) != 1) return 11;
+          if (buf[0] != 'A' || buf[1] != 'B') return 12;
+          close(fd);
+          close(copy);
+
+          // fork() inherits the same open-file description. The child's read
+          // advances the offset observed by the parent after wait().
+          fd = open("/offset-data", 0);
+          if (fd < 0) return 13;
+          pid = fork();
+          if (pid == 0) {
+            if (read(fd, buf, 1) != 1) exit(14);
+            exit(0);
+          }
+          if (pid < 0) return 15;
+          wait();
+          if (read(fd, buf, 1) != 1) return 16;
+          if (buf[0] != 'B') return 17;
+          close(fd);
           return 0;
         }
       `,

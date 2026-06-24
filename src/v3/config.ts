@@ -22,6 +22,7 @@ export type Defines = Readonly<Record<string, number>>;
 const MAX_PROC = 8;
 const NBUF = 16;
 const NFD = 16;
+const NFILE = MAX_PROC * NFD;
 const NPIPE = 8;
 const PIPESZ = 512;
 const MAXARG = 16;
@@ -128,6 +129,7 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_PTE_USER: PTE_USER,
   CFG_MAX_PROC: MAX_PROC,
   CFG_NFD: NFD,
+  CFG_NFILE: NFILE,
   CFG_NPIPE: NPIPE,
   CFG_PIPESZ: PIPESZ,
   CFG_MAXARG: MAXARG,

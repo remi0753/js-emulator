@@ -9,6 +9,7 @@ struct file_ops console_file_ops;
 struct file_ops keyboard_file_ops;
 struct file_ops vnode_file_ops;
 struct file_ops pipe_file_ops;
+struct open_file open_file_table[CFG_NFILE];
 
 int console_write_op(int file_addr, int caller, int buf, int len) {
   char *p;
@@ -44,11 +45,45 @@ int keyboard_read_op(int file_addr, int caller, int buf, int len) {
 
 int vnode_read_op(int file_addr, int caller, int buf, int len) {
   struct file *file;
+  struct open_file *open;
   int got;
   file = file_addr;
-  got = vnode_read(&file->vnode, file->offset, len, buf);
-  file->offset = file->offset + got;
+  open = &open_file_table[file->object];
+  got = vnode_read(&open->vnode, open->offset, len, buf);
+  open->offset = open->offset + got;
   return got;
+}
+
+void vnode_close_op(int file_addr) {
+  struct file *file;
+  struct open_file *open;
+  file = file_addr;
+  open = &open_file_table[file->object];
+  open->refs = open->refs - 1;
+  if (open->refs == 0) {
+    open->used = 0;
+  }
+}
+
+void vnode_retain_op(int file_addr) {
+  struct file *file;
+  file = file_addr;
+  open_file_table[file->object].refs = open_file_table[file->object].refs + 1;
+}
+
+int alloc_open_file(void) {
+  int i;
+  i = 0;
+  while (i < CFG_NFILE) {
+    if (open_file_table[i].used == 0) {
+      open_file_table[i].used = 1;
+      open_file_table[i].refs = 1;
+      open_file_table[i].offset = 0;
+      return i;
+    }
+    i = i + 1;
+  }
+  return -1;
 }
 
 int pipe_read_op(int file_addr, int caller, int buf, int len) {
@@ -128,6 +163,13 @@ void pipe_retain_op(int file_addr) {
 }
 
 void file_init(void) {
+  int i;
+  i = 0;
+  while (i < CFG_NFILE) {
+    open_file_table[i].used = 0;
+    i = i + 1;
+  }
+
   console_file_ops.read = 0;
   console_file_ops.write = console_write_op;
   console_file_ops.close = 0;
@@ -140,8 +182,8 @@ void file_init(void) {
 
   vnode_file_ops.read = vnode_read_op;
   vnode_file_ops.write = 0;
-  vnode_file_ops.close = 0;
-  vnode_file_ops.retain = 0;
+  vnode_file_ops.close = vnode_close_op;
+  vnode_file_ops.retain = vnode_retain_op;
 
   pipe_file_ops.read = pipe_read_op;
   pipe_file_ops.write = pipe_write_op;
@@ -154,11 +196,7 @@ void file_reset(struct file *file) {
   file->type = CFG_FT_NONE;
   file->readable = 0;
   file->writable = 0;
-  file->offset = 0;
   file->pipe_end = 0;
-  file->vnode.inode.inum = 0;
-  file->vnode.inode.type = 0;
-  file->vnode.inode.size = 0;
   file->object = 0;
 }
 
@@ -176,12 +214,19 @@ void file_set_keyboard(struct file *file) {
   file->readable = 1;
 }
 
-void file_set_vnode(struct file *file, int inum) {
+int file_set_vnode(struct file *file, int inum) {
+  int open;
+  open = alloc_open_file();
+  if (open < 0) {
+    return -1;
+  }
   file_reset(file);
   file->ops = &vnode_file_ops;
   file->type = CFG_FT_FILE;
   file->readable = 1;
-  vnode_init(&file->vnode, inum);
+  file->object = open;
+  vnode_init(&open_file_table[open].vnode, inum);
+  return 0;
 }
 
 void file_set_pipe(struct file *file, int pipe, int end) {
@@ -268,11 +313,7 @@ void copy_file(struct file *dst, struct file *src) {
   dst->type = src->type;
   dst->readable = src->readable;
   dst->writable = src->writable;
-  dst->offset = src->offset;
   dst->pipe_end = src->pipe_end;
-  dst->vnode.inode.inum = src->vnode.inode.inum;
-  dst->vnode.inode.type = src->vnode.inode.type;
-  dst->vnode.inode.size = src->vnode.inode.size;
   dst->object = src->object;
   file_retain(dst);
 }

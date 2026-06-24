@@ -452,8 +452,9 @@ Establish these kernel-internal foundations during that split:
   the C compiler;
 - ✅ structured process, file, inode/vnode, pipe, and VM state instead of
   parallel flat arrays (`proc_table` owns each process's context, VM space, and
-  descriptor objects; descriptors embed vnode state; `pipe_table` owns each
-  pipe's buffer and endpoint counts);
+  descriptor objects; descriptors reference shared open-file descriptions so
+  `dup`/`fork` share offsets; `pipe_table` owns each pipe's buffer and endpoint
+  counts);
 - ✅ a common `file_ops`-style interface for files/directories, pipes, terminal
   input, and console/device output. `read`/`write`/`close`/`retain` dispatch
   through per-file operation tables, so syscall handlers no longer branch on

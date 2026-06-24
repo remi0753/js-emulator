@@ -34,11 +34,13 @@ int sys_read(int caller, int fd, int buf, int len) {
 }
 
 int sys_open(int caller, int upath, int flags) {
+  int result;
   int inum;
   int t;
   int fd;
-  if (copy_path_in(caller, upath) < 0) {
-    return -CFG_EFAULT;
+  result = copy_path_in(caller, upath);
+  if (result < 0) {
+    return result;
   }
   inum = namei(kpath);
   if (inum == 0) {
@@ -52,7 +54,9 @@ int sys_open(int caller, int upath, int flags) {
   if (fd < 0) {
     return -CFG_EMFILE;
   }
-  file_set_vnode(&proc_table[caller].files[fd], inum);
+  if (file_set_vnode(&proc_table[caller].files[fd], inum) < 0) {
+    return -CFG_ENFILE;
+  }
   return fd;
 }
 

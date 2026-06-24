@@ -48,14 +48,22 @@ struct vnode {
   struct inode inode;
 };
 
+// A descriptor points at an open-file object. The latter owns the shared file
+// offset and reference count, so dup() and fork() preserve Unix open-file
+// description semantics instead of copying the offset by value.
+struct open_file {
+  int used;
+  int refs;
+  int offset;
+  struct vnode vnode;
+};
+
 struct file {
   struct file_ops *ops;
   int type;
   int readable;
   int writable;
-  int offset;
   int pipe_end;
-  struct vnode vnode;
   int object;
 };
 
@@ -113,6 +121,7 @@ int read16_at(int addr);
 int read8_at(int addr);
 void write32_at(int addr, int v);
 void write8_at(int addr, int v);
+int user_phys_addr(int proc, int addr, int write);
 int user_access_ok(int proc, int addr, int len, int write);
 // copyin/copyout are the normal path for moving bytes across the user/kernel
 // boundary: they validate the user range in `proc`'s address space first, then
@@ -162,11 +171,12 @@ extern struct file_ops console_file_ops;
 extern struct file_ops keyboard_file_ops;
 extern struct file_ops vnode_file_ops;
 extern struct file_ops pipe_file_ops;
+extern struct open_file open_file_table[CFG_NFILE];
 void file_init(void);
 void file_reset(struct file *file);
 void file_set_console(struct file *file);
 void file_set_keyboard(struct file *file);
-void file_set_vnode(struct file *file, int inum);
+int file_set_vnode(struct file *file, int inum);
 void file_set_pipe(struct file *file, int pipe, int end);
 int file_read(struct file *file, int caller, int buf, int len);
 int file_write(struct file *file, int caller, int buf, int len);

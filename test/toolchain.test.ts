@@ -191,6 +191,31 @@ test('Phase 10: cross-object prototypes preserve pointer return types', () => {
   assert.equal(kernel.processes.get(1)!.exitCode, 22);
 });
 
+test('modules: conflicting declarations are rejected within and across objects', () => {
+  assert.throws(
+    () => compileC(`int *get(void); int get(void) { return 0; }`),
+    /conflicting function declarations for get/,
+  );
+
+  const objectReader = compileC(
+    `extern char shared; int main(int a, char **v) { return shared; }`,
+  );
+  const objectOwner = compileC(`int shared;`, { start: 'none' });
+  assert.throws(
+    () => linkExecutable([objectReader, objectOwner]),
+    /conflicting object types for shared/,
+  );
+
+  const functionCaller = compileC(
+    `int *get(void); int main(int a, char **v) { return get() == 0; }`,
+  );
+  const functionOwner = compileC(`int get(void) { return 0; }`, { start: 'none' });
+  assert.throws(
+    () => linkExecutable([functionCaller, functionOwner]),
+    /conflicting function types for get/,
+  );
+});
+
 test('Phase 10: duplicate public symbols are link errors', () => {
   const objA = compileC(`int helper(){ return 1; } int main(int a, char **v){ return helper(); }`);
   const objB = compileC(`int helper(){ return 2; }`, { start: 'none' });

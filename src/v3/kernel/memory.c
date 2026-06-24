@@ -43,11 +43,31 @@ void write8_at(int addr, int v) {
   p[0] = v;
 }
 
-int user_access_ok(int proc, int addr, int len, int write) {
+int user_phys_addr(int proc, int addr, int write) {
   int *pd;
   int pde;
   int *pt;
   int pte;
+  if (proc < 0 || proc >= nproc) {
+    return -1;
+  }
+  pd = proc_table[proc].vm.ptbr;
+  pde = pd[(addr >> 22) & 0x3ff];
+  if ((pde & 5) != 5) {
+    return -1;
+  }
+  pt = pde & 0xfffff000;
+  pte = pt[(addr >> 12) & 0x3ff];
+  if ((pte & 5) != 5) {
+    return -1;
+  }
+  if (write != 0 && (pte & 2) == 0) {
+    return -1;
+  }
+  return (pte & 0xfffff000) + (addr & 0xfff);
+}
+
+int user_access_ok(int proc, int addr, int len, int write) {
   int page;
   int last;
   if (len < 0 || addr < CFG_USER_BASE || addr > CFG_USER_END) {
@@ -61,18 +81,8 @@ int user_access_ok(int proc, int addr, int len, int write) {
   }
   page = addr & 0xfffff000;
   last = (addr + len - 1) & 0xfffff000;
-  pd = proc_table[proc].vm.ptbr;
   while (page <= last) {
-    pde = pd[(page >> 22) & 0x3ff];
-    if ((pde & 5) != 5) {
-      return 0;
-    }
-    pt = pde & 0xfffff000;
-    pte = pt[(page >> 12) & 0x3ff];
-    if ((pte & 5) != 5) {
-      return 0;
-    }
-    if (write != 0 && (pte & 2) == 0) {
+    if (user_phys_addr(proc, page, write) < 0) {
       return 0;
     }
     page = page + 4096;
@@ -81,16 +91,18 @@ int user_access_ok(int proc, int addr, int len, int write) {
 }
 
 // Copy `len` bytes from user address `usrc` (in proc's address space) into the
-// kernel buffer at `kdst`. The caller's page directory is live, so user memory
-// is reachable directly once the range is validated.
+// kernel buffer at `kdst`. Translation uses proc's page tables explicitly, so
+// this remains correct even when proc is not the currently loaded address space.
 int copyin(int proc, int kdst, int usrc, int len) {
   int i;
+  int phys;
   if (user_access_ok(proc, usrc, len, 0) == 0) {
     return -CFG_EFAULT;
   }
   i = 0;
   while (i < len) {
-    write8_at(kdst + i, read8_at(usrc + i));
+    phys = user_phys_addr(proc, usrc + i, 0);
+    write8_at(kdst + i, read8_at(phys));
     i = i + 1;
   }
   return 0;
@@ -99,12 +111,14 @@ int copyin(int proc, int kdst, int usrc, int len) {
 // Copy `len` bytes from the kernel buffer at `ksrc` out to user address `udst`.
 int copyout(int proc, int udst, int ksrc, int len) {
   int i;
+  int phys;
   if (user_access_ok(proc, udst, len, 1) == 0) {
     return -CFG_EFAULT;
   }
   i = 0;
   while (i < len) {
-    write8_at(udst + i, read8_at(ksrc + i));
+    phys = user_phys_addr(proc, udst + i, 1);
+    write8_at(phys, read8_at(ksrc + i));
     i = i + 1;
   }
   return 0;
@@ -112,24 +126,26 @@ int copyout(int proc, int udst, int ksrc, int len) {
 
 // Copy a NUL-terminated string in from user memory, validating each byte. Stores
 // at most `max` bytes (including the terminator) at `kdst`. Returns the string
-// length (excluding the terminator) on success, or -EFAULT on a bad address or
-// if no terminator is found within `max`.
+// length (excluding the terminator) on success, -EFAULT on a bad address, or
+// -E2BIG if no terminator is found within `max`.
 int copyinstr(int proc, int kdst, int usrc, int max) {
   int i;
   int c;
+  int phys;
   i = 0;
   while (i < max) {
     if (user_access_ok(proc, usrc + i, 1, 0) == 0) {
       return -CFG_EFAULT;
     }
-    c = read8_at(usrc + i);
+    phys = user_phys_addr(proc, usrc + i, 0);
+    c = read8_at(phys);
     write8_at(kdst + i, c);
     if (c == 0) {
       return i;
     }
     i = i + 1;
   }
-  return -CFG_EFAULT;
+  return -CFG_E2BIG;
 }
 
 // --- physical frame allocator: a free list threaded through the free frames ---

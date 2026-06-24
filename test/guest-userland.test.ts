@@ -74,9 +74,7 @@ test('a fresh disk image contains the compiled userland under /bin', () => {
   }
 });
 
-test('a failed libc call reports the error through errno', () => {
-  // open() of a missing path returns -1 and sets errno to ENOENT (2). The
-  // program reads `errno` (declared extern, defined in libc) to distinguish.
+test('failed libc calls preserve specific kernel errno values', () => {
   const disk = buildGuestDiskImage();
   const ports = new PortBus();
   const blk = new BlockDisk(disk);
@@ -85,17 +83,28 @@ test('a failed libc call reports the error through errno', () => {
   ports.register(PORT.DISK_SECTORS, 1, blk);
   const fs = new Fs(new BlockDriver(ports));
   fs.mount();
+  fs.writeFile('/bad-exec', new TextEncoder().encode('not an executable'));
   fs.writeFile(
     '/bin/errcheck',
     buildUserExecutable(
       'errcheck',
       `
         extern int errno;
+        char big[600];
+        char *av[2];
         int main(int argc, char **argv) {
           int fd;
+          int i;
           fd = open("/nope", 0);
           if (fd != -1) { write(1, "bad-ret\\n", 8); return 1; }
           if (errno != 2) { write(1, "bad-errno\\n", 10); return 2; }
+          if (exec("/missing", 0) != -1 || errno != 2) return 3;
+          if (exec("/bad-exec", 0) != -1 || errno != 8) return 4;
+          i = 0;
+          while (i < 600) { big[i] = 'A'; i = i + 1; }
+          av[0] = big;
+          av[1] = 0;
+          if (exec("/bin/echo", av) != -1 || errno != 7) return 5;
           write(1, "ENOENT-ok\\n", 10);
           return 0;
         }

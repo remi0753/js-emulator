@@ -79,7 +79,7 @@ export type CType =
   | { kind: 'struct'; name: string; fields: Field[]; size: number }
   | { kind: 'funcptr'; returnType: CType; params: Param[] };
 
-interface Field {
+export interface Field {
   name: string;
   type: CType;
   offset: number;
@@ -91,7 +91,7 @@ export interface FunctionSig {
   params: Param[];
 }
 
-interface Param {
+export interface Param {
   name: string;
   type: CType;
 }
@@ -852,10 +852,10 @@ class Codegen {
   compile(): CompiledObject {
     for (const g of this.program.globals) this.globals.set(g.name, g.type);
     for (const f of this.program.prototypes) {
-      this.functions.set(f.name, { name: f.name, returnType: f.returnType, params: f.params });
+      this.registerFunction(f);
     }
     for (const f of this.program.functions) {
-      this.functions.set(f.name, { name: f.name, returnType: f.returnType, params: f.params });
+      this.registerFunction(f);
     }
 
     if (this.options.start !== 'none') this.emitStart();
@@ -876,6 +876,18 @@ class Codegen {
       functions: this.functions,
       sourceMap: this.sourceMap,
     };
+  }
+
+  private registerFunction(sig: FunctionSig): void {
+    const prior = this.functions.get(sig.name);
+    if (prior && !functionTypesEqual(prior, sig)) {
+      throw new CompileError(`conflicting function declarations for ${sig.name}`);
+    }
+    this.functions.set(sig.name, {
+      name: sig.name,
+      returnType: sig.returnType,
+      params: sig.params,
+    });
   }
 
   private emitStart(): void {
@@ -1336,6 +1348,7 @@ class Codegen {
     // functions, runtime helpers, and external labels -- is a direct call.
     const isVar = !!this.lookupLocal(expr.callee) || this.globals.has(expr.callee);
     const indirect = isVar && !this.functions.has(expr.callee);
+    const variableType = indirect ? this.resolveVar(expr.callee) : undefined;
     for (const arg of expr.args) {
       this.emitExpr(arg);
       this.emitPushValueFromReg('R0');
@@ -1348,22 +1361,26 @@ class Codegen {
     }
     if (expr.args.length > 0) this.emitAdjustCsp(-expr.args.length * 4);
     const sig = this.functions.get(expr.callee);
-    expr.type = indirect ? { kind: 'int' } : (sig?.returnType ?? { kind: 'int' });
+    expr.type =
+      indirect && variableType?.kind === 'funcptr'
+        ? variableType.returnType
+        : (sig?.returnType ?? { kind: 'int' });
     return expr.type;
   }
 
   // Indirect call through a computed address (e.g. `table[i](args)`). The target
-  // is evaluated after the arguments are staged; its return type is unknown to
-  // the compiler, so it is assumed to be int.
+  // is evaluated after the arguments are staged. A typed function pointer
+  // preserves its declared return type for subsequent pointer arithmetic and
+  // dereferences.
   private emitCallPtr(expr: Extract<Expr, { kind: 'callptr' }>): CType {
     for (const arg of expr.args) {
       this.emitExpr(arg);
       this.emitPushValueFromReg('R0');
     }
-    this.emitExpr(expr.target); // address into R0
+    const targetType = this.emitExpr(expr.target); // address into R0
     this.emit(`  CALLR R0`);
     if (expr.args.length > 0) this.emitAdjustCsp(-expr.args.length * 4);
-    expr.type = { kind: 'int' };
+    expr.type = targetType.kind === 'funcptr' ? targetType.returnType : { kind: 'int' };
     return expr.type;
   }
 
@@ -1644,6 +1661,63 @@ class Codegen {
   private fail(message: string): never {
     throw new CompileError(message);
   }
+}
+
+export function cTypesEqual(left: CType, right: CType): boolean {
+  if (left.kind !== right.kind) return false;
+  switch (left.kind) {
+    case 'void':
+    case 'int':
+    case 'char':
+      return true;
+    case 'ptr':
+      return right.kind === 'ptr' && cTypesEqual(left.to, right.to);
+    case 'array':
+      return (
+        right.kind === 'array' &&
+        left.len === right.len &&
+        cTypesEqual(left.of, right.of)
+      );
+    case 'struct':
+      return (
+        right.kind === 'struct' &&
+        left.name === right.name &&
+        left.size === right.size &&
+        left.fields.length === right.fields.length &&
+        left.fields.every((field, i) => {
+          const other = right.fields[i];
+          return (
+            other !== undefined &&
+            field.name === other.name &&
+            field.offset === other.offset &&
+            cTypesEqual(field.type, other.type)
+          );
+        })
+      );
+    case 'funcptr':
+      return (
+        right.kind === 'funcptr' &&
+        cTypesEqual(left.returnType, right.returnType) &&
+        paramsEqual(left.params, right.params)
+      );
+  }
+}
+
+export function functionTypesEqual(left: FunctionSig, right: FunctionSig): boolean {
+  return (
+    cTypesEqual(left.returnType, right.returnType) &&
+    paramsEqual(left.params, right.params)
+  );
+}
+
+function paramsEqual(left: Param[], right: Param[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((param, i) => {
+      const other = right[i];
+      return other !== undefined && cTypesEqual(param.type, other.type);
+    })
+  );
 }
 
 function initializerBytes(type: CType, init: Initializer): Uint8Array {

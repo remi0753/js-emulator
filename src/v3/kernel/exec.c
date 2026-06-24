@@ -11,10 +11,7 @@ int g_argc;                   // argument count staged for the next spawn
 
 // Copy a NUL-terminated path from user memory into the kpath kernel buffer.
 int copy_path_in(int proc, int upath) {
-  if (copyinstr(proc, kpath, upath, CFG_INITPATH_LEN) < 0) {
-    return -1;
-  }
-  return 0;
+  return copyinstr(proc, kpath, upath, CFG_INITPATH_LEN);
 }
 
 // Stage a single argument (used at boot: argv = { path }).
@@ -44,7 +41,7 @@ int build_args_from_user(int proc, int uargv) {
   if (uargv != 0) {
     while (argc < CFG_MAXARG) {
       if (copyin(proc, &ptr, uargv + argc * 4, 4) < 0) {
-        return -1;
+        return -CFG_EFAULT;
       }
       if (ptr == 0) {
         break;
@@ -52,7 +49,7 @@ int build_args_from_user(int proc, int uargv) {
       arg_off[argc] = total;
       len = copyinstr(proc, argbuf + total, ptr, CFG_ARGBUF_LEN - total);
       if (len < 0) {
-        return -1;
+        return len;
       }
       total = total + len + 1; // advance past the copied string and its NUL
       argc = argc + 1;
@@ -60,10 +57,10 @@ int build_args_from_user(int proc, int uargv) {
     // Reject argv arrays longer than MAXARG (the slot after the last must be 0).
     if (argc == CFG_MAXARG) {
       if (copyin(proc, &ptr, uargv + argc * 4, 4) < 0) {
-        return -1;
+        return -CFG_EFAULT;
       }
       if (ptr != 0) {
-        return -1;
+        return -CFG_E2BIG;
       }
     }
   }
@@ -84,32 +81,32 @@ int load_exec_image(int pd, int path) {
   int frame;
   inum = namei(path);
   if (inum == 0) {
-    return -1;
+    return -CFG_ENOENT;
   }
   vnode_init(&node, inum);
   if (node.inode.type != CFG_T_FILE) {
-    return -1;
+    return -CFG_ENOEXEC;
   }
   if (node.inode.size < 12 || vnode_read(&node, 0, 12, exec_hdr) != 12) {
-    return -1;
+    return -CFG_ENOEXEC;
   }
   if (read32_at(exec_hdr) != CFG_EXEC_MAGIC) {
-    return -1;
+    return -CFG_ENOEXEC;
   }
   entry = read32_at(exec_hdr + 4);
   memsz = read32_at(exec_hdr + 8);
   if (memsz <= 0 || memsz > CFG_USER_STACK_PAGE - CFG_USER_LOAD_BASE) {
-    return -1;
+    return -CFG_ENOEXEC;
   }
   if (node.inode.size - 12 > memsz) {
-    return -1;
+    return -CFG_ENOEXEC;
   }
   if (entry < CFG_USER_LOAD_BASE || entry >= CFG_USER_LOAD_BASE + memsz) {
-    return -1;
+    return -CFG_ENOEXEC;
   }
   npages = (memsz + 4095) / 4096;
   if (npages + 2 > free_frame_count()) {
-    return -1;
+    return -CFG_ENOMEM;
   }
   i = 0;
   while (i < npages) {
@@ -151,7 +148,7 @@ int setup_user_args(int idx, int pd) {
   }
   argvaddr = (strbase - (g_argc + 1) * 4) & 0xfffffffc;
   if (argvaddr <= CFG_USER_STACK_PAGE) {
-    return -1;
+    return -CFG_E2BIG;
   }
   i = 0;
   while (i < g_argc) {
@@ -177,18 +174,20 @@ int setup_user_args(int idx, int pd) {
 int spawn(int idx, int path) {
   int pd;
   int entry;
+  int result;
   if (free_list == 0) {
-    return -1;
+    return -CFG_ENOMEM;
   }
   pd = new_address_space();
   entry = load_exec_image(pd, path);
   if (entry < 0) {
     free_space(pd);
-    return -1;
+    return entry;
   }
-  if (setup_user_args(idx, pd) < 0) {
+  result = setup_user_args(idx, pd);
+  if (result < 0) {
     free_space(pd);
-    return -1;
+    return result;
   }
   proc_table[idx].vm.ptbr = pd;
   proc_table[idx].ctx.pc = entry;
@@ -198,18 +197,22 @@ int spawn(int idx, int path) {
 }
 
 int do_exec(int idx, int upath, int uargv) {
+  int result;
   int old_pd;
-  if (copy_path_in(idx, upath) < 0) {
-    proc_table[idx].ctx.regs[0] = -CFG_EFAULT;
+  result = copy_path_in(idx, upath);
+  if (result < 0) {
+    proc_table[idx].ctx.regs[0] = result;
     return 0;
   }
-  if (build_args_from_user(idx, uargv) < 0) {
-    proc_table[idx].ctx.regs[0] = -CFG_EFAULT;
+  result = build_args_from_user(idx, uargv);
+  if (result < 0) {
+    proc_table[idx].ctx.regs[0] = result;
     return 0;
   }
   old_pd = proc_table[idx].vm.ptbr;
-  if (spawn(idx, kpath) < 0) {
-    proc_table[idx].ctx.regs[0] = -CFG_ENOEXEC;
+  result = spawn(idx, kpath);
+  if (result < 0) {
+    proc_table[idx].ctx.regs[0] = result;
     return 0;
   }
   return old_pd;

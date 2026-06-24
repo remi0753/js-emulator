@@ -1,7 +1,16 @@
 import { assemble } from '../assembler.ts';
 import { LAYOUT } from '../v2/kernel/abi.ts';
 import { type Executable, SEG } from '../v2/kernel/exec.ts';
-import type { BssSymbol, CompiledObject, DataSymbol, SourceLocation } from './c.ts';
+import {
+  cTypesEqual,
+  functionTypesEqual,
+  type BssSymbol,
+  type CompiledObject,
+  type CType,
+  type DataSymbol,
+  type FunctionSig,
+  type SourceLocation,
+} from './c.ts';
 
 export interface LinkOptions {
   textOrigin?: number;
@@ -49,6 +58,7 @@ const SHARED_DATA_SYMBOLS = new Set(['__csp', '__stack']);
 export function linkExecutable(objects: CompiledObject[], options: LinkOptions = {}): LinkedImage {
   const textOrigin = options.textOrigin ?? LAYOUT.USER_TEXT;
   const entryName = options.entry ?? '_start';
+  validateCrossObjectTypes(objects);
   rejectReservedRuntimeDefinitions(objects);
   // Objects may each carry crt0 + the runtime helpers (identical, shared
   // symbols). Drop duplicate label-led blocks so several objects can link
@@ -88,6 +98,34 @@ export function linkExecutable(objects: CompiledObject[], options: LinkOptions =
     data,
     dataMemSize: memSize,
   };
+}
+
+function validateCrossObjectTypes(objects: CompiledObject[]): void {
+  const globals = new Map<string, CType>();
+  const functions = new Map<string, FunctionSig>();
+
+  for (const obj of objects) {
+    for (const [name, type] of obj.globals) {
+      if (functions.has(name)) {
+        throw new Error(`link: symbol declared as both object and function: ${name}`);
+      }
+      const prior = globals.get(name);
+      if (prior && !cTypesEqual(prior, type)) {
+        throw new Error(`link: conflicting object types for ${name}`);
+      }
+      globals.set(name, type);
+    }
+    for (const [name, sig] of obj.functions) {
+      if (globals.has(name)) {
+        throw new Error(`link: symbol declared as both object and function: ${name}`);
+      }
+      const prior = functions.get(name);
+      if (prior && !functionTypesEqual(prior, sig)) {
+        throw new Error(`link: conflicting function types for ${name}`);
+      }
+      functions.set(name, sig);
+    }
+  }
 }
 
 function rejectReservedRuntimeDefinitions(objects: CompiledObject[]): void {
