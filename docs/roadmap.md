@@ -441,14 +441,20 @@ duplicating declarations and configuration values across C files.
 
 Establish these kernel-internal foundations during that split:
 
-- stable negative errno values and a libc-visible `errno` convention;
-- `copyin`/`copyout` helpers as the only normal path for user-memory access;
-- a shared sleep/wakeup and wait-queue primitive;
-- table-driven syscall dispatch;
-- structured process, file, inode/vnode, and VM state instead of adding more
+- ✅ stable negative errno values and a libc-visible `errno` convention
+  (config.ts `ERRNO`; libc `errno` + `ret_errno`);
+- ✅ `copyin`/`copyout`/`copyinstr` helpers as the normal path for user-memory
+  access (memory.c);
+- ✅ a shared sleep/wakeup and wait-queue primitive (scheduler.c `sleep`/
+  `wakeup`, channels are object addresses; one `CFG_ST_SLEEPING` state);
+- ✅ table-driven syscall dispatch (syscall.c `syscall_table`), enabled by a new
+  register-indirect call (`CALLR`) in the ISA and function-pointer support in
+  the C compiler;
+- ⬜ structured process, file, inode/vnode, and VM state instead of adding more
   parallel flat arrays;
-- a common `file_ops`-style interface for files, directories, pipes, terminals,
-  and devices.
+- ⬜ a common `file_ops`-style interface for files, directories, pipes,
+  terminals, and devices (the compiler now supports the function pointers this
+  needs).
 
 The phases below have dependencies and should not be implemented as isolated
 feature lists. Use this practical order:

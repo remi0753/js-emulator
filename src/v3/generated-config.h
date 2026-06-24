@@ -53,6 +53,7 @@
 #define CFG_NDIRECT 12
 #define CFG_NFD 16
 #define CFG_NPIPE 8
+#define CFG_NSYS 15
 #define CFG_PAGEFAULT_VECTOR 14
 #define CFG_PIPE_BUF_LEN 0x1000
 #define CFG_PIPESZ 512

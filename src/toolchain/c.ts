@@ -154,6 +154,7 @@ type Expr =
   | { kind: 'binary'; op: string; left: Expr; right: Expr; type?: CType }
   | { kind: 'unary'; op: string; expr: Expr; type?: CType }
   | { kind: 'call'; callee: string; args: Expr[]; type?: CType }
+  | { kind: 'callptr'; target: Expr; args: Expr[]; type?: CType }
   | { kind: 'index'; base: Expr; index: Expr; type?: CType }
   | { kind: 'member'; base: Expr; name: string; deref: boolean; type?: CType }
   | { kind: 'sizeof'; typeName: CType; type?: CType };
@@ -601,8 +602,6 @@ class Parser {
     let e = this.parsePrimary();
     for (;;) {
       if (this.matchText('(')) {
-        if (e.kind !== 'var')
-          throw new CompileError('only direct function calls are supported', loc(this.previous()));
         const args: Expr[] = [];
         if (!this.matchText(')')) {
           do {
@@ -610,7 +609,10 @@ class Parser {
           } while (this.matchText(','));
           this.expectText(')');
         }
-        e = { kind: 'call', callee: e.name, args };
+        // A bare name is resolved at codegen (direct call to a function, or an
+        // indirect call through a variable holding an address); any other
+        // expression is an indirect call through its computed address.
+        e = e.kind === 'var' ? { kind: 'call', callee: e.name, args } : { kind: 'callptr', target: e, args };
         continue;
       }
       if (this.matchText('[')) {
@@ -1037,6 +1039,17 @@ class Codegen {
         return expr.type;
       }
       case 'var': {
+        // A function name used as a value yields its address (e.g. for a
+        // dispatch table), unless a variable of the same name shadows it.
+        if (
+          this.functions.has(expr.name) &&
+          !this.lookupLocal(expr.name) &&
+          !this.globals.has(expr.name)
+        ) {
+          this.emit(`  MOV R0, ${expr.name}`);
+          expr.type = { kind: 'ptr', to: { kind: 'int' } };
+          return expr.type;
+        }
         const type = this.resolveVar(expr.name);
         if (type.kind === 'array') {
           this.emitAddressOf(expr);
@@ -1063,6 +1076,8 @@ class Codegen {
         return this.emitBinary(expr);
       case 'call':
         return this.emitCall(expr);
+      case 'callptr':
+        return this.emitCallPtr(expr);
       case 'index': {
         const ty = this.emitAddressOf(expr);
         if (ty.kind === 'array') {
@@ -1275,14 +1290,39 @@ class Codegen {
     if (expr.callee.startsWith('__')) {
       return this.emitBuiltin(expr);
     }
+    // An indirect call happens only when the name is a variable (local/global)
+    // holding an address and is not itself a function. Everything else -- known
+    // functions, runtime helpers, and external labels -- is a direct call.
+    const isVar = !!this.lookupLocal(expr.callee) || this.globals.has(expr.callee);
+    const indirect = isVar && !this.functions.has(expr.callee);
     for (const arg of expr.args) {
       this.emitExpr(arg);
       this.emitPushValueFromReg('R0');
     }
-    this.emit(`  CALL ${expr.callee}`);
+    if (indirect) {
+      this.emitExpr({ kind: 'var', name: expr.callee }); // address into R0
+      this.emit(`  CALLR R0`);
+    } else {
+      this.emit(`  CALL ${expr.callee}`);
+    }
     if (expr.args.length > 0) this.emitAdjustCsp(-expr.args.length * 4);
     const sig = this.functions.get(expr.callee);
-    expr.type = sig?.returnType ?? { kind: 'int' };
+    expr.type = indirect ? { kind: 'int' } : (sig?.returnType ?? { kind: 'int' });
+    return expr.type;
+  }
+
+  // Indirect call through a computed address (e.g. `table[i](args)`). The target
+  // is evaluated after the arguments are staged; its return type is unknown to
+  // the compiler, so it is assumed to be int.
+  private emitCallPtr(expr: Extract<Expr, { kind: 'callptr' }>): CType {
+    for (const arg of expr.args) {
+      this.emitExpr(arg);
+      this.emitPushValueFromReg('R0');
+    }
+    this.emitExpr(expr.target); // address into R0
+    this.emit(`  CALLR R0`);
+    if (expr.args.length > 0) this.emitAdjustCsp(-expr.args.length * 4);
+    expr.type = { kind: 'int' };
     return expr.type;
   }
 

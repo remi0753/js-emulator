@@ -527,6 +527,10 @@ export class CPU {
         this.push(this.pc);
         this.pc = ops[0]!;
         break;
+      case 'CALLR':
+        this.push(this.pc);
+        this.pc = r[ops[0]!]! >>> 0;
+        break;
       case 'RET':
         this.pc = this.pop();
         break;

@@ -3,7 +3,9 @@
 // updates process state, and sets the R0 return value.
 #include "kernel.h"
 
-int g_blocked; // set by a syscall that blocked the caller (don't write its R0)
+int g_noret;        // set when a handler set R0 itself (don't overwrite it)
+int g_pending_free; // address space to free after switching contexts, or 0
+int syscall_table[CFG_NSYS]; // syscall number -> handler address (0 = unimplemented)
 
 int sys_write(int caller, int fd, int buf, int len) {
   char *p;
@@ -38,7 +40,7 @@ int sys_write(int caller, int fd, int buf, int len) {
       return -CFG_EPIPE; // broken pipe: no readers
     }
     if (pipe_count[pp] == CFG_PIPESZ) {
-      g_blocked = 1;
+      g_noret = 1;
       proc_pc[caller] = proc_pc[caller] - CFG_SYSCALL_INSTR_SIZE;
       sleep(caller, &pipe_used[pp]); // wait for a reader to make space
       return 0;
@@ -79,7 +81,7 @@ int sys_read(int caller, int fd, int buf, int len) {
       if (kbd_eof()) {
         return 0;
       }
-      g_blocked = 1;
+      g_noret = 1;
       proc_pc[caller] = proc_pc[caller] - CFG_SYSCALL_INSTR_SIZE;
       sleep(caller, &kbd_chan); // wait for the keyboard IRQ to deliver input
       return 0;
@@ -105,7 +107,7 @@ int sys_read(int caller, int fd, int buf, int len) {
       return 0; // EOF: no data and no writers
     }
     // Block: rewind to re-execute INT 0x80 when a writer wakes us.
-    g_blocked = 1;
+    g_noret = 1;
     proc_pc[caller] = proc_pc[caller] - CFG_SYSCALL_INSTR_SIZE;
     sleep(caller, &pipe_used[pp]);
     return 0;
@@ -221,19 +223,117 @@ int sys_dup(int caller, int oldfd) {
   return newfd;
 }
 
+// --- syscall handlers ---
+//
+// Every handler has the same signature h(caller, a1, a2, a3) and returns the
+// value to place in R0, EXCEPT when it sets R0 itself or blocks the caller, in
+// which case it sets g_noret. A handler that must free an address space after
+// the context switch stages it in g_pending_free. These uniform shapes let the
+// dispatcher index a table by syscall number instead of a long if/else chain.
+
+int h_exit(int caller, int a1, int a2, int a3) {
+  g_pending_free = do_exit(caller, a1);
+  g_noret = 1; // the caller is now a zombie; don't write its R0
+  switch_to_next();
+  return 0;
+}
+
+int h_write(int caller, int a1, int a2, int a3) {
+  return sys_write(caller, a1, a2, a3);
+}
+
+int h_read(int caller, int a1, int a2, int a3) {
+  return sys_read(caller, a1, a2, a3);
+}
+
+int h_yield(int caller, int a1, int a2, int a3) {
+  switch_to_next();
+  return 0; // the caller resumes with R0 = 0 when next scheduled
+}
+
+int h_getpid(int caller, int a1, int a2, int a3) {
+  return caller;
+}
+
+int h_fork(int caller, int a1, int a2, int a3) {
+  return do_fork(caller);
+}
+
+int h_exec(int caller, int a1, int a2, int a3) {
+  g_pending_free = do_exec(caller, a1, a2);
+  g_noret = 1; // do_exec set R0 (argc on success, -errno on failure)
+  return 0;
+}
+
+int h_wait(int caller, int a1, int a2, int a3) {
+  g_pending_free = do_wait(caller);
+  g_noret = 1; // do_wait set R0 (child pid / -ECHILD) or blocked the caller
+  return 0;
+}
+
+int h_open(int caller, int a1, int a2, int a3) {
+  return sys_open(caller, a1, a2);
+}
+
+int h_close(int caller, int a1, int a2, int a3) {
+  return sys_close(caller, a1);
+}
+
+int h_pipe(int caller, int a1, int a2, int a3) {
+  return sys_pipe(caller, a1);
+}
+
+int h_dup(int caller, int a1, int a2, int a3) {
+  return sys_dup(caller, a1);
+}
+
+int h_time(int caller, int a1, int a2, int a3) {
+  return rtc_time();
+}
+
+int h_shutdown(int caller, int a1, int a2, int a3) {
+  serial_write("kernel: shutdown\n");
+  power_off(); // the machine stops at the next instruction boundary
+  return 0;
+}
+
+// Install the handler addresses. Unlisted numbers (e.g. UPTIME) stay 0 and
+// dispatch as -ENOSYS.
+void syscall_init(void) {
+  int i;
+  i = 0;
+  while (i < CFG_NSYS) {
+    syscall_table[i] = 0;
+    i = i + 1;
+  }
+  syscall_table[CFG_SYS_EXIT] = h_exit;
+  syscall_table[CFG_SYS_WRITE] = h_write;
+  syscall_table[CFG_SYS_READ] = h_read;
+  syscall_table[CFG_SYS_YIELD] = h_yield;
+  syscall_table[CFG_SYS_GETPID] = h_getpid;
+  syscall_table[CFG_SYS_FORK] = h_fork;
+  syscall_table[CFG_SYS_EXEC] = h_exec;
+  syscall_table[CFG_SYS_WAIT] = h_wait;
+  syscall_table[CFG_SYS_OPEN] = h_open;
+  syscall_table[CFG_SYS_CLOSE] = h_close;
+  syscall_table[CFG_SYS_PIPE] = h_pipe;
+  syscall_table[CFG_SYS_DUP] = h_dup;
+  syscall_table[CFG_SYS_TIME] = h_time;
+  syscall_table[CFG_SYS_SHUTDOWN] = h_shutdown;
+}
+
 void on_syscall(void) {
   int caller;
   int num;
   int a1;
   int a2;
   int a3;
-  int pending_free;
   int rv;
   if (sctx_mode != CFG_MODE_USER) {
     panic("syscall outside user");
   }
-  pending_free = 0;
-  g_blocked = 0;
+  g_noret = 0;
+  g_pending_free = 0;
   caller = current;
   save_ctx(caller);
   num = proc_regs[caller * 8 + 0];
@@ -241,50 +341,18 @@ void on_syscall(void) {
   a2 = proc_regs[caller * 8 + 2];
   a3 = proc_regs[caller * 8 + 3];
 
-  if (num == CFG_SYS_EXIT) {
-    pending_free = do_exit(caller, a1);
-    switch_to_next();
-  } else if (num == CFG_SYS_WRITE) {
-    rv = sys_write(caller, a1, a2, a3);
-    if (g_blocked == 0) {
+  if (num >= 0 && num < CFG_NSYS && syscall_table[num] != 0) {
+    rv = syscall_table[num](caller, a1, a2, a3);
+    if (g_noret == 0) {
       proc_regs[caller * 8 + 0] = rv;
     }
-  } else if (num == CFG_SYS_READ) {
-    rv = sys_read(caller, a1, a2, a3);
-    if (g_blocked == 0) {
-      proc_regs[caller * 8 + 0] = rv;
-    }
-  } else if (num == CFG_SYS_YIELD) {
-    proc_regs[caller * 8 + 0] = 0;
-    switch_to_next();
-  } else if (num == CFG_SYS_GETPID) {
-    proc_regs[caller * 8 + 0] = caller;
-  } else if (num == CFG_SYS_FORK) {
-    proc_regs[caller * 8 + 0] = do_fork(caller);
-  } else if (num == CFG_SYS_EXEC) {
-    pending_free = do_exec(caller, a1, a2);
-  } else if (num == CFG_SYS_WAIT) {
-    pending_free = do_wait(caller);
-  } else if (num == CFG_SYS_OPEN) {
-    proc_regs[caller * 8 + 0] = sys_open(caller, a1, a2);
-  } else if (num == CFG_SYS_CLOSE) {
-    proc_regs[caller * 8 + 0] = sys_close(caller, a1);
-  } else if (num == CFG_SYS_PIPE) {
-    proc_regs[caller * 8 + 0] = sys_pipe(caller, a1);
-  } else if (num == CFG_SYS_DUP) {
-    proc_regs[caller * 8 + 0] = sys_dup(caller, a1);
-  } else if (num == CFG_SYS_TIME) {
-    proc_regs[caller * 8 + 0] = rtc_time();
-  } else if (num == CFG_SYS_SHUTDOWN) {
-    serial_write("kernel: shutdown\n");
-    power_off(); // the machine stops at the next instruction boundary
   } else {
     proc_regs[caller * 8 + 0] = -CFG_ENOSYS;
   }
 
   load_ctx(current);
   __lptbr(proc_ptbr[current]);
-  if (pending_free != 0) {
-    free_space(pending_free);
+  if (g_pending_free != 0) {
+    free_space(g_pending_free);
   }
 }

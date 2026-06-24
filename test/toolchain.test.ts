@@ -63,7 +63,11 @@ test('Phase 10: compiles a non-trivial C-like user program to a segmented execut
 });
 
 function runExit(body: string): number {
-  const linked = linkExecutable([compileC(`int main(int argc, char **argv){ ${body} }`)]);
+  return runFull(`int main(int argc, char **argv){ ${body} }`);
+}
+
+function runFull(source: string): number {
+  const linked = linkExecutable([compileC(source)]);
   const kernel = new Kernel({ consoleSink: () => {}, log: () => {} });
   kernel.spawn('p', linked.executable, ['p']);
   kernel.run();
@@ -89,6 +93,25 @@ test('Phase 10: && / || are correct and short-circuit', () => {
   kernel.spawn('p', linked.executable, ['p']);
   kernel.run();
   assert.equal(kernel.processes.get(1)!.exitCode, 99);
+});
+
+test('function pointers: dispatch through a table and a variable', () => {
+  // A function name is a value (its address); calling through a table entry or a
+  // variable holding an address compiles to an indirect call (CALLR).
+  const source = `
+    int add(int a, int b) { return a + b; }
+    int mul(int a, int b) { return a * b; }
+    int table[2];
+    int main(int argc, char **argv) {
+      int fp;
+      table[0] = add;
+      table[1] = mul;
+      fp = add;
+      // table[1](6,7)=42, table[0](1,2)=3, fp(10,5)=15 -> 60
+      return table[1](6, 7) + table[0](1, 2) + fp(10, 5);
+    }
+  `;
+  assert.equal(runFull(source), 60);
 });
 
 test('Phase 10: pointer arithmetic scales by element size', () => {

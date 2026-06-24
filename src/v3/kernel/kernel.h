@@ -136,7 +136,10 @@ int spawn(int idx, int path);
 int do_exec(int idx, int upath, int uargv);
 
 // --- syscall.c ---
-extern int g_blocked; // set by a syscall that blocked the caller (don't write its R0)
+extern int g_noret;        // set when a handler set R0 itself (don't overwrite it)
+extern int g_pending_free; // address space to free after switching, or 0
+extern int syscall_table[CFG_NSYS]; // num -> handler address (0 = unimplemented)
+void syscall_init(void);
 int sys_write(int caller, int fd, int buf, int len);
 int sys_read(int caller, int fd, int buf, int len);
 int sys_open(int caller, int upath, int flags);

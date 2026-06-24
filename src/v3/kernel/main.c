@@ -131,6 +131,7 @@ int kmain(void) {
 
   serial_write("kernel: boot\n");
   setup_traps();
+  syscall_init();
   pmm_init();
   build_kernel_pt();
 

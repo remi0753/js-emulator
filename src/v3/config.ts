@@ -87,7 +87,11 @@ export const GUEST_KERNEL_LAYOUT = {
   userEnd: 0x800000,
 } as const;
 
+// Size of the syscall dispatch table: one slot per number, 0 to the max.
+const NSYS = Math.max(...Object.values(SYS)) + 1;
+
 export const GUEST_SYSCALL_DEFINES: Defines = {
+  CFG_NSYS: NSYS,
   CFG_SYS_EXIT: SYS.EXIT,
   CFG_SYS_WRITE: SYS.WRITE,
   CFG_SYS_READ: SYS.READ,

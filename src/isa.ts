@@ -50,6 +50,7 @@ export const ISA = {
   JLE: { opcode: 0x26, args: ['addr'] },
   CALL: { opcode: 0x27, args: ['addr'] },
   RET: { opcode: 0x28, args: [] },
+  CALLR: { opcode: 0x29, args: ['reg'] }, // indirect call: push return pc, jump to rX
 
   // --- stack ---
   PUSH: { opcode: 0x30, args: ['reg'] },
