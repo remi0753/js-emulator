@@ -401,7 +401,16 @@ they verify, for example `guest-signals.test.ts`, `guest-vfs.test.ts`, and
 `guest-mmap.test.ts`.
 
 Before adding Phase 17 features, split the current monolithic `kernel.c` by
-subsystem. The intended shape is:
+subsystem. **Status:** the split is done — the kernel now compiles as separate
+subsystem objects (`main.c`, `trap.c`, `scheduler.c`, `process.c`, `exec.c`,
+`syscall.c`, `memory.c`, `file.c`, `pipe.c`, `fs.c`, and `drivers/{console,
+keyboard,disk,rtc,power}.c`) that share `kernel.h` and link into one image
+(`src/v3/guest-kernel.ts`). The toolchain gained the shared-declaration support
+this needed: `extern` globals in the C compiler and a `#include` preprocessor
+(`src/toolchain/preprocess.ts`); see `test/toolchain.test.ts`. The remaining
+kernel-internal foundations below (errno, copyin/copyout, wait queues,
+table-driven dispatch, structured state, `file_ops`) are still to do. The
+intended file shape is:
 
 ```text
 src/v3/kernel/

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { compileC } from '../src/toolchain/c.ts';
 import { linkExecutable, linkKernelImage } from '../src/toolchain/linker.ts';
+import { preprocess } from '../src/toolchain/preprocess.ts';
 import { SEG } from '../src/v2/kernel/exec.ts';
 import { Kernel } from '../src/v2/kernel/kernel.ts';
 import { Machine } from '../src/vm/custom32/machine.ts';
@@ -178,6 +179,111 @@ test('Phase 10: kernel image data placement avoids or rejects segment overlap', 
 
   const image = linkKernelImage([obj]);
   assert.ok(image.segments[1]!.vaddr >= image.segments[0]!.vaddr + image.segments[0]!.memSize);
+});
+
+test('preprocess: expands includes once and strips guard directives', () => {
+  const headers: Record<string, string> = {
+    'a.h': '#ifndef A_H\n#define A_H\n#include "b.h"\nint from_a;\n#endif\n',
+    'b.h': '#pragma once\nint from_b;\n',
+  };
+  const out = preprocess('#include "a.h"\n#include "b.h"\nint root;\n', (n) => headers[n]);
+  assert.match(out, /int from_b;/);
+  assert.match(out, /int from_a;/);
+  assert.match(out, /int root;/);
+  // b.h is included transitively via a.h, then again directly: it appears once.
+  assert.equal(out.match(/int from_b;/g)!.length, 1);
+  // Guard/pragma directives are removed.
+  assert.doesNotMatch(out, /#/);
+});
+
+test('preprocess: unresolved include is an error', () => {
+  assert.throws(() => preprocess('#include "missing.h"\n', () => undefined), /cannot resolve/);
+});
+
+test('modules: a shared header carries a struct, prototype, and extern global', () => {
+  const header = `
+    struct pair { int a; int b; };
+    extern int shared_total;
+    int add_pair(struct pair *p);
+  `;
+  const resolve = (name: string): string | undefined =>
+    name === 'shared.h' ? header : undefined;
+
+  // The defining object owns shared_total; kmain calls into the other object,
+  // which writes the extern and reads the struct through the shared layout.
+  const main = preprocess(
+    `#include "shared.h"
+     int shared_total;
+     int kmain() {
+       struct pair p;
+       int r;
+       p.a = 7;
+       p.b = 3;
+       r = add_pair(&p);
+       __out(0x3f8, r + shared_total);
+       __halt();
+       return 0;
+     }`,
+    resolve,
+  );
+  const helper = preprocess(
+    `#include "shared.h"
+     int add_pair(struct pair *p) {
+       shared_total = p->a;
+       return p->a + p->b;
+     }`,
+    resolve,
+  );
+
+  const image = linkKernelImage([
+    compileC(main, { start: 'kernel', moduleId: 'main' }),
+    compileC(helper, { start: 'none', moduleId: 'helper' }),
+  ]);
+
+  let out = '';
+  const machine = new Machine({ physSize: 128 * 1024, consoleSink: (s) => (out += s) });
+  machine.load(0, image.flat);
+  machine.reset({ pc: image.entry });
+  const r = machine.run(10_000);
+
+  assert.equal(r.reason, 'halt');
+  // r = 10 (a + b), shared_total = 7 (a) written from the other object.
+  assert.equal(out.charCodeAt(0), 17);
+});
+
+test('modules: struct-typed extern arrays parse and resolve across objects', () => {
+  const header = `
+    struct proc { int pid; int state; };
+    extern struct proc table[4];
+  `;
+  const resolve = (name: string): string | undefined => (name === 'k.h' ? header : undefined);
+
+  const reader = compileC(
+    preprocess(`#include "k.h"\nint pid_of(int i) { return table[i].pid; }`, resolve),
+    { start: 'none', moduleId: 'reader' },
+  );
+  const owner = compileC(
+    preprocess(
+      `#include "k.h"
+       struct proc table[4];
+       int kmain() {
+         table[2].pid = 99;
+         __out(0x3f8, pid_of(2));
+         __halt();
+         return 0;
+       }`,
+      resolve,
+    ),
+    { start: 'kernel', moduleId: 'owner' },
+  );
+
+  const image = linkKernelImage([owner, reader]);
+  let out = '';
+  const machine = new Machine({ physSize: 128 * 1024, consoleSink: (s) => (out += s) });
+  machine.load(0, image.flat);
+  machine.reset({ pc: image.entry });
+  assert.equal(machine.run(10_000).reason, 'halt');
+  assert.equal(out.charCodeAt(0), 99);
 });
 
 test('Phase 10: compiles a tiny guest kernel image that uses port I/O', () => {

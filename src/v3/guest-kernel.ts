@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { compileC } from '../toolchain/c.ts';
+import { type CompiledObject, compileC } from '../toolchain/c.ts';
 import { type KernelImage, linkExecutable, linkKernelImage } from '../toolchain/linker.ts';
+import { preprocess } from '../toolchain/preprocess.ts';
 import { encodeBootBlock, makeBootBlock } from '../v2/kernel/bootblock.ts';
 import { BlockDriver } from '../v2/kernel/disk.ts';
 import { Fs } from '../v2/kernel/fs.ts';
@@ -85,20 +86,48 @@ export function buildGuestDiskImage(): Uint8Array {
   return disk.data;
 }
 
-export const GUEST_KERNEL_SOURCE = substituteDefines(
-  sourceFile('kernel/kernel.c'),
-  GUEST_KERNEL_DEFINES,
-  'kernel.c',
-);
+// The guest kernel is split by subsystem. main.c carries the boot entry (and
+// the assembly trap stubs) and is compiled with the kernel crt0; every other
+// file is a plain object linked alongside it. Each file `#include`s kernel.h for
+// the shared `extern` declarations and prototypes.
+const KERNEL_SOURCE_FILES = [
+  'main.c', // must stay first: owns _start / kmain and the shared C stack size
+  'trap.c',
+  'scheduler.c',
+  'process.c',
+  'exec.c',
+  'syscall.c',
+  'memory.c',
+  'file.c',
+  'pipe.c',
+  'fs.c',
+  'drivers/console.c',
+  'drivers/keyboard.c',
+  'drivers/disk.c',
+  'drivers/rtc.c',
+  'drivers/power.c',
+] as const;
+
+function resolveKernelInclude(name: string): string | undefined {
+  try {
+    return sourceFile(`kernel/${name}`);
+  } catch {
+    return undefined;
+  }
+}
+
+function compileKernelFile(subpath: string): CompiledObject {
+  const expanded = preprocess(sourceFile(`kernel/${subpath}`), resolveKernelInclude);
+  const source = substituteDefines(expanded, GUEST_KERNEL_DEFINES, `kernel/${subpath}`);
+  return compileC(source, {
+    start: subpath === 'main.c' ? 'kernel' : 'none',
+    cStackSize: 8192,
+    moduleId: subpath.replace(/[^A-Za-z0-9]/g, '_'),
+  });
+}
 
 export function buildGuestKernelImage(): KernelImage {
-  const image = linkKernelImage([
-    compileC(GUEST_KERNEL_SOURCE, {
-      start: 'kernel',
-      cStackSize: 8192,
-      moduleId: 'guest_kernel',
-    }),
-  ]);
+  const image = linkKernelImage(KERNEL_SOURCE_FILES.map(compileKernelFile));
   if (image.flat.length > GUEST_KERNEL_LAYOUT.idt) {
     throw new Error(
       `guest kernel image overlaps reserved IDT/page-table region: image end 0x${image.flat.length.toString(16)}, IDT 0x${GUEST_KERNEL_LAYOUT.idt.toString(16)}`,

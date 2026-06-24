@@ -107,6 +107,10 @@ interface GlobalDecl {
   name: string;
   type: CType;
   init: Initializer | null;
+  // An `extern` declaration registers the symbol's type for this translation
+  // unit but emits no storage; the linker resolves the reference to the object
+  // that actually defines it.
+  extern: boolean;
 }
 
 interface FuncDecl {
@@ -326,11 +330,14 @@ class Parser {
     const prototypes: FunctionSig[] = [];
     const functions: FuncDecl[] = [];
     while (!this.at('eof')) {
-      if (this.matchText('struct') && this.peekText(1) === '{') {
-        this.i--;
+      // A bare `struct name { ... };` is a type definition, not a declaration.
+      // Look ahead without consuming so `struct name var;` still parses as a
+      // struct-typed declaration below.
+      if (this.peekText() === 'struct' && this.peekText(2) === '{') {
         this.parseStructDefinition();
         continue;
       }
+      const isExtern = this.matchText('extern');
       const base = this.parseType();
       const first = this.parseDeclarator(base);
       if (this.matchText('(')) {
@@ -350,8 +357,10 @@ class Parser {
         });
         continue;
       }
-      const decls = this.parseDeclTail(first);
-      for (const d of decls) globals.push({ kind: 'global', ...d });
+      // `extern` declarations cannot carry an initializer (they only name a
+      // symbol defined elsewhere).
+      const decls = this.parseDeclTail(first, !isExtern);
+      for (const d of decls) globals.push({ kind: 'global', extern: isExtern, ...d });
     }
     return { structs: this.structs, globals, prototypes, functions };
   }
@@ -1483,6 +1492,7 @@ class Codegen {
     const data: DataSymbol[] = [];
     const bss: BssSymbol[] = [];
     for (const g of this.program.globals) {
+      if (g.extern) continue; // declared here, defined (and allocated) elsewhere
       const size = Math.max(1, typeSize(g.type));
       if (!g.init) {
         bss.push({ name: g.name, size: align(size, 4) });
