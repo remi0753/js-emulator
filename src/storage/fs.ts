@@ -148,7 +148,8 @@ export class Fs {
       const { block, off } = this.inodeLoc(inum);
       const buf = this.disk.read(block);
       if (decodeDinode(buf, off).type === 0) {
-        const mode = type === T_DIR ? S_IFDIR | 0o755 : type === T_SYMLINK ? S_IFLNK | 0o777 : S_IFREG | 0o644;
+        const mode =
+          type === T_DIR ? S_IFDIR | 0o755 : type === T_SYMLINK ? S_IFLNK | 0o777 : S_IFREG | 0o644;
         encodeDinode(
           {
             type,

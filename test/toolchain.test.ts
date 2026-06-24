@@ -197,9 +197,7 @@ test('modules: conflicting declarations are rejected within and across objects',
     /conflicting function declarations for get/,
   );
 
-  const objectReader = compileC(
-    `extern char shared; int main(int a, char **v) { return shared; }`,
-  );
+  const objectReader = compileC(`extern char shared; int main(int a, char **v) { return shared; }`);
   const objectOwner = compileC(`int shared;`, { start: 'none' });
   assert.throws(
     () => linkExecutable([objectReader, objectOwner]),
@@ -271,8 +269,7 @@ test('modules: a shared header carries a struct, prototype, and extern global', 
     extern int shared_total;
     int add_pair(struct pair *p);
   `;
-  const resolve = (name: string): string | undefined =>
-    name === 'shared.h' ? header : undefined;
+  const resolve = (name: string): string | undefined => (name === 'shared.h' ? header : undefined);
 
   // The defining object owns shared_total; kmain calls into the other object,
   // which writes the extern and reads the struct through the shared layout.

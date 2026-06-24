@@ -647,7 +647,10 @@ class Parser {
         // A bare name is resolved at codegen (direct call to a function, or an
         // indirect call through a variable holding an address); any other
         // expression is an indirect call through its computed address.
-        e = e.kind === 'var' ? { kind: 'call', callee: e.name, args } : { kind: 'callptr', target: e, args };
+        e =
+          e.kind === 'var'
+            ? { kind: 'call', callee: e.name, args }
+            : { kind: 'callptr', target: e, args };
         continue;
       }
       if (this.matchText('[')) {
@@ -1675,11 +1678,7 @@ export function cTypesEqual(left: CType, right: CType): boolean {
     case 'ptr':
       return right.kind === 'ptr' && cTypesEqual(left.to, right.to);
     case 'array':
-      return (
-        right.kind === 'array' &&
-        left.len === right.len &&
-        cTypesEqual(left.of, right.of)
-      );
+      return right.kind === 'array' && left.len === right.len && cTypesEqual(left.of, right.of);
     case 'struct':
       return (
         right.kind === 'struct' &&
@@ -1706,10 +1705,7 @@ export function cTypesEqual(left: CType, right: CType): boolean {
 }
 
 export function functionTypesEqual(left: FunctionSig, right: FunctionSig): boolean {
-  return (
-    cTypesEqual(left.returnType, right.returnType) &&
-    paramsEqual(left.params, right.params)
-  );
+  return cTypesEqual(left.returnType, right.returnType) && paramsEqual(left.params, right.params);
 }
 
 function paramsEqual(left: Param[], right: Param[]): boolean {

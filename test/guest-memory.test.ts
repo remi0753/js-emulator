@@ -13,10 +13,7 @@ const kernelSource = (name: string): string =>
 
 function configured(source: string): string {
   for (const key of Object.keys(GUEST_KERNEL_DEFINES).sort((a, b) => b.length - a.length)) {
-    source = source.replace(
-      new RegExp(`\\b${key}\\b`, 'g'),
-      String(GUEST_KERNEL_DEFINES[key]),
-    );
+    source = source.replace(new RegExp(`\\b${key}\\b`, 'g'), String(GUEST_KERNEL_DEFINES[key]));
   }
   return source;
 }
