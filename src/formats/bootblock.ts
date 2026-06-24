@@ -9,12 +9,11 @@
 //
 //   block 0: boot block (this manifest)   <- reserved by the FS, written here
 //   block 1: filesystem superblock
-//   block 2..: inodes, bitmap, data (the xv6-like FS: /bin/* userland + files)
+//   block 2..fs end: inodes, bitmap, data
+//   blocks after fs end: raw guest-kernel image
 //
-// The manifest also reserves a contiguous raw kernel-image region (kernelStart /
-// kernelBlocks). It is empty for now (model A: the kernel is TypeScript); when a
-// guest kernel exists (model B, Phase 11) the boot ROM will load those blocks
-// into physical memory and jump to the kernel's entry in KERNEL mode.
+// The raw kernel region deliberately sits outside the filesystem size recorded
+// in its superblock, so filesystem allocation can never overwrite it.
 
 import { BLOCK_SIZE } from '../storage/block.ts';
 
@@ -28,8 +27,12 @@ export interface BootBlock {
   version: number;
   signature: number;
   fsBlock: number; // block holding the filesystem superblock (1)
-  kernelStart: number; // first block of the raw kernel image (0 = none yet)
-  kernelBlocks: number; // length of the kernel image in blocks (0 = none yet)
+  kernelStart: number; // first block of the raw kernel image (0 = none)
+  kernelBlocks: number; // length of the kernel image in blocks (0 = none)
+  kernelLoad: number; // physical address where the image is loaded
+  kernelEntry: number; // physical entry address after loading
+  kernelBytes: number; // exact image length (kernelBlocks includes padding)
+  kernelStack: number; // initial privileged stack pointer
   initPath: string; // path of the first user program the kernel should start
 }
 
@@ -42,6 +45,10 @@ export function makeBootBlock(initPath: string, extra: Partial<BootBlock> = {}):
     fsBlock: 1,
     kernelStart: 0,
     kernelBlocks: 0,
+    kernelLoad: 0,
+    kernelEntry: 0,
+    kernelBytes: 0,
+    kernelStack: 0,
     initPath,
     ...extra,
   };
@@ -61,6 +68,10 @@ export function encodeBootBlock(bb: BootBlock): Uint8Array {
   dv.setUint32(16, bb.kernelBlocks, true);
   dv.setUint32(20, path.length, true);
   for (let i = 0; i < path.length; i++) buf[24 + i] = path.charCodeAt(i) & 0xff;
+  dv.setUint32(88, bb.kernelLoad, true);
+  dv.setUint32(92, bb.kernelEntry, true);
+  dv.setUint32(96, bb.kernelBytes, true);
+  dv.setUint32(100, bb.kernelStack, true);
   dv.setUint16(BLOCK_SIZE - 2, bb.signature, true);
   return buf;
 }
@@ -79,6 +90,10 @@ export function decodeBootBlock(buf: Uint8Array): BootBlock {
     fsBlock: dv.getUint32(8, true),
     kernelStart: dv.getUint32(12, true),
     kernelBlocks: dv.getUint32(16, true),
+    kernelLoad: dv.getUint32(88, true),
+    kernelEntry: dv.getUint32(92, true),
+    kernelBytes: dv.getUint32(96, true),
+    kernelStack: dv.getUint32(100, true),
     initPath,
   };
 }

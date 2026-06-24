@@ -1,14 +1,31 @@
 # js-emulator
 
-A virtual 32-bit register-machine **CPU** and an **operating system** running on
-top of it, both written in TypeScript — built up in two generations.
+A virtual 32-bit register-machine **CPU** and a guest operating system running
+on it. The maintained v3+ kernel and userland execute inside the VM; TypeScript
+provides the virtual hardware, toolchain, disk-image builder, and host bridge.
 
 The whole thing rests on one idea, the **CPU/OS boundary**: the CPU's
 `run(maxCycles)` always returns control to JavaScript after a fixed number of
 instructions (or on a trap/fault/interrupt). That return stands in for a hardware
 timer interrupt, letting the OS swap process state and implement preemption.
 
-## Two generations
+## Run the maintained guest OS
+
+Build a persistent disk containing the compiled guest kernel, userland, boot
+manifest, and filesystem, then boot that disk with its TTY attached to the host
+terminal:
+
+```bash
+npm install
+npm run build:img
+npm run boot
+```
+
+`npm run boot -- path/to/image.img` boots a different image. Guest Ctrl-C,
+Ctrl-D, and Ctrl-Z retain their terminal meanings. Press Ctrl-] to leave the VM
+monitor. Filesystem changes are written back to the image on clean exit.
+
+## Earlier generations
 
 ### v1 — the smallest real preemptive OS · [docs/v1.md](docs/v1.md)
 
@@ -52,6 +69,9 @@ demo/v2-fork-exec.ts  fork / exec / wait / exit — the Unix process model
 demo/v2-fs.ts      block disk + on-disk filesystem, exec from disk, persistent disk.img
 demo/v2-shell.ts   boot -> shell -> ls (the v2 acceptance target; interactive on a TTY)
 demo/v2-pipe.ts    pipes + blocking I/O (producer | consumer)
+src/v3/            maintained compiled guest kernel and userland
+tools/mkimg.ts      build disk.img with the installed guest kernel + filesystem
+tools/boot.ts       boot disk.img and attach the guest TTY to the host terminal
 test/              node:test unit tests
 ```
 

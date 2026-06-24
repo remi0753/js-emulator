@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { encodeBootBlock, makeBootBlock } from '../formats/bootblock.ts';
+import { BLOCK_SIZE } from '../storage/block.ts';
 import { Fs } from '../storage/fs.ts';
 import { PortBlockDevice } from '../storage/port-block-device.ts';
 import { type CompiledObject, compileC } from '../toolchain/c.ts';
@@ -66,12 +67,16 @@ export function buildUserExecutable(name: string, programSource: string): Uint8A
   return executable;
 }
 
-export function buildGuestDiskImage(): Uint8Array {
-  const disk = BlockDisk.blank(1024);
+export interface GuestDiskImageOptions {
+  kernel?: KernelImage;
+}
+
+export function buildGuestDiskImage(options: GuestDiskImageOptions = {}): Uint8Array {
+  const fsDisk = BlockDisk.blank(1024);
   const ports = new PortBus();
-  ports.register(PORT.DISK_DATA, 1, disk);
-  ports.register(PORT.DISK_POS, 1, disk);
-  ports.register(PORT.DISK_SECTORS, 1, disk);
+  ports.register(PORT.DISK_DATA, 1, fsDisk);
+  ports.register(PORT.DISK_POS, 1, fsDisk);
+  ports.register(PORT.DISK_SECTORS, 1, fsDisk);
 
   const driver = new PortBlockDevice(ports);
   const fs = new Fs(driver);
@@ -84,8 +89,28 @@ export function buildGuestDiskImage(): Uint8Array {
     fs.chmod(`/bin/${name}`, 0o755);
   }
   fs.writeFile('/etc/motd', new TextEncoder().encode(GUEST_MOTD));
-  driver.write(0, encodeBootBlock(makeBootBlock('/bin/init')));
-  return disk.data;
+
+  const kernel = options.kernel ?? buildGuestKernelImage();
+  const kernelBlocks = Math.ceil(kernel.flat.length / BLOCK_SIZE);
+  const kernelStart = fsDisk.sectors;
+  driver.write(
+    0,
+    encodeBootBlock(
+      makeBootBlock('/bin/init', {
+        kernelStart,
+        kernelBlocks,
+        kernelLoad: 0,
+        kernelEntry: kernel.entry,
+        kernelBytes: kernel.flat.length,
+        kernelStack: GUEST_KERNEL_LAYOUT.kstackTop,
+      }),
+    ),
+  );
+
+  const image = new Uint8Array((kernelStart + kernelBlocks) * BLOCK_SIZE);
+  image.set(fsDisk.data);
+  image.set(kernel.flat, kernelStart * BLOCK_SIZE);
+  return image;
 }
 
 // The guest kernel is split by subsystem. main.c carries the boot entry (and

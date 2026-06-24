@@ -7,7 +7,8 @@
 // `bootImage()` is the counterpart: given image bytes, it mounts the filesystem
 // and boots through the manifest in sector 0 — without installing userland or
 // hard-coding which program is init. The userland already lives on the disk, and
-// the manifest says what to run. (See tools/mkimg.ts and tools/boot.ts.)
+// the manifest says what to run. This remains the v2 compatibility path; the
+// top-level CLI now boots the maintained guest kernel from src/v3.
 
 import { encodeBootBlock, makeBootBlock } from '../formats/bootblock.ts';
 import { Kernel, type KernelOptions } from './kernel/kernel.ts';

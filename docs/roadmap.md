@@ -174,10 +174,11 @@ subsystems over one at a time.
 
   Added a boot-sector convention: sector 0 (the boot block the FS already
   reserves) holds a manifest — magic + boot-sector signature, the filesystem
-  superblock location, a reserved raw kernel-image region (`kernelStart`/
-  `kernelBlocks`, empty until model B has a guest kernel to load), and the path of
-  the program to start as init (see `src/formats/bootblock.ts`). The stable disk
-  layout is `[boot block | superblock | inodes | bitmap | data (/bin/* + files)]`.
+  superblock location, a raw kernel-image region (`kernelStart`/`kernelBlocks`
+  plus load/entry/size/stack metadata), and the path of the program to start as
+  init (see `src/formats/bootblock.ts`). The maintained image layout is
+  `[boot block | superblock | inodes | bitmap | data | raw guest kernel]`; the
+  kernel region is outside the filesystem size so allocation cannot overwrite it.
   `Kernel.boot()` reads the manifest and starts the named init — a manifest-driven
   handoff, not a hard-coded path. The image builder is now first-class:
   `buildDiskImage()` / `tools/mkimg.ts` (`npm run build:img`) formats the FS,

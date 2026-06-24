@@ -1,19 +1,23 @@
-// mkimg: build a bootable disk image (Phase 9).
+// Build the maintained guest OS disk image.
 //
-// One command produces a self-describing disk.img: a formatted filesystem with
-// the userland installed and a boot block (manifest) in sector 0. Boot it with
-// `node tools/boot.ts` (or `npm run boot`) — no userland installation needed at
-// boot time, because it already lives on the disk.
+// The output contains the filesystem, compiled userland, boot manifest, and a
+// raw guest-kernel region. `npm run boot` subsequently loads the kernel only
+// from this image; it does not compile or inject a separate kernel artifact.
 //
 // Usage: node tools/mkimg.ts [out=disk.img]
 
 import { writeFileSync } from 'node:fs';
 
-import { buildDiskImage } from '../src/v2/boot.ts';
+import { decodeBootBlock } from '../src/formats/bootblock.ts';
+import { buildGuestDiskImage } from '../src/v3/guest-kernel.ts';
 
 const out = process.argv[2] ?? 'disk.img';
-const image = buildDiskImage();
+const image = buildGuestDiskImage();
+const manifest = decodeBootBlock(image.subarray(0, 512));
 writeFileSync(out, image);
 
 console.log(`built ${out} (${image.length} bytes, ${image.length / 512} blocks)`);
-console.log('boot it with: node tools/boot.ts');
+console.log(
+  `installed kernel: blocks ${manifest.kernelStart}..${manifest.kernelStart + manifest.kernelBlocks - 1}, entry 0x${manifest.kernelEntry.toString(16)}`,
+);
+console.log(`boot it with: npm run boot -- ${out}`);
