@@ -1,0 +1,17 @@
+CompileFlags:
+  Add:
+    - -xc
+    - -std=gnu11
+    - -ffreestanding
+    - -I..
+    - -include
+    - generated-config.h
+    - -Wno-implicit-function-declaration
+    - -Wno-int-conversion
+    - -Wno-incompatible-pointer-types
+    - -Wno-deprecated-non-prototype
+  Remove:
+    - -Werror
+
+Diagnostics:
+  UnusedIncludes: None

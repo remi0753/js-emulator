@@ -529,7 +529,10 @@ class Parser {
     }
     if (this.matchText('asm')) {
       this.expectText('(');
-      const s = String(this.expect('str').value ?? '');
+      let s = '';
+      do {
+        s += String(this.expect('str').value ?? '');
+      } while (this.peek().kind === 'str');
       this.expectText(')');
       this.expectText(';');
       return { kind: 'asm', source: s };

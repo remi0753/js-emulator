@@ -1445,18 +1445,18 @@ void set_user_idt_entry(int vector, int handler) {
 }
 
 void capture_handlers() {
-  asm("
-    MOV R1, kernel_default_handler
-    STORE R1, default_handler_addr
-    MOV R1, kernel_timer_handler
-    STORE R1, timer_handler_addr
-    MOV R1, kernel_pf_handler
-    STORE R1, pf_handler_addr
-    MOV R1, kernel_syscall_handler
-    STORE R1, syscall_handler_addr
-    MOV R1, kernel_keyboard_handler
-    STORE R1, keyboard_handler_addr
-  ");
+  asm(
+    "MOV R1, kernel_default_handler\n"
+    "STORE R1, default_handler_addr\n"
+    "MOV R1, kernel_timer_handler\n"
+    "STORE R1, timer_handler_addr\n"
+    "MOV R1, kernel_pf_handler\n"
+    "STORE R1, pf_handler_addr\n"
+    "MOV R1, kernel_syscall_handler\n"
+    "STORE R1, syscall_handler_addr\n"
+    "MOV R1, kernel_keyboard_handler\n"
+    "STORE R1, keyboard_handler_addr\n"
+  );
 }
 
 void setup_traps() {
@@ -1496,96 +1496,96 @@ void read_initpath() {
 }
 
 int kmain() {
-  asm("
-    JMP kernel_handlers_done
-
-  kernel_timer_handler:
-    STORE R0, sctx_r0
-    STORE R1, sctx_r1
-    STORE R2, sctx_r2
-    STORE R3, sctx_r3
-    STORE R4, sctx_r4
-    STORE R5, sctx_r5
-    STORE R6, sctx_r6
-    STORE R7, sctx_r7
-    POP R0
-    STORE R0, sctx_pc
-    POP R0
-    STORE R0, sctx_mode
-    POP R0
-    STORE R0, sctx_flags
-    POP R0
-    STORE R0, sctx_sp
-    CALL on_timer
-    JMP kernel_resume
-
-  kernel_syscall_handler:
-    STORE R0, sctx_r0
-    STORE R1, sctx_r1
-    STORE R2, sctx_r2
-    STORE R3, sctx_r3
-    STORE R4, sctx_r4
-    STORE R5, sctx_r5
-    STORE R6, sctx_r6
-    STORE R7, sctx_r7
-    POP R0
-    STORE R0, sctx_pc
-    POP R0
-    STORE R0, sctx_mode
-    POP R0
-    STORE R0, sctx_flags
-    POP R0
-    STORE R0, sctx_sp
-    CALL on_syscall
-    JMP kernel_resume
-
-  kernel_keyboard_handler:
-    PUSH R0
-    PUSH R1
-    PUSH R2
-    PUSH R3
-    PUSH R4
-    PUSH R5
-    PUSH R6
-    PUSH R7
-    CALL wake_pipe_waiters
-    POP R7
-    POP R6
-    POP R5
-    POP R4
-    POP R3
-    POP R2
-    POP R1
-    POP R0
-    IRET
-
-  kernel_resume:
-    LOAD R0, sctx_sp
-    PUSH R0
-    LOAD R0, sctx_flags
-    PUSH R0
-    LOAD R0, sctx_mode
-    PUSH R0
-    LOAD R0, sctx_pc
-    PUSH R0
-    LOAD R7, sctx_r7
-    LOAD R6, sctx_r6
-    LOAD R5, sctx_r5
-    LOAD R4, sctx_r4
-    LOAD R3, sctx_r3
-    LOAD R2, sctx_r2
-    LOAD R1, sctx_r1
-    LOAD R0, sctx_r0
-    IRET
-
-  kernel_pf_handler:
-    CALL on_page_fault
-
-  kernel_default_handler:
-    CALL on_default_trap
-
-  kernel_handlers_done:
-  ");
+  asm(
+    "JMP kernel_handlers_done\n"
+    "\n"
+    "kernel_timer_handler:\n"
+    "STORE R0, sctx_r0\n"
+    "STORE R1, sctx_r1\n"
+    "STORE R2, sctx_r2\n"
+    "STORE R3, sctx_r3\n"
+    "STORE R4, sctx_r4\n"
+    "STORE R5, sctx_r5\n"
+    "STORE R6, sctx_r6\n"
+    "STORE R7, sctx_r7\n"
+    "POP R0\n"
+    "STORE R0, sctx_pc\n"
+    "POP R0\n"
+    "STORE R0, sctx_mode\n"
+    "POP R0\n"
+    "STORE R0, sctx_flags\n"
+    "POP R0\n"
+    "STORE R0, sctx_sp\n"
+    "CALL on_timer\n"
+    "JMP kernel_resume\n"
+    "\n"
+    "kernel_syscall_handler:\n"
+    "STORE R0, sctx_r0\n"
+    "STORE R1, sctx_r1\n"
+    "STORE R2, sctx_r2\n"
+    "STORE R3, sctx_r3\n"
+    "STORE R4, sctx_r4\n"
+    "STORE R5, sctx_r5\n"
+    "STORE R6, sctx_r6\n"
+    "STORE R7, sctx_r7\n"
+    "POP R0\n"
+    "STORE R0, sctx_pc\n"
+    "POP R0\n"
+    "STORE R0, sctx_mode\n"
+    "POP R0\n"
+    "STORE R0, sctx_flags\n"
+    "POP R0\n"
+    "STORE R0, sctx_sp\n"
+    "CALL on_syscall\n"
+    "JMP kernel_resume\n"
+    "\n"
+    "kernel_keyboard_handler:\n"
+    "PUSH R0\n"
+    "PUSH R1\n"
+    "PUSH R2\n"
+    "PUSH R3\n"
+    "PUSH R4\n"
+    "PUSH R5\n"
+    "PUSH R6\n"
+    "PUSH R7\n"
+    "CALL wake_pipe_waiters\n"
+    "POP R7\n"
+    "POP R6\n"
+    "POP R5\n"
+    "POP R4\n"
+    "POP R3\n"
+    "POP R2\n"
+    "POP R1\n"
+    "POP R0\n"
+    "IRET\n"
+    "\n"
+    "kernel_resume:\n"
+    "LOAD R0, sctx_sp\n"
+    "PUSH R0\n"
+    "LOAD R0, sctx_flags\n"
+    "PUSH R0\n"
+    "LOAD R0, sctx_mode\n"
+    "PUSH R0\n"
+    "LOAD R0, sctx_pc\n"
+    "PUSH R0\n"
+    "LOAD R7, sctx_r7\n"
+    "LOAD R6, sctx_r6\n"
+    "LOAD R5, sctx_r5\n"
+    "LOAD R4, sctx_r4\n"
+    "LOAD R3, sctx_r3\n"
+    "LOAD R2, sctx_r2\n"
+    "LOAD R1, sctx_r1\n"
+    "LOAD R0, sctx_r0\n"
+    "IRET\n"
+    "\n"
+    "kernel_pf_handler:\n"
+    "CALL on_page_fault\n"
+    "\n"
+    "kernel_default_handler:\n"
+    "CALL on_default_trap\n"
+    "\n"
+    "kernel_handlers_done:\n"
+  );
 
   serial_write("kernel: boot\n");
   setup_traps();
