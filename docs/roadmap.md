@@ -692,3 +692,41 @@ process model, shell, and enough memory management to run build tools.
   — chosen over BASE/LIMIT segmentation for realism.
 - **Port-mapped I/O** (`IN`/`OUT`) for devices; **host-file-backed disk** for a
   persistent filesystem.
+
+## Ideas / unscheduled explorations
+
+Not on the roadmap yet — parking lot for things worth trying later.
+
+### Host display as a VM device (framebuffer / "monitor")
+
+Expose the host's screen to the guest as a graphics device, modeled like a real
+VGA/framebuffer: a memory-mapped VRAM region plus a few control ports. The guest
+writes pixels into VRAM and the host paints them on an actual display.
+
+- **Hardware contract (in the VM).** Reserve a region of physical RAM as VRAM
+  (e.g. `FB_BASE`, 320×200×8bpp ≈ 64 KiB); the guest maps it via the MMU and
+  writes pixels with plain `write8`. The framebuffer is *not* routed through the
+  byte-at-a-time `PortBus` — only control goes there: a `FB_CTL` port for
+  mode-set (resolution/bpp) and a `FB_FLUSH` port that, on `OUT`, asks the host
+  to present the current frame (guest-driven vsync). Wire a `Display` device in
+  `machine.ts` the same way the keyboard is wired (`display.onFlush = () =>
+  host.paint(phys.bytes, FB_BASE, …)`), mirroring the `power.onPowerOff`
+  callback pattern. Optionally add a `VSYNC_IRQ` so present-complete returns to
+  the guest as an interrupt (same path as `KEYBOARD_IRQ`). Since `phys.bytes` is
+  a shared `Uint8Array`, the host reads the frame with no copy.
+- **Host-side painter (reaching a real screen from Node).** Three backends, in
+  recommended order: (1) **browser + WebSocket + `<canvas>`** — zero native deps,
+  free resolution/color, and `keydown`/`mousemove` can be sent back over WS into
+  `keyboard.feed()` / a new mouse device → `raiseIrq`, giving input too; (2)
+  **terminal graphics** (Kitty/Sixel, or `▀` half-blocks + 24-bit ANSI) — stays
+  in the existing terminal, no extra process, low-res; (3) **native window** via
+  an SDL2 binding (e.g. `@kmamal/sdl`) — most "real monitor"-like, but pulls in a
+  native build dependency.
+- **Determinism note.** Keep guest-driven `FB_FLUSH` as the primary present path
+  so draw timing is decided by the guest's instruction stream and stays
+  reproducible in traces (consistent with the instruction-counted timer IRQ). A
+  wall-clock `setInterval` refresh is acceptable only if it *reads* VRAM and
+  never mutates VM state.
+- **Smallest viable slice.** `Display` device (~30 lines) + VRAM reservation in
+  physical RAM + a tiny `ws` server (~40 lines) + a `<canvas>` client page is
+  enough to get the guest drawing to the host screen.
