@@ -671,7 +671,7 @@ For every milestone, use the same completion workflow:
   disk image boots into a shell environment with scripts, pipelines, init
   files, core file/text tools, and a guest-side test runner.
 
-- **Phase 24** ⬜ add polling and asynchronous I/O foundations.
+- **Phase 24** ✅ add polling and asynchronous I/O foundations.
 
   Implement `select`/`poll`-style readiness over files, pipes, terminals, and
   network sockets once networking exists. Add nonblocking file descriptor flags,
@@ -680,7 +680,18 @@ For every milestone, use the same completion workflow:
   Done when a user program can multiplex stdin, pipes, timers, and sockets
   without busy-waiting.
 
-- **Phase 25** ⬜ add networking with a Linux-like socket API.
+  Implemented a shared file readiness interface for regular files, TTYs, pipes,
+  and sockets; `O_NONBLOCK` through `fcntl(F_SETFL)`; and `poll` with immediate,
+  infinite, or tick-based timeout waits. Pollers sleep on the existing
+  wait-channel scheduler primitive and are woken by TTY, pipe, socket, and
+  timeout state changes rather than spinning. End-to-end coverage is in
+  `test/guest-io-phase24.test.ts`.
+
+  Done: guest programs can combine terminal, pipe, and socket descriptors in a
+  poll set, use nonblocking reads/writes, and wait for a timeout without
+  busy-waiting.
+
+- **Phase 25** ✅ add networking with a Linux-like socket API.
 
   Add a simple NIC device, deterministic packet injection tests, ARP if using
   Ethernet, IPv4, ICMP, UDP, and a minimal TCP stack. Expose sockets through
@@ -689,6 +700,20 @@ For every milestone, use the same completion workflow:
 
   Done when the guest can run a small TCP or UDP service and a host-side test can
   exchange packets with it deterministically.
+
+  Added a deterministic PIO Ethernet NIC with host packet injection and captured
+  transmit queues. The guest owns Ethernet framing, ARP replies, IPv4 parsing,
+  ICMP echo replies, and UDP delivery. UDP sockets are ordinary descriptors and
+  support `socket`, `bind`, `connect`, `send`, `recv`, `sendto`, `recvfrom`,
+  `setsockopt`, nonblocking mode, and `poll`; stream-oriented entry points
+  (`listen`/`accept`) are present and report that TCP is not yet supported.
+  The maintained guest address is `10.0.2.15` with MAC `02:00:00:00:00:02`.
+  End-to-end coverage in `test/guest-network-phase25.test.ts` boots a UDP
+  service, injects an Ethernet frame after it blocks in `poll`, and verifies the
+  reply frame emitted by the guest.
+
+  Done: a host-side test exchanges UDP packets with a guest service
+  deterministically through the virtual NIC and guest network stack.
 
 - **Phase 26** ⬜ add a Linux-like device and driver model.
 

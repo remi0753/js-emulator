@@ -73,6 +73,18 @@ struct stat {
   int ctime;
 };
 
+struct pollfd {
+  int fd;
+  int events;
+  int revents;
+};
+
+struct sockaddr_in {
+  int sin_family;
+  int sin_port;
+  int sin_addr;
+};
+
 struct file_stream {
   int fd;
   int flags;
@@ -167,6 +179,23 @@ int readlink(char *path, char *buffer, int size);
 int lseek(int fd, int offset, int whence);
 int getuid(void);
 int getgid(void);
+int poll(struct pollfd *fds, int count, int timeout);
+int socket(int domain, int type, int protocol);
+int bind(int fd, struct sockaddr_in *address, int length);
+int listen(int fd, int backlog);
+int accept(int fd, struct sockaddr_in *address, int *length);
+int connect(int fd, struct sockaddr_in *address, int length);
+int send(int fd, void *buffer, int length, int flags);
+int recv(int fd, void *buffer, int length, int flags);
+int sendto(int fd, void *buffer, int length, int flags,
+  struct sockaddr_in *address, int address_length);
+int recvfrom(int fd, void *buffer, int length, int flags,
+  struct sockaddr_in *address, int *address_length);
+int setsockopt(int fd, int level, int option, void *value, int length);
+int htons(int value);
+int ntohs(int value);
+int htonl(int value);
+int ntohl(int value);
 void exit(int code);
 int time(void);
 void shutdown(void);

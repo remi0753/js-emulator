@@ -93,6 +93,17 @@ Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 | 48| `LSEEK` | R1 = fd, R2 = offset, R3 = whence | change a shared open-file offset |
 | 49| `GETUID` | — | return uid (0 in the single-user model) |
 | 50| `GETGID` | — | return gid (0 in the single-user model) |
+| 51| `POLL` | R1 = pollfd array, R2 = count, R3 = timeout ms | wait for descriptor readiness |
+| 52| `SOCKET` | R1 = domain, R2 = type, R3 = protocol | create an IPv4 UDP socket |
+| 53| `BIND` | R1 = fd, R2 = sockaddr_in, R3 = length | bind a local UDP port |
+| 54| `LISTEN` | R1 = fd, R2 = backlog | reserved TCP surface; currently `EOPNOTSUPP` |
+| 55| `ACCEPT` | R1 = fd, R2 = address, R3 = length pointer | reserved TCP surface; currently `EOPNOTSUPP` |
+| 56| `CONNECT` | R1 = fd, R2 = sockaddr_in, R3 = length | set the UDP peer |
+| 57| `SEND` | R1 = fd, R2 = buffer, R3 = length | send to the connected UDP peer |
+| 58| `RECV` | R1 = fd, R2 = buffer, R3 = length | receive one UDP datagram |
+| 59| `SETSOCKOPT` | R1 = fd, R2 = packed arguments | accept supported/default socket options |
+| 60| `SENDTO` | R1 = fd, R2 = packed arguments | send a UDP datagram to an address |
+| 61| `RECVFROM` | R1 = fd, R2 = packed arguments | receive a UDP datagram and source address |
 
 ## Linux compatibility table
 
@@ -107,7 +118,7 @@ Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 | private file-backed `mmap` | implemented | demand paging through the page cache; writes are COW |
 | shared file-backed `mmap` | implemented | shared cached frames with dirty write-back |
 | `munmap`, `mprotect` | implemented | page-granular VMA split/trim; works before or after faults |
-| `fcntl` | implemented subset | `F_DUPFD`, `F_GETFD`, `F_SETFD`, `F_GETFL`; nonblocking deferred |
+| `fcntl` | implemented subset | `F_DUPFD`, descriptor flags, status flags, and `O_NONBLOCK` |
 | `ioctl` | implemented subset | foreground groups, termios modes, and terminal window size |
 | `gettimeofday`, `clock_gettime`, `uname` | implemented | 32-bit time values on this ISA |
 | `getdents` | implemented | fixed 32-byte guest `dirent` records |
@@ -118,7 +129,8 @@ Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 | `lseek` | implemented | `SEEK_SET`, `SEEK_CUR`, `SEEK_END`; shared by dup/fork |
 | VFS mounts and pseudo filesystems | implemented | disk root plus devfs `/dev`, procfs `/proc`, and tmpfs `/tmp` |
 | stack guard page | implemented | the page below the fixed user stack is never allocated |
-| `O_NONBLOCK`, polling ioctls | unsupported | planned with the polling phase |
+| `poll`, `O_NONBLOCK` | implemented | regular files, TTYs, pipes, and UDP sockets; tick-based timeouts |
+| IPv4 sockets | implemented UDP subset | Ethernet/ARP/IPv4/ICMP/UDP; TCP entry points return unsupported |
 | Linux binary ABI compatibility | intentionally unsupported | programs are compiled for custom32 |
 
 ### Signals and job control (Phase 17)

@@ -54,6 +54,17 @@ export const SYS = {
   LSEEK: 48, // R1 = fd, R2 = offset, R3 = whence
   GETUID: 49, // -> R0 = real/effective uid (single-user first pass)
   GETGID: 50, // -> R0 = real/effective gid (single-user first pass)
+  POLL: 51, // R1 = pollfd array, R2 = count, R3 = timeout in milliseconds
+  SOCKET: 52, // R1 = domain, R2 = type, R3 = protocol
+  BIND: 53, // R1 = fd, R2 = sockaddr, R3 = address length
+  LISTEN: 54, // R1 = fd, R2 = backlog
+  ACCEPT: 55, // R1 = fd, R2 = sockaddr, R3 = address-length pointer
+  CONNECT: 56, // R1 = fd, R2 = sockaddr, R3 = address length
+  SEND: 57, // R1 = fd, R2 = buffer, R3 = length
+  RECV: 58, // R1 = fd, R2 = buffer, R3 = length
+  SETSOCKOPT: 59, // R1 = fd, R2 = packed socket-option args
+  SENDTO: 60, // R1 = fd, R2 = packed sendto args
+  RECVFROM: 61, // R1 = fd, R2 = packed recvfrom args
 } as const;
 
 // File descriptors wired up in Phase 2 (real fd table comes with the FS).
@@ -82,3 +93,11 @@ export const FCNTL = {
 export const IOCTL = { TIOCGPGRP: 0x540f, TIOCSPGRP: 0x5410 } as const;
 export const CLOCK = { REALTIME: 0, MONOTONIC: 1 } as const;
 export const SEEK = { SET: 0, CUR: 1, END: 2 } as const;
+export const POLL = { IN: 0x001, OUT: 0x004, ERR: 0x008, HUP: 0x010, NVAL: 0x020 } as const;
+export const SOCKET = {
+  AF_INET: 2,
+  SOCK_STREAM: 1,
+  SOCK_DGRAM: 2,
+  IPPROTO_TCP: 6,
+  IPPROTO_UDP: 17,
+} as const;

@@ -108,6 +108,11 @@ void switch_to_next(void) {
         if (proc_table[i].state == CFG_ST_SLEEPING &&
             proc_table[i].sleep_deadline != 0 &&
             ticks >= proc_table[i].sleep_deadline) {
+          if (proc_table[i].poll_deadline != 0) {
+            proc_table[i].ctx.pc =
+              proc_table[i].ctx.pc + CFG_SYSCALL_INSTR_SIZE;
+            proc_table[i].poll_deadline = 0;
+          }
           proc_table[i].sleep_deadline = 0;
           proc_table[i].sleep_remaining = 0;
           proc_table[i].ctx.regs[0] = 0;
@@ -144,6 +149,11 @@ void on_timer(void) {
     if (proc_table[i].state == CFG_ST_SLEEPING &&
         proc_table[i].sleep_deadline != 0 &&
         ticks >= proc_table[i].sleep_deadline) {
+      if (proc_table[i].poll_deadline != 0) {
+        proc_table[i].ctx.pc =
+          proc_table[i].ctx.pc + CFG_SYSCALL_INSTR_SIZE;
+        proc_table[i].poll_deadline = 0;
+      }
       proc_table[i].sleep_deadline = 0;
       proc_table[i].sleep_remaining = 0;
       proc_table[i].ctx.regs[0] = 0;

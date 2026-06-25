@@ -177,9 +177,9 @@ int sys_fcntl(int caller, int fd, int command, int argument) {
     return proc_table[caller].files[fd].status_flags;
   }
   if (command == CFG_F_SETFL) {
-    if ((argument & CFG_O_NONBLOCK) != 0) {
-      return -CFG_EINVAL;
-    }
+    proc_table[caller].files[fd].status_flags =
+      (proc_table[caller].files[fd].status_flags & CFG_O_ACCMODE) |
+      (argument & CFG_O_NONBLOCK);
     return 0;
   }
   return -CFG_EINVAL;
@@ -441,6 +441,73 @@ int sys_nanosleep(int caller, int request, int remaining) {
   return 0;
 }
 
+int poll_chan;
+
+void poll_wakeup(void) {
+  wakeup(&poll_chan);
+}
+
+int sys_poll(int caller, int ufds, int count, int timeout) {
+  struct guest_pollfd value;
+  struct file *file;
+  int i;
+  int ready;
+  int mask;
+  int delay;
+  if (count < 0 || count > CFG_NFD || timeout < -1) return -CFG_EINVAL;
+  if (count > 0 &&
+      user_access_ok(caller, ufds, count * sizeof(struct guest_pollfd), 1) == 0) {
+    return -CFG_EFAULT;
+  }
+  ready = 0;
+  i = 0;
+  while (i < count) {
+    if (copyin(caller, &value,
+        ufds + i * sizeof(struct guest_pollfd),
+        sizeof(struct guest_pollfd)) < 0) return -CFG_EFAULT;
+    value.revents = 0;
+    if (value.fd >= 0) {
+      if (value.fd >= CFG_NFD ||
+          proc_table[caller].files[value.fd].type == CFG_FT_NONE) {
+        value.revents = CFG_POLLNVAL;
+      } else {
+        file = &proc_table[caller].files[value.fd];
+        mask = value.events | CFG_POLLERR | CFG_POLLHUP;
+        value.revents = file_poll(file, mask);
+      }
+      if (value.revents != 0) ready = ready + 1;
+    }
+    if (copyout(caller, ufds + i * sizeof(struct guest_pollfd),
+        &value, sizeof(struct guest_pollfd)) < 0) return -CFG_EFAULT;
+    i = i + 1;
+  }
+  if (ready > 0 || timeout == 0) {
+    proc_table[caller].poll_deadline = 0;
+    proc_table[caller].sleep_deadline = 0;
+    return ready;
+  }
+  if (timeout > 0) {
+    if (proc_table[caller].poll_deadline == 0) {
+      delay = (timeout * CFG_TICKS_PER_SEC + 999) / 1000;
+      if (delay < 1) delay = 1;
+      proc_table[caller].poll_deadline = ticks + delay;
+    }
+    if (ticks >= proc_table[caller].poll_deadline) {
+      proc_table[caller].poll_deadline = 0;
+      proc_table[caller].sleep_deadline = 0;
+      return 0;
+    }
+    proc_table[caller].sleep_deadline = proc_table[caller].poll_deadline;
+  } else {
+    proc_table[caller].sleep_deadline = 0;
+  }
+  g_noret = 1;
+  proc_table[caller].ctx.pc =
+    proc_table[caller].ctx.pc - CFG_SYSCALL_INSTR_SIZE;
+  sleep(caller, &poll_chan);
+  return 0;
+}
+
 // --- syscall handlers ---
 //
 // Every handler has the same signature h(caller, a1, a2, a3) and returns the
@@ -663,6 +730,50 @@ int h_getgid(int caller, int a1, int a2, int a3) {
   return proc_table[caller].gid;
 }
 
+int h_poll(int caller, int a1, int a2, int a3) {
+  return sys_poll(caller, a1, a2, a3);
+}
+
+int h_socket(int caller, int a1, int a2, int a3) {
+  return socket_create(caller, a1, a2, a3);
+}
+
+int h_bind(int caller, int a1, int a2, int a3) {
+  return socket_bind(caller, a1, a2, a3);
+}
+
+int h_listen(int caller, int a1, int a2, int a3) {
+  return socket_listen(caller, a1, a2);
+}
+
+int h_accept(int caller, int a1, int a2, int a3) {
+  return socket_accept(caller, a1, a2, a3);
+}
+
+int h_connect(int caller, int a1, int a2, int a3) {
+  return socket_connect(caller, a1, a2, a3);
+}
+
+int h_send(int caller, int a1, int a2, int a3) {
+  return socket_send(caller, a1, a2, a3);
+}
+
+int h_recv(int caller, int a1, int a2, int a3) {
+  return socket_recv(caller, a1, a2, a3);
+}
+
+int h_setsockopt(int caller, int a1, int a2, int a3) {
+  return socket_setsockopt(caller, a1, a2);
+}
+
+int h_sendto(int caller, int a1, int a2, int a3) {
+  return socket_sendto(caller, a1, a2);
+}
+
+int h_recvfrom(int caller, int a1, int a2, int a3) {
+  return socket_recvfrom(caller, a1, a2);
+}
+
 int h_time(int caller, int a1, int a2, int a3) {
   return rtc_time();
 }
@@ -733,6 +844,17 @@ void syscall_init(void) {
   syscall_table[CFG_SYS_LSEEK] = h_lseek;
   syscall_table[CFG_SYS_GETUID] = h_getuid;
   syscall_table[CFG_SYS_GETGID] = h_getgid;
+  syscall_table[CFG_SYS_POLL] = h_poll;
+  syscall_table[CFG_SYS_SOCKET] = h_socket;
+  syscall_table[CFG_SYS_BIND] = h_bind;
+  syscall_table[CFG_SYS_LISTEN] = h_listen;
+  syscall_table[CFG_SYS_ACCEPT] = h_accept;
+  syscall_table[CFG_SYS_CONNECT] = h_connect;
+  syscall_table[CFG_SYS_SEND] = h_send;
+  syscall_table[CFG_SYS_RECV] = h_recv;
+  syscall_table[CFG_SYS_SETSOCKOPT] = h_setsockopt;
+  syscall_table[CFG_SYS_SENDTO] = h_sendto;
+  syscall_table[CFG_SYS_RECVFROM] = h_recvfrom;
 }
 
 void on_syscall(void) {

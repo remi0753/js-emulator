@@ -10,6 +10,7 @@ struct file_ops console_file_ops;
 struct file_ops keyboard_file_ops;
 struct file_ops vnode_file_ops;
 struct file_ops pipe_file_ops;
+struct file_ops socket_file_ops;
 struct open_file open_file_table[CFG_NFILE];
 
 int console_write_op(int file_addr, int caller, int buf, int len) {
@@ -53,6 +54,31 @@ int vnode_write_op(int file_addr, int caller, int buf, int len) {
     open->offset = open->offset + wrote;
   }
   return wrote;
+}
+
+int console_poll_op(int file_addr, int events) {
+  return events & CFG_POLLOUT;
+}
+
+int keyboard_poll_op(int file_addr, int events) {
+  return tty_poll(events);
+}
+
+int vnode_poll_op(int file_addr, int events) {
+  struct file *file;
+  struct open_file *open;
+  int ready;
+  file = file_addr;
+  open = &open_file_table[file->object];
+  if (vnode_is_tty(&open->vnode) != 0) return tty_poll(events);
+  ready = 0;
+  if ((events & CFG_POLLIN) != 0 && file->readable != 0) {
+    ready = ready | CFG_POLLIN;
+  }
+  if ((events & CFG_POLLOUT) != 0 && file->writable != 0) {
+    ready = ready | CFG_POLLOUT;
+  }
+  return ready;
 }
 
 int file_mmap_read(struct file *file, int offset, int length, int destination) {
@@ -279,6 +305,58 @@ int pipe_write_op(int file_addr, int caller, int buf, int len) {
   return n;
 }
 
+int pipe_poll_op(int file_addr, int events) {
+  struct file *file;
+  struct pipe *pipe;
+  int ready;
+  file = file_addr;
+  pipe = &pipe_table[file->object];
+  ready = 0;
+  if (file->pipe_end == 0) {
+    if ((events & CFG_POLLIN) != 0 &&
+        (pipe->count > 0 || pipe->nwrite == 0)) {
+      ready = ready | CFG_POLLIN;
+    }
+    if (pipe->nwrite == 0) ready = ready | CFG_POLLHUP;
+  } else {
+    if (pipe->nread == 0) ready = ready | CFG_POLLERR;
+    else if ((events & CFG_POLLOUT) != 0 && pipe->count < CFG_PIPESZ) {
+      ready = ready | CFG_POLLOUT;
+    }
+  }
+  return ready;
+}
+
+int socket_read_op(int file_addr, int caller, int buf, int len) {
+  struct file *file;
+  file = file_addr;
+  return socket_recv_object(caller, file->object, buf, len);
+}
+
+int socket_write_op(int file_addr, int caller, int buf, int len) {
+  struct file *file;
+  file = file_addr;
+  return socket_send_object(caller, file->object, buf, len);
+}
+
+void socket_close_op(int file_addr) {
+  struct file *file;
+  file = file_addr;
+  socket_close(file->object);
+}
+
+void socket_retain_op(int file_addr) {
+  struct file *file;
+  file = file_addr;
+  socket_retain(file->object);
+}
+
+int socket_poll_op(int file_addr, int events) {
+  struct file *file;
+  file = file_addr;
+  return socket_poll(file->object, events);
+}
+
 void pipe_close_op(int file_addr) {
   struct file *file;
   struct pipe *pipe;
@@ -290,6 +368,7 @@ void pipe_close_op(int file_addr) {
     pipe->nread = pipe->nread - 1;
   }
   wakeup(pipe);
+  poll_wakeup();
   if (pipe->nread == 0 && pipe->nwrite == 0) {
     pipe->used = 0;
   }
@@ -319,21 +398,31 @@ void file_init(void) {
   console_file_ops.write = console_write_op;
   console_file_ops.close = 0;
   console_file_ops.retain = 0;
+  console_file_ops.poll = console_poll_op;
 
   keyboard_file_ops.read = keyboard_read_op;
   keyboard_file_ops.write = 0;
   keyboard_file_ops.close = 0;
   keyboard_file_ops.retain = 0;
+  keyboard_file_ops.poll = keyboard_poll_op;
 
   vnode_file_ops.read = vnode_read_op;
   vnode_file_ops.write = vnode_write_op;
   vnode_file_ops.close = vnode_close_op;
   vnode_file_ops.retain = vnode_retain_op;
+  vnode_file_ops.poll = vnode_poll_op;
 
   pipe_file_ops.read = pipe_read_op;
   pipe_file_ops.write = pipe_write_op;
   pipe_file_ops.close = pipe_close_op;
   pipe_file_ops.retain = pipe_retain_op;
+  pipe_file_ops.poll = pipe_poll_op;
+
+  socket_file_ops.read = socket_read_op;
+  socket_file_ops.write = socket_write_op;
+  socket_file_ops.close = socket_close_op;
+  socket_file_ops.retain = socket_retain_op;
+  socket_file_ops.poll = socket_poll_op;
 }
 
 void file_reset(struct file *file) {
@@ -400,18 +489,47 @@ void file_set_pipe(struct file *file, int pipe, int end) {
   }
 }
 
+void file_set_socket(struct file *file, int socket) {
+  file_reset(file);
+  file->ops = &socket_file_ops;
+  file->type = CFG_FT_SOCKET;
+  file->readable = 1;
+  file->writable = 1;
+  file->object = socket;
+  file->status_flags = 2;
+}
+
 int file_read(struct file *file, int caller, int buf, int len) {
+  int ready;
   if (file->ops == 0 || file->readable == 0 || file->ops->read == 0) {
     return -CFG_EBADF;
+  }
+  if ((file->status_flags & CFG_O_NONBLOCK) != 0) {
+    ready = file_poll(file, CFG_POLLIN | CFG_POLLERR | CFG_POLLHUP);
+    if ((ready & (CFG_POLLIN | CFG_POLLERR | CFG_POLLHUP)) == 0) {
+      return -CFG_EAGAIN;
+    }
   }
   return file->ops->read(file, caller, buf, len);
 }
 
 int file_write(struct file *file, int caller, int buf, int len) {
+  int ready;
   if (file->ops == 0 || file->writable == 0 || file->ops->write == 0) {
     return -CFG_EBADF;
   }
+  if ((file->status_flags & CFG_O_NONBLOCK) != 0) {
+    ready = file_poll(file, CFG_POLLOUT | CFG_POLLERR | CFG_POLLHUP);
+    if ((ready & (CFG_POLLOUT | CFG_POLLERR | CFG_POLLHUP)) == 0) {
+      return -CFG_EAGAIN;
+    }
+  }
   return file->ops->write(file, caller, buf, len);
+}
+
+int file_poll(struct file *file, int events) {
+  if (file->ops == 0 || file->ops->poll == 0) return CFG_POLLERR;
+  return file->ops->poll(file, events);
 }
 
 void file_close(struct file *file) {

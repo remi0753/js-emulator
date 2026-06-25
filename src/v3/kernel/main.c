@@ -101,6 +101,26 @@ int kmain(void) {
     "POP R0\n"
     "IRET\n"
     "\n"
+    "kernel_network_handler:\n"
+    "PUSH R0\n"
+    "PUSH R1\n"
+    "PUSH R2\n"
+    "PUSH R3\n"
+    "PUSH R4\n"
+    "PUSH R5\n"
+    "PUSH R6\n"
+    "PUSH R7\n"
+    "CALL on_network_irq\n"
+    "POP R7\n"
+    "POP R6\n"
+    "POP R5\n"
+    "POP R4\n"
+    "POP R3\n"
+    "POP R2\n"
+    "POP R1\n"
+    "POP R0\n"
+    "IRET\n"
+    "\n"
     "kernel_resume:\n"
     "LOAD R0, sctx_sp\n"
     "PUSH R0\n"
@@ -151,6 +171,7 @@ int kmain(void) {
   syscall_init();
   file_init();
   keyboard_init();
+  network_init();
   pmm_init();
   build_kernel_pt();
 

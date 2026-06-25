@@ -422,6 +422,96 @@ int getgid() {
   return ret_errno(__syscall(CFG_SYS_GETGID, 0, 0, 0));
 }
 
+int poll(struct pollfd *fds, int count, int timeout) {
+  return ret_errno(__syscall(CFG_SYS_POLL, fds, count, timeout));
+}
+
+int socket(int domain, int type, int protocol) {
+  return ret_errno(__syscall(CFG_SYS_SOCKET, domain, type, protocol));
+}
+
+int bind(int fd, struct sockaddr_in *address, int length) {
+  return ret_errno(__syscall(CFG_SYS_BIND, fd, address, length));
+}
+
+int listen(int fd, int backlog) {
+  return ret_errno(__syscall(CFG_SYS_LISTEN, fd, backlog, 0));
+}
+
+int accept(int fd, struct sockaddr_in *address, int *length) {
+  return ret_errno(__syscall(CFG_SYS_ACCEPT, fd, address, length));
+}
+
+int connect(int fd, struct sockaddr_in *address, int length) {
+  return ret_errno(__syscall(CFG_SYS_CONNECT, fd, address, length));
+}
+
+int send(int fd, void *buffer, int length, int flags) {
+  if (flags != 0) {
+    errno = CFG_EOPNOTSUPP;
+    return -1;
+  }
+  return ret_errno(__syscall(CFG_SYS_SEND, fd, buffer, length));
+}
+
+int recv(int fd, void *buffer, int length, int flags) {
+  if (flags != 0) {
+    errno = CFG_EOPNOTSUPP;
+    return -1;
+  }
+  return ret_errno(__syscall(CFG_SYS_RECV, fd, buffer, length));
+}
+
+int sendto(int fd, void *buffer, int length, int flags,
+  struct sockaddr_in *address, int address_length) {
+  int args[5];
+  args[0] = buffer;
+  args[1] = length;
+  args[2] = flags;
+  args[3] = address;
+  args[4] = address_length;
+  return ret_errno(__syscall(CFG_SYS_SENDTO, fd, args, 0));
+}
+
+int recvfrom(int fd, void *buffer, int length, int flags,
+  struct sockaddr_in *address, int *address_length) {
+  int args[5];
+  args[0] = buffer;
+  args[1] = length;
+  args[2] = flags;
+  args[3] = address;
+  args[4] = address_length;
+  return ret_errno(__syscall(CFG_SYS_RECVFROM, fd, args, 0));
+}
+
+int setsockopt(int fd, int level, int option, void *value, int length) {
+  int args[4];
+  args[0] = level;
+  args[1] = option;
+  args[2] = value;
+  args[3] = length;
+  return ret_errno(__syscall(CFG_SYS_SETSOCKOPT, fd, args, 0));
+}
+
+int htons(int value) {
+  return ((value & 255) << 8) | ((value >> 8) & 255);
+}
+
+int ntohs(int value) {
+  return htons(value);
+}
+
+int htonl(int value) {
+  return ((value & 255) << 24) |
+    ((value & 0xff00) << 8) |
+    ((value >> 8) & 0xff00) |
+    ((value >> 24) & 255);
+}
+
+int ntohl(int value) {
+  return htonl(value);
+}
+
 void exit(int code) {
   __syscall(CFG_SYS_EXIT, code, 0, 0);
 }

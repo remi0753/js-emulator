@@ -6,11 +6,12 @@
 // TypeScript kernel is one client of this machine; a future guest kernel
 // (model B) can boot directly through this boundary instead.
 
-import { KEYBOARD_IRQ } from '../../isa.ts';
+import { KEYBOARD_IRQ, NETWORK_IRQ } from '../../isa.ts';
 import { CPU, type CpuState, MODE, NUM_REGS, type RunResult } from './cpu.ts';
 import { Console } from './devices/console.ts';
 import { BlockDisk } from './devices/disk.ts';
 import { Keyboard } from './devices/keyboard.ts';
+import { NetworkCard } from './devices/network.ts';
 import { Power } from './devices/power.ts';
 import { Rtc } from './devices/rtc.ts';
 import { PhysicalMemory } from './memory.ts';
@@ -41,6 +42,7 @@ export class Machine {
   readonly console: Console;
   readonly keyboard: Keyboard;
   readonly disk: BlockDisk;
+  readonly network: NetworkCard;
   readonly rtc: Rtc;
   readonly power: Power;
   readonly tracer: Tracer | null;
@@ -67,6 +69,20 @@ export class Machine {
 
     this.rtc = new Rtc(opts.rtcTime);
     this.ports.register(PORT.RTC_DATA, 1, this.rtc);
+
+    this.network = new NetworkCard({
+      status: PORT.NET_STATUS,
+      rxLength: PORT.NET_RX_LEN,
+      rxData: PORT.NET_RX_DATA,
+      txLength: PORT.NET_TX_LEN,
+      txData: PORT.NET_TX_DATA,
+    });
+    this.ports.register(PORT.NET_STATUS, 1, this.network);
+    this.ports.register(PORT.NET_RX_LEN, 1, this.network);
+    this.ports.register(PORT.NET_RX_DATA, 1, this.network);
+    this.ports.register(PORT.NET_TX_LEN, 1, this.network);
+    this.ports.register(PORT.NET_TX_DATA, 1, this.network);
+    this.network.onReceive = () => this.cpu.raiseIrq(NETWORK_IRQ);
 
     this.power = new Power();
     this.power.onPowerOff = () => this.cpu.powerOff();

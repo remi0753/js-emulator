@@ -16,6 +16,7 @@ int timer_handler_addr;
 int pf_handler_addr;
 int syscall_handler_addr;
 int keyboard_handler_addr;
+int network_handler_addr;
 
 void set_idt_entry(int vector, int handler) {
   int *entry;
@@ -43,6 +44,8 @@ void capture_handlers(void) {
     "STORE R1, syscall_handler_addr\n"
     "MOV R1, kernel_keyboard_handler\n"
     "STORE R1, keyboard_handler_addr\n"
+    "MOV R1, kernel_network_handler\n"
+    "STORE R1, network_handler_addr\n"
   );
 }
 
@@ -58,6 +61,7 @@ void setup_traps(void) {
   set_idt_entry(CFG_TIMER_VECTOR, timer_handler_addr);
   set_idt_entry(CFG_PAGEFAULT_VECTOR, pf_handler_addr);
   set_idt_entry(CFG_KBD_VECTOR, keyboard_handler_addr);
+  set_idt_entry(CFG_NET_VECTOR, network_handler_addr);
   set_user_idt_entry(CFG_SYSCALL_VECTOR, syscall_handler_addr);
   __lksp(CFG_KSTACK_TOP);
 }

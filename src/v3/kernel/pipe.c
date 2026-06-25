@@ -39,6 +39,7 @@ int pipe_write_bytes(int pp, int buf, int len) {
     pipe->count = pipe->count + 1;
     k = k + 1;
   }
+  poll_wakeup();
   return n;
 }
 
@@ -58,5 +59,6 @@ int pipe_read_bytes(int pp, int buf, int len) {
     pipe->count = pipe->count - 1;
     k = k + 1;
   }
+  poll_wakeup();
   return n;
 }

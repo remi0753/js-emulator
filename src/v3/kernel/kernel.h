@@ -52,6 +52,7 @@ struct page_cache_entry {
 
 typedef int (*file_io_fn)(int file, int caller, int buf, int len);
 typedef void (*file_lifecycle_fn)(int file);
+typedef int (*file_poll_fn)(int file, int events);
 typedef int (*vnode_io_fn)(int node, int caller, int off, int buf, int len);
 typedef int (*vnode_getdents_fn)(
   int node, int caller, int off, int destination, int count
@@ -65,6 +66,7 @@ struct file_ops {
   file_io_fn write;
   file_lifecycle_fn close;
   file_lifecycle_fn retain;
+  file_poll_fn poll;
 };
 
 struct vnode_ops {
@@ -147,6 +149,39 @@ struct guest_winsize {
   int ypixel;
 };
 
+struct guest_pollfd {
+  int fd;
+  int events;
+  int revents;
+};
+
+struct guest_sockaddr_in {
+  int family;
+  int port;
+  int address;
+};
+
+struct udp_datagram {
+  int length;
+  int source_address;
+  int source_port;
+  char data[512];
+};
+
+struct socket {
+  int used;
+  int refs;
+  int type;
+  int protocol;
+  int local_port;
+  int remote_address;
+  int remote_port;
+  char remote_mac[6];
+  int queue_head;
+  int queue_count;
+  struct udp_datagram queue[4];
+};
+
 // A descriptor points at an open-file object. The latter owns the shared file
 // offset and reference count, so dup() and fork() preserve Unix open-file
 // description semantics instead of copying the offset by value.
@@ -189,6 +224,7 @@ struct proc {
   int wait_signal;
   int sleep_deadline;
   int sleep_remaining;
+  int poll_deadline;
   struct vm_space vm;
   struct cpu_context ctx;
   struct file files[CFG_NFD];
@@ -250,6 +286,7 @@ void tty_receive(int ch);
 void tty_close_input(void);
 int tty_read(int caller, int buf, int len);
 int tty_write(int caller, int buf, int len);
+int tty_poll(int events);
 int tty_getattr(int caller, int destination);
 int tty_setattr(int caller, int source, int flush);
 int tty_getwinsize(int caller, int destination);
@@ -387,6 +424,7 @@ extern struct file_ops console_file_ops;
 extern struct file_ops keyboard_file_ops;
 extern struct file_ops vnode_file_ops;
 extern struct file_ops pipe_file_ops;
+extern struct file_ops socket_file_ops;
 extern struct open_file open_file_table[CFG_NFILE];
 void file_init(void);
 void file_reset(struct file *file);
@@ -395,6 +433,7 @@ void file_set_keyboard(struct file *file);
 int file_set_vnode(struct file *file, int inum);
 int file_set_node(struct file *file, struct vnode *node);
 void file_set_pipe(struct file *file, int pipe, int end);
+void file_set_socket(struct file *file, int socket);
 int file_read(struct file *file, int caller, int buf, int len);
 int file_write(struct file *file, int caller, int buf, int len);
 void file_close(struct file *file);
@@ -418,12 +457,36 @@ int file_getdents(struct file *file, int caller, int destination, int count);
 int file_is_tty(struct file *file);
 int file_stat(struct file *file, struct guest_stat *st);
 int file_lseek(struct file *file, int offset, int whence);
+int file_poll(struct file *file, int events);
 
 // --- pipe.c ---
 extern struct pipe pipe_table[CFG_NPIPE];
 int alloc_pipe(void);
 int pipe_write_bytes(int pp, int buf, int len);
 int pipe_read_bytes(int pp, int buf, int len);
+
+// --- network.c / drivers/network.c ---
+extern struct socket socket_table[CFG_NSOCKET];
+extern int poll_chan;
+void poll_wakeup(void);
+void network_init(void);
+void on_network_irq(void);
+void net_receive_frame(char *frame, int length);
+int socket_create(int caller, int domain, int type, int protocol);
+int socket_bind(int caller, int fd, int address, int length);
+int socket_connect(int caller, int fd, int address, int length);
+int socket_listen(int caller, int fd, int backlog);
+int socket_accept(int caller, int fd, int address, int length);
+int socket_setsockopt(int caller, int fd, int args);
+int socket_send(int caller, int fd, int buffer, int length);
+int socket_recv(int caller, int fd, int buffer, int length);
+int socket_send_object(int caller, int socket, int buffer, int length);
+int socket_recv_object(int caller, int socket, int buffer, int length);
+int socket_sendto(int caller, int fd, int args);
+int socket_recvfrom(int caller, int fd, int args);
+int socket_poll(int socket, int events);
+void socket_close(int socket);
+void socket_retain(int socket);
 
 // --- exec.c ---
 extern char kpath[CFG_INITPATH_LEN]; // a path copied in from user memory
@@ -461,6 +524,7 @@ int sys_dup(int caller, int oldfd);
 int sys_fcntl(int caller, int fd, int command, int argument);
 int sys_ioctl(int caller, int fd, int request, int argument);
 int sys_getdents(int caller, int fd, int destination, int count);
+int sys_poll(int caller, int fds, int count, int timeout);
 int sys_stat_path(int caller, int upath, int destination, int follow);
 int sys_fstat(int caller, int fd, int destination);
 void on_syscall(void);
@@ -476,6 +540,7 @@ extern int timer_handler_addr;
 extern int pf_handler_addr;
 extern int syscall_handler_addr;
 extern int keyboard_handler_addr;
+extern int network_handler_addr;
 void set_idt_entry(int vector, int handler);
 void set_user_idt_entry(int vector, int handler);
 void capture_handlers(void);

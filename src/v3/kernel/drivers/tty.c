@@ -33,6 +33,7 @@ void tty_queue(int ch) {
   if (tty_input_count >= 512) return;
   tty_input[(tty_input_head + tty_input_count) % 512] = ch;
   tty_input_count = tty_input_count + 1;
+  poll_wakeup();
 }
 
 void tty_commit_edit(void) {
@@ -129,6 +130,19 @@ void tty_close_input(void) {
   if (tty_closed != 0) return;
   tty_closed = 1;
   if (tty_edit_count > 0) tty_commit_edit();
+  poll_wakeup();
+}
+
+int tty_poll(int events) {
+  int ready;
+  ready = 0;
+  if ((events & CFG_POLLIN) != 0 &&
+      (tty_input_count > 0 || tty_eof_pending > 0 || tty_closed != 0)) {
+    ready = ready | CFG_POLLIN;
+  }
+  if ((events & CFG_POLLOUT) != 0) ready = ready | CFG_POLLOUT;
+  if (tty_closed != 0) ready = ready | CFG_POLLHUP;
+  return ready;
 }
 
 int tty_read(int caller, int buf, int len) {

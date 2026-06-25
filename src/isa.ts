@@ -133,6 +133,7 @@ export const TRAP = {
 // The timer is wired to IRQ line 0 -> vector TRAP.IRQ_BASE.
 export const TIMER_IRQ = 0;
 export const KEYBOARD_IRQ = 1;
+export const NETWORK_IRQ = 2;
 
 // IDT layout: a flat table of 8-byte gate descriptors indexed by vector.
 //   +0: handler virtual address (offset)   +4: flags (bit 0 = Present)
