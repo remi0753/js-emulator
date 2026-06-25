@@ -751,16 +751,34 @@ For every milestone, use the same completion workflow:
   /dev` enumerates every registered driver, `/sys` reports the device and IRQ
   registries, and keyboard input still arrives through the routed IRQ.
 
-- **Phase 27** ⬜ add observability and debugging surfaces.
+- **Phase 27** ✅ add observability and debugging surfaces.
 
-  Linux-like systems are debuggable from inside and outside. Add kernel logs,
-  panic backtraces, symbolized traces, process state dumps, page-table dumps,
-  syscall tracing, disk/network tracing, and a `/proc` or debugfs-style surface.
-  Keep host-side deterministic traces for emulator tests.
+  Added a guest-owned kernel log and runtime tracing in `src/v3/kernel/klog.c`.
+  `klog()` records kernel messages into a bounded in-memory buffer and mirrors
+  them to the serial console, so boot, exec, shutdown, panic, and trace output
+  are captured both host-side (serial) and guest-side. The buffer is exposed as
+  the `/dev/kmsg` character device (registered through the Phase 26 driver
+  model), and `/bin/dmesg` reads it. `panic()` now dumps the offending process
+  context (pid/pc/sp/mode) through the log before halting.
 
-  Done when a failing guest test can be diagnosed from serial logs, syscall
-  traces, process state, and filesystem/device traces without manually
-  instrumenting the emulator.
+  A runtime trace bitmask is toggled by writing the writable `/sys/trace`
+  control file (syscall=1, disk=2, fault=4). When the syscall bit is set the
+  dispatcher logs each call as `trace: pid=N name(a1, a2, a3) = rv` with
+  symbolic names for the headline syscalls; the page-fault handler and the PIO
+  block driver emit fault and disk-read/write trace lines under their bits.
+
+  Process state and address-space inspection moved into procfs: enriched
+  `/proc/<pid>/status` reports Pid/PPid/State/Pgid/Sid/Uid/Gid, and a new
+  `/proc/<pid>/maps` dumps the heap span and every resident VM area with its
+  protection bits. `/bin/ps` lists processes by reading procfs. The existing
+  host-side deterministic traces (`src/vm/custom32/trace.ts`) remain the
+  emulator-level path. Coverage is in `test/guest-observability-phase27.test.ts`.
+
+  Done: a failing guest run can be diagnosed from the kernel log (`/dev/kmsg` /
+  `dmesg` / serial), syscall and disk traces toggled through `/sys/trace`, and
+  process state and page-table/VMA dumps under `/proc`, with no emulator
+  instrumentation — a guest program reads the log, toggles tracing, inspects its
+  own status and maps, and `dmesg`/`ps` surface the same data from the shell.
 
 - **Phase 28** ⬜ add multi-core only after single-core semantics are solid.
 

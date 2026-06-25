@@ -779,7 +779,7 @@ int h_time(int caller, int a1, int a2, int a3) {
 }
 
 int h_shutdown(int caller, int a1, int a2, int a3) {
-  serial_write("kernel: shutdown\n");
+  klog("kernel: shutdown\n");
   power_off(); // the machine stops at the next instruction boundary
   return 0;
 }
@@ -883,6 +883,12 @@ void on_syscall(void) {
     }
   } else {
     proc_table[caller].ctx.regs[0] = -CFG_ENOSYS;
+  }
+
+  // Optional syscall tracing into the kernel log. The staged R0 reflects the
+  // result even for handlers that set it themselves (exec/fork/wait).
+  if ((trace_flags & CFG_TRACE_SYSCALL) != 0) {
+    trace_syscall(caller, num, a1, a2, a3, proc_table[caller].ctx.regs[0]);
   }
 
   prepare_signal(current);

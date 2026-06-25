@@ -42,8 +42,9 @@ const NPIPE = 8;
 const NSOCKET = 8;
 const NMOUNT = 5;
 const NTMPNODE = 16;
-const NCHARDEV = 8; // registered char-device drivers (device.c)
+const NCHARDEV = 10; // registered char-device drivers (device.c)
 const NIRQ = 8; // device IRQ lines routed through request_irq/irq_dispatch
+const KLOG_SIZE = 4096; // kernel log ring buffer (klog.c), exposed via /dev/kmsg
 const TMP_FILE_SIZE = 512;
 const PIPESZ = 512;
 const MAXARG = 16;
@@ -266,6 +267,12 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_NMOUNT: NMOUNT,
   CFG_NCHARDEV: NCHARDEV,
   CFG_NIRQ: NIRQ,
+  CFG_KLOG_SIZE: KLOG_SIZE,
+  // Runtime trace bitmask (klog.c), set through /sys/trace. Each bit makes a
+  // subsystem emit structured trace lines into the kernel log.
+  CFG_TRACE_SYSCALL: 1 << 0,
+  CFG_TRACE_DISK: 1 << 1,
+  CFG_TRACE_FAULT: 1 << 2,
   CFG_NTMPNODE: NTMPNODE,
   CFG_TMP_FILE_SIZE: TMP_FILE_SIZE,
   CFG_PIPESZ: PIPESZ,

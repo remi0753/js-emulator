@@ -141,6 +141,12 @@ int cd_random_read(int node, int caller, int off, int buf, int len) {
   return len;
 }
 
+// /dev/kmsg: read the kernel log buffer (Phase 27 dmesg surface). The device
+// read passes the file offset through `off`, so a reader streams the whole log.
+int cd_kmsg_read(int node, int caller, int off, int buf, int len) {
+  return klog_read(off, buf, len);
+}
+
 // --- IRQ ownership and routing ---
 
 int request_irq(int line, irq_fn handler, char *owner) {
@@ -203,9 +209,18 @@ int sys_build_irq(void) {
   return n;
 }
 
+// /sys/trace holds the runtime trace bitmask as a decimal number plus newline.
+int sys_build_trace(void) {
+  int n;
+  n = append_number(sys_text, 0, trace_flags);
+  sys_text[n] = '\n';
+  return n + 1;
+}
+
 int sys_text_for(int object) {
   if (object == 1) return sys_build_devices();
   if (object == 2) return sys_build_irq();
+  if (object == 3) return sys_build_trace();
   return 0;
 }
 
@@ -226,6 +241,12 @@ int sys_lookup(char *relative, struct vnode *node) {
       CFG_T_FILE, CFG_S_IFREG | 292, sys_build_irq());
     return 0;
   }
+  // Writable: 0644 so root can toggle tracing by writing the bitmask.
+  if (strcmp(relative, "trace") == 0) {
+    vnode_fill(node, &sys_vnode_ops, CFG_FS_SYS, 3,
+      CFG_T_FILE, CFG_S_IFREG | 420, sys_build_trace());
+    return 0;
+  }
   return -CFG_ENOENT;
 }
 
@@ -243,6 +264,34 @@ int sys_read_op(int node_addr, int caller, int off, int buf, int len) {
   return take;
 }
 
+// Parse a decimal value out of the user buffer and set the trace bitmask.
+int sys_write_op(int node_addr, int caller, int off, int buf, int len) {
+  struct vnode *node;
+  int value;
+  int i;
+  int c;
+  node = node_addr;
+  if (node->object != 3) return -CFG_EROFS;
+  value = 0;
+  i = 0;
+  while (i < len) {
+    c = read8_at(buf + i);
+    if (c >= '0' && c <= '9') value = value * 10 + c - '0';
+    i = i + 1;
+  }
+  trace_flags = value;
+  return len;
+}
+
+// /sys/trace is rewritable (shell redirection truncates before writing); the
+// other /sys nodes are read-only.
+int sys_truncate_op(int node_addr) {
+  struct vnode *node;
+  node = node_addr;
+  if (node->object != 3) return -CFG_EROFS;
+  return 0;
+}
+
 int sys_getdents_op(
   int node_addr, int caller, int offset_addr, int destination, int count
 ) {
@@ -255,10 +304,11 @@ int sys_getdents_op(
   if (node->inode.type != CFG_T_DIR) return -CFG_ENOTDIR;
   if (count < sizeof(struct guest_dirent)) return -CFG_EINVAL;
   written = 0;
-  while (*offset < 2 &&
+  while (*offset < 3 &&
       written + sizeof(struct guest_dirent) <= count) {
     if (*offset == 0) name = "devices";
-    else name = "irq";
+    else if (*offset == 1) name = "irq";
+    else name = "trace";
     if (emit_dirent(caller, destination + written, *offset + 1,
         *offset + 1, CFG_T_FILE, name) < 0) return -CFG_EFAULT;
     *offset = *offset + 1;
@@ -295,6 +345,7 @@ void device_init(void) {
     cd_sink_write);
   register_chardev(7, "urandom", CFG_S_IFCHR | 292, cd_random_read,
     cd_sink_write);
+  register_chardev(8, "kmsg", CFG_S_IFCHR | 292, cd_kmsg_read, cd_sink_write);
 
   // IRQ ownership: device drivers claim their interrupt lines. The timer
   // (line CFG_TIMER_IRQ) stays a dedicated scheduler stub and is not routed
@@ -303,9 +354,9 @@ void device_init(void) {
   request_irq(CFG_NET_IRQ, network_drain, "net");
 
   sys_vnode_ops.read = sys_read_op;
-  sys_vnode_ops.write = 0;
+  sys_vnode_ops.write = sys_write_op;
   sys_vnode_ops.getdents = sys_getdents_op;
   sys_vnode_ops.stat = generic_stat_op;
-  sys_vnode_ops.truncate = 0;
+  sys_vnode_ops.truncate = sys_truncate_op;
   sys_vnode_ops.release = 0;
 }

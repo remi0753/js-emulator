@@ -15,9 +15,10 @@ void serial_write(char *s) {
 }
 
 void panic(char *msg) {
-  serial_write("kernel: PANIC: ");
-  serial_write(msg);
-  serial_putc('\n');
+  klog("kernel: PANIC: ");
+  klog(msg);
+  klog_putc('\n');
+  dump_state(); // report the offending process context (pid/pc/sp/mode)
   __di();
   __halt();
 }

@@ -611,6 +611,19 @@ void setup_traps(void);
 void on_default_trap(void);
 void on_page_fault(void);
 
+// --- klog.c (Phase 27 observability: kernel log + runtime tracing) ---
+extern char klog_buf[CFG_KLOG_SIZE];
+extern int klog_len;
+extern int klog_total;
+extern int trace_flags; // runtime trace bitmask (syscall/disk/fault), via /sys/trace
+void klog_putc(int c);
+void klog(char *s);
+void klog_int(int value);
+int klog_read(int off, int dst, int len);
+char *syscall_name(int num);
+void trace_syscall(int pid, int num, int a1, int a2, int a3, int rv);
+void dump_state(void);
+
 // --- main.c ---
 extern char initpath[CFG_INITPATH_LEN];
 void read_initpath(void);

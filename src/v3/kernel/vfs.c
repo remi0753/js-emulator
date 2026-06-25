@@ -24,7 +24,7 @@ struct tmp_node {
 };
 
 struct tmp_node tmp_nodes[CFG_NTMPNODE];
-char proc_text[64];
+char proc_text[512]; // scratch for /proc status and maps text
 
 void vnode_clear(struct vnode *node) {
   memset(node, 0, sizeof(struct vnode));
@@ -329,7 +329,12 @@ int proc_lookup(char *relative, int follow, int caller, struct vnode *node) {
   }
   if (rest[0] == '/' && strcmp(rest + 1, "status") == 0) {
     vnode_fill(node, &proc_vnode_ops, CFG_FS_PROC, 200 + pid,
-      CFG_T_FILE, CFG_S_IFREG | 292, 32);
+      CFG_T_FILE, CFG_S_IFREG | 292, proc_status_text(pid));
+    return 0;
+  }
+  if (rest[0] == '/' && strcmp(rest + 1, "maps") == 0) {
+    vnode_fill(node, &proc_vnode_ops, CFG_FS_PROC, 300 + pid,
+      CFG_T_FILE, CFG_S_IFREG | 292, proc_maps_text(pid));
     return 0;
   }
   return -CFG_ENOENT;
@@ -371,9 +376,14 @@ int append_number(char *dst, int at, int value) {
 
 int proc_status_text(int pid) {
   int n;
+  int ppid;
   char state;
   n = append_text(proc_text, 0, "Pid:\t");
   n = append_number(proc_text, n, pid);
+  n = append_text(proc_text, n, "\nPPid:\t");
+  ppid = proc_table[pid].parent;
+  if (ppid < 0) ppid = 0;
+  n = append_number(proc_text, n, ppid);
   n = append_text(proc_text, n, "\nState:\t");
   if (proc_table[pid].state == CFG_ST_RUNNABLE) state = 'R';
   else if (proc_table[pid].state == CFG_ST_SLEEPING) state = 'S';
@@ -382,7 +392,72 @@ int proc_status_text(int pid) {
   else state = '?';
   proc_text[n] = state;
   n = n + 1;
+  n = append_text(proc_text, n, "\nPgid:\t");
+  n = append_number(proc_text, n, proc_table[pid].pgid);
+  n = append_text(proc_text, n, "\nSid:\t");
+  n = append_number(proc_text, n, proc_table[pid].sid);
+  n = append_text(proc_text, n, "\nUid:\t");
+  n = append_number(proc_text, n, proc_table[pid].uid);
+  n = append_text(proc_text, n, "\nGid:\t");
+  n = append_number(proc_text, n, proc_table[pid].gid);
   n = append_text(proc_text, n, "\n");
+  return n;
+}
+
+// Append a 32-bit value as eight lowercase hex digits (page-aligned addresses
+// read more naturally in hex for the /proc/<pid>/maps page-table dump).
+int append_hex(char *dst, int at, int value) {
+  int shift;
+  int digit;
+  shift = 28;
+  while (shift >= 0) {
+    digit = (value >> shift) & 15;
+    if (digit < 10) dst[at] = '0' + digit;
+    else dst[at] = 'a' + digit - 10;
+    at = at + 1;
+    shift = shift - 4;
+  }
+  return at;
+}
+
+// /proc/<pid>/maps: a page-table / address-space dump. Reports the heap (brk)
+// span and every resident VM area with its protection bits, so a stuck process
+// can be inspected without instrumenting the emulator.
+int proc_maps_text(int pid) {
+  int n;
+  int i;
+  int prot;
+  n = 0;
+  // A '-' char literal collides with the minus operator in the C toolchain, so
+  // dashes are written as their byte value (45).
+  if (proc_table[pid].vm.brk_end > proc_table[pid].vm.brk_start) {
+    n = append_hex(proc_text, n, proc_table[pid].vm.brk_start);
+    proc_text[n] = 45;
+    n = n + 1;
+    n = append_hex(proc_text, n, proc_table[pid].vm.brk_end);
+    n = append_text(proc_text, n, " rw- [heap]\n");
+  }
+  i = 0;
+  while (i < CFG_MAX_VMAS) {
+    if (proc_table[pid].vm.areas[i].used != 0) {
+      n = append_hex(proc_text, n, proc_table[pid].vm.areas[i].start);
+      proc_text[n] = 45;
+      n = n + 1;
+      n = append_hex(proc_text, n, proc_table[pid].vm.areas[i].end);
+      proc_text[n] = ' ';
+      n = n + 1;
+      prot = proc_table[pid].vm.areas[i].prot;
+      if ((prot & CFG_PROT_READ) != 0) proc_text[n] = 'r'; else proc_text[n] = 45;
+      n = n + 1;
+      if ((prot & CFG_PROT_WRITE) != 0) proc_text[n] = 'w'; else proc_text[n] = 45;
+      n = n + 1;
+      if ((prot & CFG_PROT_EXEC) != 0) proc_text[n] = 'x'; else proc_text[n] = 45;
+      n = n + 1;
+      proc_text[n] = '\n';
+      n = n + 1;
+    }
+    i = i + 1;
+  }
   return n;
 }
 
@@ -392,7 +467,8 @@ int proc_read_op(int node_addr, int caller, int off, int buf, int len) {
   int take;
   node = node_addr;
   if (node->object < 200) return -CFG_EISDIR;
-  total = proc_status_text(node->object - 200);
+  if (node->object >= 300) total = proc_maps_text(node->object - 300);
+  else total = proc_status_text(node->object - 200);
   if (off >= total) return 0;
   take = total - off;
   if (take > len) take = len;
@@ -415,13 +491,19 @@ int proc_getdents_op(
   if (count < sizeof(struct guest_dirent)) return -CFG_EINVAL;
   written = 0;
   if (node->object >= 100) {
-    if (*offset == 0) {
-      if (emit_dirent(caller, destination, node->object + 100, 1,
-          CFG_T_FILE, "status") < 0) return -CFG_EFAULT;
-      *offset = 1;
-      return sizeof(struct guest_dirent);
+    while (*offset < 2 &&
+        written + sizeof(struct guest_dirent) <= count) {
+      if (*offset == 0) {
+        if (emit_dirent(caller, destination + written, node->object + 100, 1,
+            CFG_T_FILE, "status") < 0) return -CFG_EFAULT;
+      } else {
+        if (emit_dirent(caller, destination + written, node->object + 200, 2,
+            CFG_T_FILE, "maps") < 0) return -CFG_EFAULT;
+      }
+      *offset = *offset + 1;
+      written = written + sizeof(struct guest_dirent);
     }
-    return 0;
+    return written;
   }
   logical = *offset;
   if (logical == 0 &&

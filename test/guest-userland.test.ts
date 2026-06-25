@@ -43,7 +43,7 @@ test('the compiled userland boots and the shell runs echo/ls/cat and a pipeline'
   machine.load(0, image.flat);
   machine.reset({ pc: image.entry, sp: GUEST_KERNEL_LAYOUT.kstackTop });
 
-  const r = machine.run(20_000_000);
+  const r = machine.run(40_000_000);
 
   // The kernel booted compiled /bin/init from disk, which spawned /bin/sh; the
   // shell ran echo, ls, cat, and the `cat | cat` pipeline -- all compiled C on

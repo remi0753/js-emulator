@@ -94,7 +94,7 @@ void switch_to_next(void) {
       i = i + 1;
     }
     if (blocked == 0) {
-      serial_write("kernel: all processes exited\n");
+      klog("kernel: all processes exited\n");
       __halt();
     }
     // The VM timer advances with executed instructions, so HLT cannot wake a

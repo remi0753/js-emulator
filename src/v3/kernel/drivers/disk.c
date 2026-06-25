@@ -4,6 +4,11 @@
 void disk_read_block(int blockno, int dst) {
   int *p;
   int i;
+  if ((trace_flags & CFG_TRACE_DISK) != 0) {
+    klog("trace: disk read blk=");
+    klog_int(blockno);
+    klog("\n");
+  }
   __out(CFG_DISK_POS, blockno);
   p = dst;
   i = 0;
@@ -16,6 +21,11 @@ void disk_read_block(int blockno, int dst) {
 void disk_write_block(int blockno, int src) {
   int *p;
   int i;
+  if ((trace_flags & CFG_TRACE_DISK) != 0) {
+    klog("trace: disk write blk=");
+    klog_int(blockno);
+    klog("\n");
+  }
   __out(CFG_DISK_POS, blockno);
   p = src;
   i = 0;

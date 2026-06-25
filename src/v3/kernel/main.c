@@ -166,7 +166,7 @@ int kmain(void) {
     "kernel_handlers_done:\n"
   );
 
-  serial_write("kernel: boot\n");
+  klog("kernel: boot\n");
   setup_traps();
   syscall_init();
   file_init();
@@ -180,9 +180,9 @@ int kmain(void) {
   vfs_init();
   read_initpath();
 
-  serial_write("kernel: exec ");
-  serial_write(initpath);
-  serial_putc('\n');
+  klog("kernel: exec ");
+  klog(initpath);
+  klog_putc('\n');
   setup_process_boot(initpath);
 
   __stmr(CFG_TIMER_PERIOD);

@@ -74,6 +74,15 @@ void on_page_fault(void) {
   int error;
   page_fault_addr = __rdpfla();
   error = __rderr();
+  if ((trace_flags & CFG_TRACE_FAULT) != 0) {
+    klog("trace: fault pid=");
+    klog_int(current);
+    klog(" addr=");
+    klog_int(page_fault_addr);
+    klog(" err=");
+    klog_int(error);
+    klog("\n");
+  }
   if (sctx_mode != CFG_MODE_USER) {
     panic("unexpected kernel page fault");
   }

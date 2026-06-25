@@ -53,6 +53,8 @@ export const GUEST_USER_PROGRAMS = [
   'touch',
   'env',
   'nc',
+  'dmesg',
+  'ps',
   'runtests',
 ] as const;
 
@@ -168,6 +170,7 @@ export function buildGuestDiskImage(options: GuestDiskImageOptions = {}): Uint8A
 // the shared `extern` declarations and prototypes.
 const KERNEL_SOURCE_FILES = [
   'main.c', // must stay first: owns _start / kmain and the shared C stack size
+  'klog.c',
   'trap.c',
   'scheduler.c',
   'process.c',
