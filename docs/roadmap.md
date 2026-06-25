@@ -715,7 +715,7 @@ For every milestone, use the same completion workflow:
   Done: a host-side test exchanges UDP packets with a guest service
   deterministically through the virtual NIC and guest network stack.
 
-- **Phase 26** ⬜ add a Linux-like device and driver model.
+- **Phase 26** ✅ add a Linux-like device and driver model.
 
   Keep early devices simple, but organize them behind a driver model: device
   enumeration, major/minor numbers, char/block device operations, IRQ ownership,
@@ -723,8 +723,33 @@ For every milestone, use the same completion workflow:
   useful. Add framebuffer, mouse, RTC, entropy, power/shutdown, and virtio-like
   block/network devices in that framework.
 
-  Done when devices are not ad hoc port users but kernel objects visible through
-  `/dev`, VFS operations, IRQ routing, and driver registration.
+  Added a guest-owned device/driver model in `src/v3/kernel/device.c`. Character
+  devices are now kernel objects registered with a major number, a name,
+  permission bits, and a `read`/`write` operation table; devfs resolves `/dev`
+  names through this registry and dispatches reads/writes to the owning driver
+  instead of a hard-coded switch. `console`, `null`, `zero`, and `tty` keep their
+  historical object ids (so `vnode_is_tty` and existing `/dev` ordering stay
+  stable) but are now ordinary registrations, joined by new `rtc`, `random`, and
+  `urandom` nodes. `stat` reports `S_IFCHR` plus a `major:minor` `rdev`. A new
+  deterministic entropy device (`src/vm/custom32/devices/entropy.ts`, a seeded
+  xorshift on its own port) backs `/dev/random` and `/dev/urandom`.
+
+  Device interrupts are routed the same way: a driver claims its line with
+  `request_irq`, and the per-line assembly trap stub funnels through
+  `irq_dispatch`, which invokes the registered handler (`keyboard_isr`,
+  `network_drain`). The timer keeps its dedicated scheduler stub. A `/sys`
+  pseudo-filesystem (mounted at `/sys`) exposes the registry for inspection:
+  `/sys/devices` lists registered char devices and their majors, and `/sys/irq`
+  lists owned IRQ lines and their owning drivers. End-to-end coverage is in
+  `test/guest-devices-phase26.test.ts`; the framework is ready for adding the
+  remaining devices (framebuffer, mouse, virtio-like block/network) as further
+  registrations.
+
+  Done: devices are no longer ad hoc port users but kernel objects visible
+  through `/dev`, the shared VFS file operations, IRQ routing, and driver
+  registration — a guest program reads the RTC and entropy char devices, `ls
+  /dev` enumerates every registered driver, `/sys` reports the device and IRQ
+  registries, and keyboard input still arrives through the routed IRQ.
 
 - **Phase 27** ⬜ add observability and debugging surfaces.
 

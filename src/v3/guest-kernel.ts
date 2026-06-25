@@ -118,6 +118,7 @@ export function buildGuestDiskImage(options: GuestDiskImageOptions = {}): Uint8A
   fs.mkdir('/dev');
   fs.mkdir('/proc');
   fs.mkdir('/tmp');
+  fs.mkdir('/sys');
   for (const name of GUEST_USER_PROGRAMS) {
     fs.writeFile(`/bin/${name}`, buildUserExecutable(name, sourceFile(`userland/${name}.c`)));
     fs.chmod(`/bin/${name}`, 0o755);
@@ -179,6 +180,7 @@ const KERNEL_SOURCE_FILES = [
   'network.c',
   'fs.c',
   'vfs.c',
+  'device.c',
   'drivers/console.c',
   'drivers/tty.c',
   'drivers/keyboard.c',

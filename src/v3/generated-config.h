@@ -44,6 +44,7 @@
 #define CFG_ENOTEMPTY 39
 #define CFG_ENOTSOCK 88
 #define CFG_ENOTTY 25
+#define CFG_ENTROPY 1808
 #define CFG_EOPNOTSUPP 95
 #define CFG_EPERM 1
 #define CFG_EPIPE 32
@@ -65,6 +66,7 @@
 #define CFG_FS_DISK 1
 #define CFG_FS_MAGIC 0x10203040
 #define CFG_FS_PROC 3
+#define CFG_FS_SYS 5
 #define CFG_FS_TMP 4
 #define CFG_FS_VERSION 2
 #define CFG_FT_CONS 1
@@ -82,6 +84,7 @@
 #define CFG_IPPROTO_TCP 6
 #define CFG_IPPROTO_UDP 17
 #define CFG_KBD_DATA 96
+#define CFG_KBD_IRQ 1
 #define CFG_KBD_STATUS 100
 #define CFG_KBD_VECTOR 33
 #define CFG_KERNEL_PT 0x71000
@@ -96,7 +99,9 @@
 #define CFG_MAXFILE 140
 #define CFG_MODE_USER 1
 #define CFG_NBUF 16
+#define CFG_NCHARDEV 8
 #define CFG_NDIRECT 12
+#define CFG_NET_IRQ 2
 #define CFG_NET_RX_DATA 770
 #define CFG_NET_RX_LEN 769
 #define CFG_NET_STATUS 768
@@ -106,7 +111,8 @@
 #define CFG_NFD 16
 #define CFG_NFILE 128
 #define CFG_NINDIRECT 128
-#define CFG_NMOUNT 4
+#define CFG_NIRQ 8
+#define CFG_NMOUNT 5
 #define CFG_NPIPE 8
 #define CFG_NSIG 32
 #define CFG_NSOCKET 8
@@ -243,6 +249,7 @@
 #define CFG_TCSETSF 0x5404
 #define CFG_TCSETSW 0x5403
 #define CFG_TICKS_PER_SEC 100
+#define CFG_TIMER_IRQ 0
 #define CFG_TIMER_PERIOD 0x1f40
 #define CFG_TIMER_VECTOR 32
 #define CFG_TIOCGPGRP 0x540f

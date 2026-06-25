@@ -40,8 +40,10 @@ const NFD = 16;
 const NFILE = MAX_PROC * NFD;
 const NPIPE = 8;
 const NSOCKET = 8;
-const NMOUNT = 4;
+const NMOUNT = 5;
 const NTMPNODE = 16;
+const NCHARDEV = 8; // registered char-device drivers (device.c)
+const NIRQ = 8; // device IRQ lines routed through request_irq/irq_dispatch
 const TMP_FILE_SIZE = 512;
 const PIPESZ = 512;
 const MAXARG = 16;
@@ -77,6 +79,7 @@ const FS_TYPE = {
   dev: 2,
   proc: 3,
   tmp: 4,
+  sys: 5,
 } as const;
 
 // Stable negative errno values (Linux numbers). Syscalls return -ERRNO on
@@ -236,6 +239,9 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_KBD_DATA: PORT.KBD_DATA,
   CFG_KBD_STATUS: PORT.KBD_STATUS,
   CFG_KBD_VECTOR: TRAP.IRQ_BASE + KEYBOARD_IRQ,
+  CFG_TIMER_IRQ: TIMER_IRQ,
+  CFG_KBD_IRQ: KEYBOARD_IRQ,
+  CFG_NET_IRQ: NETWORK_IRQ,
   CFG_NET_STATUS: PORT.NET_STATUS,
   CFG_NET_RX_LEN: PORT.NET_RX_LEN,
   CFG_NET_RX_DATA: PORT.NET_RX_DATA,
@@ -245,6 +251,7 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_DISK_POS: PORT.DISK_POS,
   CFG_DISK_DATA: PORT.DISK_DATA,
   CFG_RTC_DATA: PORT.RTC_DATA,
+  CFG_ENTROPY: PORT.ENTROPY,
   CFG_POWER: PORT.POWER,
   CFG_POWER_OFF: POWER_OFF,
   CFG_PTE_KERNEL: PTE_KERNEL,
@@ -257,6 +264,8 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_NPIPE: NPIPE,
   CFG_NSOCKET: NSOCKET,
   CFG_NMOUNT: NMOUNT,
+  CFG_NCHARDEV: NCHARDEV,
+  CFG_NIRQ: NIRQ,
   CFG_NTMPNODE: NTMPNODE,
   CFG_TMP_FILE_SIZE: TMP_FILE_SIZE,
   CFG_PIPESZ: PIPESZ,
@@ -301,6 +310,7 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_FS_DEV: FS_TYPE.dev,
   CFG_FS_PROC: FS_TYPE.proc,
   CFG_FS_TMP: FS_TYPE.tmp,
+  CFG_FS_SYS: FS_TYPE.sys,
   CFG_NBUF: NBUF,
   CFG_BUF_DATA_LEN: NBUF * SECTOR_SIZE,
   CFG_INITPATH_LEN: 64,

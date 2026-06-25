@@ -172,6 +172,7 @@ int kmain(void) {
   file_init();
   keyboard_init();
   network_init();
+  device_init();
   pmm_init();
   build_kernel_pt();
 

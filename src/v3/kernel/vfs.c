@@ -200,61 +200,36 @@ void disk_release_op(int node_addr) {
   }
 }
 
+// devfs is now driven by the char-device registry (device.c): a /dev name
+// resolves to the major number of whichever driver claimed it, and reads/writes
+// dispatch through that driver's operation table.
 int dev_lookup(char *relative, struct vnode *node) {
+  int major;
   if (relative[0] == 0) {
     vnode_fill(node, &dev_vnode_ops, CFG_FS_DEV, 0,
       CFG_T_DIR, CFG_S_IFDIR | 493, 0);
     node->inode.nlink = 2;
     return 0;
   }
-  if (strcmp(relative, "console") == 0) {
-    vnode_fill(node, &dev_vnode_ops, CFG_FS_DEV, 1,
-      CFG_T_FILE, CFG_S_IFCHR | 438, 0);
-    return 0;
-  }
-  if (strcmp(relative, "tty") == 0) {
-    vnode_fill(node, &dev_vnode_ops, CFG_FS_DEV, 4,
-      CFG_T_FILE, CFG_S_IFCHR | 438, 0);
-    return 0;
-  }
-  if (strcmp(relative, "null") == 0) {
-    vnode_fill(node, &dev_vnode_ops, CFG_FS_DEV, 2,
-      CFG_T_FILE, CFG_S_IFCHR | 438, 0);
-    return 0;
-  }
-  if (strcmp(relative, "zero") == 0) {
-    vnode_fill(node, &dev_vnode_ops, CFG_FS_DEV, 3,
-      CFG_T_FILE, CFG_S_IFCHR | 438, 0);
-    return 0;
-  }
-  return -CFG_ENOENT;
+  major = chardev_lookup(relative);
+  if (major < 0) return -CFG_ENOENT;
+  vnode_fill(node, &dev_vnode_ops, CFG_FS_DEV, major,
+    CFG_T_FILE, chardev_table[major].mode, 0);
+  return 0;
 }
 
 int dev_read_op(int node_addr, int caller, int off, int buf, int len) {
   struct vnode *node;
-  int i;
-  int ch;
   node = node_addr;
-  if (node->object == 2) return 0;
-  if (node->object == 3) {
-    i = 0;
-    while (i < len) {
-      write8_at(buf + i, 0);
-      i = i + 1;
-    }
-    return len;
-  }
-  if (node->object != 1 && node->object != 4) return -CFG_EISDIR;
-  return tty_read(caller, buf, len);
+  if (node->object == 0) return -CFG_EISDIR;
+  return chardev_read(node->object, node_addr, caller, off, buf, len);
 }
 
 int dev_write_op(int node_addr, int caller, int off, int buf, int len) {
   struct vnode *node;
-  int i;
   node = node_addr;
-  if (node->object == 2 || node->object == 3) return len;
-  if (node->object != 1 && node->object != 4) return -CFG_EISDIR;
-  return tty_write(caller, buf, len);
+  if (node->object == 0) return -CFG_EISDIR;
+  return chardev_write(node->object, node_addr, caller, off, buf, len);
 }
 
 int dev_getdents_op(
@@ -262,20 +237,19 @@ int dev_getdents_op(
 ) {
   int *offset;
   int written;
-  char *name;
+  int major;
   offset = offset_addr;
   if (count < sizeof(struct guest_dirent)) return -CFG_EINVAL;
   written = 0;
-  while (*offset < 4 &&
+  while (*offset < CFG_NCHARDEV &&
       written + sizeof(struct guest_dirent) <= count) {
-    if (*offset == 0) name = "console";
-    else if (*offset == 1) name = "null";
-    else if (*offset == 2) name = "zero";
-    else name = "tty";
-    if (emit_dirent(caller, destination + written, *offset + 1,
-        *offset + 1, CFG_T_FILE, name) < 0) return -CFG_EFAULT;
+    major = *offset;
     *offset = *offset + 1;
-    written = written + sizeof(struct guest_dirent);
+    if (major >= 1 && chardev_table[major].used != 0) {
+      if (emit_dirent(caller, destination + written, major, *offset,
+          CFG_T_FILE, chardev_table[major].name) < 0) return -CFG_EFAULT;
+      written = written + sizeof(struct guest_dirent);
+    }
   }
   return written;
 }
@@ -296,7 +270,7 @@ void generic_stat_op(int node_addr, int stat_addr) {
   st->uid = node->inode.uid;
   st->gid = node->inode.gid;
   st->rdev = 0;
-  if (node->fs_type == CFG_FS_DEV) st->rdev = node->object;
+  if (node->fs_type == CFG_FS_DEV) st->rdev = chardev_rdev(node->object);
   st->size = node->inode.size;
   st->blksize = 512;
   st->blocks = (node->inode.size + 511) / 512;
@@ -647,6 +621,9 @@ int vfs_lookup_depth(
   if (mount_table[mount_index].fs_type == CFG_FS_TMP) {
     return tmp_lookup(relative, node);
   }
+  if (mount_table[mount_index].fs_type == CFG_FS_SYS) {
+    return sys_lookup(relative, node);
+  }
   inum = namei_access(path, follow, proc_table[caller].uid,
     proc_table[caller].gid);
   if (inum == 0 && fs_redirect_valid != 0) {
@@ -831,9 +808,11 @@ void vfs_init(void) {
   mount_set(1, CFG_FS_DEV, "/dev");
   mount_set(2, CFG_FS_PROC, "/proc");
   mount_set(3, CFG_FS_TMP, "/tmp");
+  mount_set(4, CFG_FS_SYS, "/sys");
   mount_table[1].root_inum = namei_nofollow("/dev");
   mount_table[2].root_inum = namei_nofollow("/proc");
   mount_table[3].root_inum = namei_nofollow("/tmp");
+  mount_table[4].root_inum = namei_nofollow("/sys");
 
   disk_vnode_ops.read = disk_read_op;
   disk_vnode_ops.write = disk_write_op;

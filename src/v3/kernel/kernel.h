@@ -107,6 +107,27 @@ struct mount {
   char path[8];
 };
 
+// A registered character-device driver. The major number indexes the registry;
+// `read`/`write` take the vnode_io_fn shape (node, caller, off, buf, len) so
+// devfs can dispatch straight through them.
+struct chardev {
+  int used;
+  int major;
+  int mode;
+  char name[12];
+  vnode_io_fn read;
+  vnode_io_fn write;
+};
+
+// A driver-owned IRQ line. The per-line trap stub funnels through
+// irq_dispatch(), which invokes the registered handler.
+typedef void (*irq_fn)(void);
+struct irq_slot {
+  int used;
+  irq_fn handler;
+  char owner[12];
+};
+
 struct guest_dirent {
   int ino;
   int offset;
@@ -430,6 +451,33 @@ void vnode_release(struct vnode *node);
 int vnode_access(struct vnode *node, int uid, int gid, int mask);
 int vnode_is_tty(struct vnode *node);
 char *vfs_mounted_path(int inum);
+// Shared VFS helpers used by the pseudo-filesystems (vfs.c and device.c).
+void vnode_fill(
+  struct vnode *node, struct vnode_ops *ops, int fs_type, int object,
+  int type, int mode, int size
+);
+void generic_stat_op(int node_addr, int stat_addr);
+int emit_dirent(
+  int caller, int destination, int ino, int offset, int type, char *name
+);
+int append_text(char *dst, int at, char *text);
+int append_number(char *dst, int at, int value);
+
+// --- device.c (Linux-like device/driver model) ---
+extern struct chardev chardev_table[CFG_NCHARDEV];
+extern struct irq_slot irq_table[CFG_NIRQ];
+extern struct vnode_ops sys_vnode_ops;
+void device_init(void);
+void register_chardev(
+  int major, char *name, int mode, vnode_io_fn read, vnode_io_fn write
+);
+int chardev_lookup(char *name);
+int chardev_rdev(int major);
+int chardev_read(int major, int node, int caller, int off, int buf, int len);
+int chardev_write(int major, int node, int caller, int off, int buf, int len);
+int request_irq(int line, irq_fn handler, char *owner);
+void irq_dispatch(int line);
+int sys_lookup(char *relative, struct vnode *node);
 
 // --- file.c (per-process file descriptors) ---
 extern struct file_ops console_file_ops;
@@ -575,7 +623,9 @@ void panic(char *msg);
 extern int kbd_chan;         // drivers/keyboard.c -- wait channel for blocked readers
 void kbd_drain(void);
 void keyboard_init(void);
-void on_keyboard_irq(void);  // keyboard IRQ handler body (wakes blocked readers)
+void keyboard_isr(void);     // registered keyboard IRQ handler (wakes blocked readers)
+void on_keyboard_irq(void);  // keyboard trap stub entry: routes through irq_dispatch
+void network_drain(void);    // drivers/network.c -- registered network IRQ handler
 void disk_read_block(int blockno, int dst); // drivers/disk.c
 void disk_write_block(int blockno, int src);
 int rtc_time(void);          // drivers/rtc.c

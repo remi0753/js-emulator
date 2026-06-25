@@ -18,6 +18,8 @@ void network_drain(void) {
   }
 }
 
+// Trap-stub entry invoked by the assembly network vector. network_drain() is
+// the handler registered for this line via request_irq() in device_init().
 void on_network_irq(void) {
-  network_drain();
+  irq_dispatch(CFG_NET_IRQ);
 }

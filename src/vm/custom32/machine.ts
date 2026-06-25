@@ -10,6 +10,7 @@ import { KEYBOARD_IRQ, NETWORK_IRQ } from '../../isa.ts';
 import { CPU, type CpuState, MODE, NUM_REGS, type RunResult } from './cpu.ts';
 import { Console } from './devices/console.ts';
 import { BlockDisk } from './devices/disk.ts';
+import { Entropy } from './devices/entropy.ts';
 import { Keyboard } from './devices/keyboard.ts';
 import { NetworkCard } from './devices/network.ts';
 import { Power } from './devices/power.ts';
@@ -30,6 +31,10 @@ export interface MachineOptions {
   // RTC clock source: a fixed Unix timestamp (seconds) for deterministic tests,
   // or a function returning one. Defaults to the host wall clock.
   rtcTime?: number | (() => number);
+  // Entropy generator seed for /dev/random and /dev/urandom. A fixed default
+  // keeps the random stream deterministic across boots (matching the VM's
+  // reproducible-test model); override it for a different sequence.
+  entropySeed?: number;
   // Attach a deterministic tracer at construction. `true` traces every stream;
   // pass an object to select streams. Available afterwards as `machine.tracer`.
   trace?: boolean | TraceOptions;
@@ -44,6 +49,7 @@ export class Machine {
   readonly disk: BlockDisk;
   readonly network: NetworkCard;
   readonly rtc: Rtc;
+  readonly entropy: Entropy;
   readonly power: Power;
   readonly tracer: Tracer | null;
 
@@ -69,6 +75,9 @@ export class Machine {
 
     this.rtc = new Rtc(opts.rtcTime);
     this.ports.register(PORT.RTC_DATA, 1, this.rtc);
+
+    this.entropy = new Entropy(opts.entropySeed);
+    this.ports.register(PORT.ENTROPY, 1, this.entropy);
 
     this.network = new NetworkCard({
       status: PORT.NET_STATUS,
