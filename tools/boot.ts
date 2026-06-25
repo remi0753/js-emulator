@@ -8,7 +8,25 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
+import { type HostForward, NetBridge } from '../src/vm/custom32/devices/net-bridge.ts';
 import { bootGuestDiskImage } from '../src/v3/boot.ts';
+
+// Parse JSCPU_HOSTFWD="hostport:guestport,hostport:guestport" into forwards.
+function parseHostForwards(spec: string | undefined): HostForward[] {
+  if (!spec) return [];
+  const forwards: HostForward[] = [];
+  for (const entry of spec.split(',')) {
+    const trimmed = entry.trim();
+    if (trimmed === '') continue;
+    const [hostPort, guestPort] = trimmed.split(':').map((part) => Number.parseInt(part, 10));
+    if (!Number.isInteger(hostPort) || !Number.isInteger(guestPort)) {
+      console.error(`[vm] ignoring malformed JSCPU_HOSTFWD entry: ${trimmed}`);
+      continue;
+    }
+    forwards.push({ hostPort: hostPort!, guestPort: guestPort! });
+  }
+  return forwards;
+}
 
 const imagePath = process.argv[2] ?? 'disk.img';
 if (!existsSync(imagePath)) {
@@ -38,6 +56,7 @@ function finish(code: number, persist = true): never {
   if (!finished) {
     finished = true;
     restoreTerminal();
+    bridge.close();
     if (persist) saveDisk();
   }
   process.exit(code);
@@ -67,6 +86,15 @@ function pump(): void {
     finish(1, false);
   }
 }
+
+// Connect the guest NIC to the host's real UDP stack. The guest reaches host
+// loopback services via the gateway 10.0.2.2; JSCPU_HOSTFWD forwards host ports
+// into guest services for the reverse direction.
+const bridge = new NetBridge(machine.network, {
+  onActivity: () => schedulePump(),
+  hostfwd: parseHostForwards(process.env.JSCPU_HOSTFWD),
+  log: (message) => console.error(message),
+});
 
 function feedHostBytes(chunk: Buffer): void {
   let text = '';

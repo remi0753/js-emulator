@@ -25,6 +25,10 @@ npm run boot
 Ctrl-D, and Ctrl-Z retain their terminal meanings. Press Ctrl-] to leave the VM
 monitor. Filesystem changes are written back to the image on clean exit.
 
+The boot tool bridges the guest NIC to the host's real UDP stack, so the host
+and the guest can hold a `nc` conversation over UDP — see
+[docs/udp-networking.md](docs/udp-networking.md).
+
 ## Earlier generations
 
 ### v1 — the smallest real preemptive OS · [docs/v1.md](docs/v1.md)
@@ -98,4 +102,6 @@ npm run typecheck  # tsc type check
   Linux-like guest OS roadmap
 - [docs/isa.md](docs/isa.md) — registers, encoding, instruction set (shared core)
 - [docs/syscalls.md](docs/syscalls.md) — system call ABI
+- [docs/udp-networking.md](docs/udp-networking.md) — host ↔ guest UDP chat: the
+  NIC bridge, the virtual network, and the guest `nc`
 - [docs/roadmap.md](docs/roadmap.md) — devices, roadmap (v1 → v2 → v3), design decisions

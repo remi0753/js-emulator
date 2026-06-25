@@ -52,6 +52,7 @@ export const GUEST_USER_PROGRAMS = [
   'ln',
   'touch',
   'env',
+  'nc',
   'runtests',
 ] as const;
 
