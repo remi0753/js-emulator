@@ -7,9 +7,8 @@
 // Usage: node tools/boot.ts [image=disk.img]
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-
-import { type HostForward, NetBridge } from '../src/vm/custom32/devices/net-bridge.ts';
 import { bootGuestDiskImage } from '../src/v3/boot.ts';
+import { type HostForward, NetBridge } from '../src/vm/custom32/devices/net-bridge.ts';
 
 // Parse JSCPU_HOSTFWD="hostport:guestport,hostport:guestport" into forwards.
 function parseHostForwards(spec: string | undefined): HostForward[] {

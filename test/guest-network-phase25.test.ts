@@ -233,7 +233,13 @@ test('unknown IPv4 neighbors are resolved with ARP instead of broadcast IPv4', (
   assert.equal(machine.run(100_000_000).reason, 'halt');
 
   const transmitted = machine.network.takeTransmitted();
-  assert.equal(transmitted.some((frame) => frame[12] === 0x08 && frame[13] === 0x00), false);
-  assert.equal(transmitted.some((frame) => frame[12] === 0x08 && frame[13] === 0x06), true);
+  assert.equal(
+    transmitted.some((frame) => frame[12] === 0x08 && frame[13] === 0x00),
+    false,
+  );
+  assert.equal(
+    transmitted.some((frame) => frame[12] === 0x08 && frame[13] === 0x06),
+    true,
+  );
   assert.equal(output.includes('arp25-ok\n'), true, output);
 });

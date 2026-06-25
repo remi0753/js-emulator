@@ -261,12 +261,7 @@ export class NetBridge {
     return natPort;
   }
 
-  private injectUdp(
-    sourceIp: number,
-    sourcePort: number,
-    destPort: number,
-    payload: Buffer,
-  ): void {
+  private injectUdp(sourceIp: number, sourcePort: number, destPort: number, payload: Buffer): void {
     const total = 20 + 8 + payload.length;
     const frame = new Uint8Array(14 + total);
     for (let i = 0; i < 6; i++) {

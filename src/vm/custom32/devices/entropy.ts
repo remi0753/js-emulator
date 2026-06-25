@@ -16,7 +16,7 @@ export class Entropy implements PortDevice {
   // `seed` is the initial xorshift state; it must be nonzero (zero is remapped
   // to the default so a 0 seed still produces a stream).
   constructor(seed: number = DEFAULT_SEED) {
-    this.state = (seed >>> 0) || DEFAULT_SEED;
+    this.state = seed >>> 0 || DEFAULT_SEED;
   }
 
   // Raw port read (IN): the next pseudo-random byte (0..255) in the low 8 bits.

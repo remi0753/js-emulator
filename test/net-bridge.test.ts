@@ -80,7 +80,16 @@ function udpFrame(srcPort: number, dstIp: number, dstPort: number, payload: stri
   frame[24] = ip >>> 8;
   frame[25] = ip & 0xff;
   frame.set(
-    [srcPort >>> 8, srcPort & 0xff, dstPort >>> 8, dstPort & 0xff, (8 + data.length) >>> 8, (8 + data.length) & 0xff, 0, 0],
+    [
+      srcPort >>> 8,
+      srcPort & 0xff,
+      dstPort >>> 8,
+      dstPort & 0xff,
+      (8 + data.length) >>> 8,
+      (8 + data.length) & 0xff,
+      0,
+      0,
+    ],
     34,
   );
   frame.set(data, 42);
