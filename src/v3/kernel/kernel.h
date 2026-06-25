@@ -44,6 +44,8 @@ struct vm_space {
 struct page_cache_entry {
   int used;
   int file;
+  int fs_type;
+  int object;
   int offset;
   int frame;
   int length;
@@ -174,9 +176,10 @@ struct socket {
   int type;
   int protocol;
   int local_port;
+  int local_address;
   int remote_address;
   int remote_port;
-  char remote_mac[6];
+  int status_flags;
   int queue_head;
   int queue_count;
   struct udp_datagram queue[4];
@@ -189,6 +192,7 @@ struct open_file {
   int used;
   int refs;
   int offset;
+  int status_flags;
   struct vnode vnode;
 };
 
@@ -225,6 +229,8 @@ struct proc {
   int sleep_deadline;
   int sleep_remaining;
   int poll_deadline;
+  int tty_deadline;
+  int tty_timed_out;
   struct vm_space vm;
   struct cpu_context ctx;
   struct file files[CFG_NFD];
@@ -236,6 +242,8 @@ struct pipe {
   int head;
   int nread;
   int nwrite;
+  int read_status_flags;
+  int write_status_flags;
   char data[CFG_PIPESZ];
 };
 
@@ -330,6 +338,10 @@ int vm_brk(int proc, int address);
 int vm_mmap(int proc, int args);
 int vm_munmap(int proc, int address, int length);
 int vm_mprotect(int proc, int address, int length, int prot);
+void page_cache_flush_object(int object);
+void page_cache_update_object(
+  int object, int offset, int length, int source, int caller
+);
 
 // --- fs.c ---
 extern int fs_size;
@@ -453,11 +465,14 @@ void file_mmap_release(int object);
 int file_mmap_read_object(int object, int offset, int length, int destination);
 int file_mmap_write_object(int object, int offset, int length, int source);
 int file_mmap_size_object(int object);
+int file_mmap_identity(int object, int *fs_type, int *node_object);
 int file_getdents(struct file *file, int caller, int destination, int count);
 int file_is_tty(struct file *file);
 int file_stat(struct file *file, struct guest_stat *st);
 int file_lseek(struct file *file, int offset, int whence);
 int file_poll(struct file *file, int events);
+int file_get_status_flags(struct file *file);
+void file_set_status_flags(struct file *file, int flags);
 
 // --- pipe.c ---
 extern struct pipe pipe_table[CFG_NPIPE];

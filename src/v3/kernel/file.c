@@ -35,6 +35,7 @@ int vnode_read_op(int file_addr, int caller, int buf, int len) {
   int got;
   file = file_addr;
   open = &open_file_table[file->object];
+  page_cache_flush_object(file->object);
   got = vnode_read(&open->vnode, caller, open->offset, len, buf);
   if (got > 0) open->offset = open->offset + got;
   return got;
@@ -49,8 +50,10 @@ int vnode_write_op(int file_addr, int caller, int buf, int len) {
   if (open->vnode.inode.type == CFG_T_DIR) {
     return -CFG_EISDIR;
   }
+  page_cache_flush_object(file->object);
   wrote = vnode_write(&open->vnode, caller, open->offset, len, buf);
   if (wrote > 0) {
+    page_cache_update_object(file->object, open->offset, wrote, buf, caller);
     open->offset = open->offset + wrote;
   }
   return wrote;
@@ -155,6 +158,16 @@ int file_mmap_size_object(int object) {
   return open_file_table[object].vnode.inode.size;
 }
 
+int file_mmap_identity(int object, int *fs_type, int *node_object) {
+  if (object < 0 || object >= CFG_NFILE ||
+      open_file_table[object].used == 0) {
+    return -CFG_EBADF;
+  }
+  *fs_type = open_file_table[object].vnode.fs_type;
+  *node_object = open_file_table[object].vnode.object;
+  return 0;
+}
+
 int file_getdents(struct file *file, int caller, int destination, int count) {
   struct open_file *open;
   if (file->type != CFG_FT_FILE || file->object < 0 ||
@@ -250,6 +263,7 @@ int alloc_open_file(void) {
       open_file_table[i].used = 1;
       open_file_table[i].refs = 1;
       open_file_table[i].offset = 0;
+      open_file_table[i].status_flags = 0;
       return i;
     }
     i = i + 1;
@@ -482,10 +496,10 @@ void file_set_pipe(struct file *file, int pipe, int end) {
   file->pipe_end = end;
   if (end == 0) {
     file->readable = 1;
-    file->status_flags = 0;
+    pipe_table[pipe].read_status_flags = 0;
   } else {
     file->writable = 1;
-    file->status_flags = 1;
+    pipe_table[pipe].write_status_flags = 1;
   }
 }
 
@@ -496,7 +510,7 @@ void file_set_socket(struct file *file, int socket) {
   file->readable = 1;
   file->writable = 1;
   file->object = socket;
-  file->status_flags = 2;
+  socket_table[socket].status_flags = 2;
 }
 
 int file_read(struct file *file, int caller, int buf, int len) {
@@ -504,7 +518,7 @@ int file_read(struct file *file, int caller, int buf, int len) {
   if (file->ops == 0 || file->readable == 0 || file->ops->read == 0) {
     return -CFG_EBADF;
   }
-  if ((file->status_flags & CFG_O_NONBLOCK) != 0) {
+  if ((file_get_status_flags(file) & CFG_O_NONBLOCK) != 0) {
     ready = file_poll(file, CFG_POLLIN | CFG_POLLERR | CFG_POLLHUP);
     if ((ready & (CFG_POLLIN | CFG_POLLERR | CFG_POLLHUP)) == 0) {
       return -CFG_EAGAIN;
@@ -518,7 +532,7 @@ int file_write(struct file *file, int caller, int buf, int len) {
   if (file->ops == 0 || file->writable == 0 || file->ops->write == 0) {
     return -CFG_EBADF;
   }
-  if ((file->status_flags & CFG_O_NONBLOCK) != 0) {
+  if ((file_get_status_flags(file) & CFG_O_NONBLOCK) != 0) {
     ready = file_poll(file, CFG_POLLOUT | CFG_POLLERR | CFG_POLLHUP);
     if ((ready & (CFG_POLLOUT | CFG_POLLERR | CFG_POLLHUP)) == 0) {
       return -CFG_EAGAIN;
@@ -530,6 +544,43 @@ int file_write(struct file *file, int caller, int buf, int len) {
 int file_poll(struct file *file, int events) {
   if (file->ops == 0 || file->ops->poll == 0) return CFG_POLLERR;
   return file->ops->poll(file, events);
+}
+
+int file_get_status_flags(struct file *file) {
+  if (file->type == CFG_FT_FILE && file->object >= 0 &&
+      file->object < CFG_NFILE && open_file_table[file->object].used != 0) {
+    return open_file_table[file->object].status_flags;
+  }
+  if (file->type == CFG_FT_PIPE && file->object >= 0 &&
+      file->object < CFG_NPIPE && pipe_table[file->object].used != 0) {
+    if (file->pipe_end == 0) return pipe_table[file->object].read_status_flags;
+    return pipe_table[file->object].write_status_flags;
+  }
+  if (file->type == CFG_FT_SOCKET && file->object >= 0 &&
+      file->object < CFG_NSOCKET && socket_table[file->object].used != 0) {
+    return socket_table[file->object].status_flags;
+  }
+  return file->status_flags;
+}
+
+void file_set_status_flags(struct file *file, int flags) {
+  if (file->type == CFG_FT_FILE && file->object >= 0 &&
+      file->object < CFG_NFILE && open_file_table[file->object].used != 0) {
+    open_file_table[file->object].status_flags = flags;
+    return;
+  }
+  if (file->type == CFG_FT_PIPE && file->object >= 0 &&
+      file->object < CFG_NPIPE && pipe_table[file->object].used != 0) {
+    if (file->pipe_end == 0) pipe_table[file->object].read_status_flags = flags;
+    else pipe_table[file->object].write_status_flags = flags;
+    return;
+  }
+  if (file->type == CFG_FT_SOCKET && file->object >= 0 &&
+      file->object < CFG_NSOCKET && socket_table[file->object].used != 0) {
+    socket_table[file->object].status_flags = flags;
+    return;
+  }
+  file->status_flags = flags;
 }
 
 void file_close(struct file *file) {
@@ -559,12 +610,15 @@ void init_fds(int idx) {
   file_set_node(&proc_table[idx].files[0], &console);
   proc_table[idx].files[0].readable = 1;
   proc_table[idx].files[0].writable = 0;
+  file_set_status_flags(&proc_table[idx].files[0], 0);
   file_set_node(&proc_table[idx].files[1], &console);
   proc_table[idx].files[1].readable = 0;
   proc_table[idx].files[1].writable = 1;
+  file_set_status_flags(&proc_table[idx].files[1], 1);
   file_set_node(&proc_table[idx].files[2], &console);
   proc_table[idx].files[2].readable = 0;
   proc_table[idx].files[2].writable = 1;
+  file_set_status_flags(&proc_table[idx].files[2], 1);
 }
 
 int alloc_fd(int idx) {
@@ -609,7 +663,7 @@ void copy_file(struct file *dst, struct file *src) {
   dst->pipe_end = src->pipe_end;
   dst->object = src->object;
   dst->fd_flags = src->fd_flags;
-  dst->status_flags = src->status_flags;
+  dst->status_flags = 0;
   file_retain(dst);
 }
 

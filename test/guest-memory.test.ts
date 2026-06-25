@@ -53,6 +53,9 @@ test('copyin/copyout translate through the requested process address space', () 
           int object, int offset, int length, int source
         ) { return -CFG_ENODEV; }
         int file_mmap_size_object(int object) { return -CFG_ENODEV; }
+        int file_mmap_identity(int object, int *fs_type, int *node_object) {
+          return -CFG_ENODEV;
+        }
 
         int kmain(void) {
           int *pd0;

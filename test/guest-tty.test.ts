@@ -75,9 +75,13 @@ test('termios raw mode and window-size ioctls are guest controlled', () => {
         size.cols = 100;
         if (tcsetwinsize(0, &size) < 0) return 5;
         memset(&raw, 0, sizeof(struct termios));
-        raw.cc[6] = 1;
+        raw.cc[6] = 3;
         if (tcsetattr(0, 0, &raw) < 0) return 6;
         if (read(0, bytes, 3) != 3) return 7;
+        raw.cc[5] = 1;
+        raw.cc[6] = 0;
+        if (tcsetattr(0, 0, &raw) < 0) return 10;
+        if (read(0, bytes, 1) != 0) return 11;
         if (tcsetattr(0, 0, &saved) < 0) return 8;
         if (bytes[0] != 'x' || bytes[1] != 'y' || bytes[2] != 'z') return 9;
         write(1, "tty-raw-ok\\n", 11);
@@ -90,11 +94,43 @@ test('termios raw mode and window-size ioctls are guest controlled', () => {
   assert.equal(machine.run(30_000_000).reason, 'halt');
   assert.equal(output().includes('tty-raw-ok\n'), false);
 
-  machine.keyboard.feed('xyz');
+  machine.keyboard.feed('x');
+  assert.equal(machine.run(10_000_000).reason, 'halt');
+  assert.equal(output().includes('tty-raw-ok\n'), false);
+  machine.keyboard.feed('yz');
   machine.keyboard.close();
   assert.equal(machine.run(30_000_000).reason, 'halt');
   assert.equal(output().includes('tty-raw-ok\n'), true, output());
   assert.equal(output().includes('xyz'), false, output());
+});
+
+test('canonical Ctrl-D preserves record boundaries after non-empty input', () => {
+  const disk = buildGuestDiskImage();
+  addProgram(
+    disk,
+    'eofprobe',
+    `
+      #include "libc.h"
+      int main(int argc, char **argv) {
+        char bytes[8];
+        int n;
+        n = read(0, bytes, 8);
+        if (n != 3) return 1;
+        write(1, bytes, n);
+        write(1, "|", 1);
+        n = read(0, bytes, 8);
+        if (n != 3) return 2;
+        write(1, bytes, n);
+        write(1, "\\n", 1);
+        return 0;
+      }
+    `,
+  );
+  const { machine, output } = boot(disk);
+  machine.keyboard.feed('eofprobe\nabc\x04def\x04\x04');
+  assert.equal(machine.run(50_000_000).reason, 'halt');
+  assert.equal(output().includes('abc|def\n'), true, output());
+  assert.equal(output().endsWith('kernel: all processes exited\n'), true, output());
 });
 
 test('Ctrl-Z stops the foreground job and returns terminal control to the shell', () => {

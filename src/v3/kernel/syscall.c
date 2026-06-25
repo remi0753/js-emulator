@@ -80,7 +80,7 @@ int sys_open(int caller, int upath, int flags) {
   if (file_set_node(&proc_table[caller].files[fd], &node) < 0) {
     return -CFG_ENFILE;
   }
-  proc_table[caller].files[fd].status_flags = flags;
+  file_set_status_flags(&proc_table[caller].files[fd], flags);
   if ((flags & CFG_O_ACCMODE) == CFG_O_WRONLY) {
     proc_table[caller].files[fd].readable = 0;
     proc_table[caller].files[fd].writable = 1;
@@ -174,12 +174,12 @@ int sys_fcntl(int caller, int fd, int command, int argument) {
     return 0;
   }
   if (command == CFG_F_GETFL) {
-    return proc_table[caller].files[fd].status_flags;
+    return file_get_status_flags(&proc_table[caller].files[fd]);
   }
   if (command == CFG_F_SETFL) {
-    proc_table[caller].files[fd].status_flags =
-      (proc_table[caller].files[fd].status_flags & CFG_O_ACCMODE) |
-      (argument & CFG_O_NONBLOCK);
+    file_set_status_flags(&proc_table[caller].files[fd],
+      (file_get_status_flags(&proc_table[caller].files[fd]) & CFG_O_ACCMODE) |
+      (argument & CFG_O_NONBLOCK));
     return 0;
   }
   return -CFG_EINVAL;

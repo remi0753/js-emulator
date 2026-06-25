@@ -12,6 +12,7 @@ int tty_input_head;
 int tty_input_count;
 int tty_edit_count;
 char tty_input[512];
+char tty_input_mark[512];
 char tty_edit[128];
 struct guest_termios tty_termios;
 struct guest_winsize tty_winsize;
@@ -29,21 +30,42 @@ void tty_echo_erase(void) {
   }
 }
 
-void tty_queue(int ch) {
+void tty_queue(int ch, int mark) {
+  int slot;
   if (tty_input_count >= 512) return;
-  tty_input[(tty_input_head + tty_input_count) % 512] = ch;
+  slot = (tty_input_head + tty_input_count) % 512;
+  tty_input[slot] = ch;
+  tty_input_mark[slot] = mark;
   tty_input_count = tty_input_count + 1;
   poll_wakeup();
 }
 
-void tty_commit_edit(void) {
+void tty_commit_edit(int mark) {
   int i;
   i = 0;
   while (i < tty_edit_count) {
-    tty_queue(tty_edit[i]);
+    if (i + 1 == tty_edit_count) tty_queue(tty_edit[i], mark);
+    else tty_queue(tty_edit[i], 0);
     i = i + 1;
   }
   tty_edit_count = 0;
+}
+
+void tty_reset_interbyte_deadlines(void) {
+  int i;
+  int delay;
+  delay = tty_termios.cc[CFG_TTY_VTIME] * CFG_TICKS_PER_SEC / 10;
+  if (delay < 1) delay = 1;
+  i = 0;
+  while (i < nproc) {
+    if (proc_table[i].state == CFG_ST_SLEEPING &&
+        proc_table[i].chan == &kbd_chan &&
+        proc_table[i].tty_deadline != 0) {
+      proc_table[i].tty_deadline = ticks + delay;
+      proc_table[i].sleep_deadline = proc_table[i].tty_deadline;
+    }
+    i = i + 1;
+  }
 }
 
 void tty_discard_edit(void) {
@@ -98,7 +120,8 @@ void tty_receive(int ch) {
     }
   }
   if ((tty_termios.lflag & CFG_TTY_ICANON) == 0) {
-    tty_queue(ch);
+    tty_queue(ch, 0);
+    tty_reset_interbyte_deadlines();
     tty_echo_char(ch);
     return;
   }
@@ -114,7 +137,7 @@ void tty_receive(int ch) {
     return;
   }
   if (ch == tty_termios.cc[CFG_TTY_VEOF]) {
-    if (tty_edit_count > 0) tty_commit_edit();
+    if (tty_edit_count > 0) tty_commit_edit(2);
     else tty_eof_pending = tty_eof_pending + 1;
     return;
   }
@@ -123,13 +146,13 @@ void tty_receive(int ch) {
     tty_edit_count = tty_edit_count + 1;
     tty_echo_char(ch);
   }
-  if (ch == '\n') tty_commit_edit();
+  if (ch == '\n') tty_commit_edit(1);
 }
 
 void tty_close_input(void) {
   if (tty_closed != 0) return;
   tty_closed = 1;
-  if (tty_edit_count > 0) tty_commit_edit();
+  if (tty_edit_count > 0) tty_commit_edit(2);
   poll_wakeup();
 }
 
@@ -148,20 +171,44 @@ int tty_poll(int events) {
 int tty_read(int caller, int buf, int len) {
   int n;
   int ch;
+  int mark;
+  int minimum;
+  int timeout;
   if (len == 0) return 0;
   kbd_drain();
   if (proc_table[caller].pgid != tty_foreground_pgid) {
     send_signal_group(proc_table[caller].pgid, CFG_SIGTTIN);
     return -CFG_EINTR;
   }
-  if (tty_input_count == 0) {
+  minimum = tty_termios.cc[CFG_TTY_VMIN];
+  if (minimum > len) minimum = len;
+  timeout = tty_termios.cc[CFG_TTY_VTIME];
+  if (proc_table[caller].tty_timed_out != 0) {
+    proc_table[caller].tty_timed_out = 0;
+    proc_table[caller].tty_deadline = 0;
+    proc_table[caller].sleep_deadline = 0;
+    if (tty_input_count == 0) return 0;
+  }
+  if (tty_input_count == 0 ||
+      ((tty_termios.lflag & CFG_TTY_ICANON) == 0 &&
+       minimum > 0 && tty_input_count < minimum)) {
     if (tty_eof_pending > 0) {
       tty_eof_pending = tty_eof_pending - 1;
       return 0;
     }
     if (tty_closed != 0) return 0;
-    if ((tty_termios.lflag & CFG_TTY_ICANON) == 0 &&
-        tty_termios.cc[CFG_TTY_VMIN] == 0) return 0;
+    if ((tty_termios.lflag & CFG_TTY_ICANON) == 0) {
+      if (minimum == 0 && timeout == 0) return 0;
+      if (timeout > 0 && (minimum == 0 || tty_input_count > 0)) {
+        proc_table[caller].tty_deadline =
+          ticks + timeout * CFG_TICKS_PER_SEC / 10;
+        if (proc_table[caller].tty_deadline <= ticks) {
+          proc_table[caller].tty_deadline = ticks + 1;
+        }
+        proc_table[caller].sleep_deadline =
+          proc_table[caller].tty_deadline;
+      }
+    }
     g_noret = 1;
     proc_table[caller].ctx.pc =
       proc_table[caller].ctx.pc - CFG_SYSCALL_INSTR_SIZE;
@@ -169,13 +216,16 @@ int tty_read(int caller, int buf, int len) {
     return 0;
   }
   n = 0;
+  proc_table[caller].tty_deadline = 0;
+  proc_table[caller].sleep_deadline = 0;
   while (n < len && tty_input_count > 0) {
     ch = tty_input[tty_input_head];
+    mark = tty_input_mark[tty_input_head];
     tty_input_head = (tty_input_head + 1) % 512;
     tty_input_count = tty_input_count - 1;
     write8_at(buf + n, ch);
     n = n + 1;
-    if ((tty_termios.lflag & CFG_TTY_ICANON) != 0 && ch == '\n') return n;
+    if ((tty_termios.lflag & CFG_TTY_ICANON) != 0 && mark != 0) return n;
   }
   return n;
 }

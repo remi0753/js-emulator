@@ -26,6 +26,8 @@ void signal_init_proc(int idx) {
   proc_table[idx].sleep_deadline = 0;
   proc_table[idx].sleep_remaining = 0;
   proc_table[idx].poll_deadline = 0;
+  proc_table[idx].tty_deadline = 0;
+  proc_table[idx].tty_timed_out = 0;
   signal = 0;
   while (signal < CFG_NSIG) {
     proc_table[idx].signal_handlers[signal] = CFG_SIG_DFL;
@@ -45,6 +47,8 @@ void signal_fork_proc(int child, int parent) {
   proc_table[child].sleep_deadline = 0;
   proc_table[child].sleep_remaining = 0;
   proc_table[child].poll_deadline = 0;
+  proc_table[child].tty_deadline = 0;
+  proc_table[child].tty_timed_out = 0;
   signal = 0;
   while (signal < CFG_NSIG) {
     proc_table[child].signal_handlers[signal] =
@@ -127,6 +131,11 @@ int send_signal(int idx, int signal) {
       proc_table[idx].sleep_remaining = 0;
       if (proc_table[idx].poll_deadline != 0) {
         proc_table[idx].poll_deadline = 0;
+        proc_table[idx].ctx.pc =
+          proc_table[idx].ctx.pc + CFG_SYSCALL_INSTR_SIZE;
+      } else if (proc_table[idx].tty_deadline != 0) {
+        proc_table[idx].tty_deadline = 0;
+        proc_table[idx].tty_timed_out = 0;
         proc_table[idx].ctx.pc =
           proc_table[idx].ctx.pc + CFG_SYSCALL_INSTR_SIZE;
       }

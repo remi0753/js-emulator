@@ -28,12 +28,16 @@ test('Phase 22 demand paging, COW, shared mappings, guard page, and malloc work 
     buildUserExecutable(
       'vm22',
       `
+        extern int errno;
         int main(int argc, char **argv) {
           char *heap;
           char *large;
           char *shared;
+          char *shared_again;
+          char *readonly;
           char check[4];
           int fd;
+          int fd_again;
           int pid;
           int status;
 
@@ -62,7 +66,12 @@ test('Phase 22 demand paging, COW, shared mappings, guard page, and malloc work 
           if (fd < 0 || write(fd, "abc", 3) != 3) return 8;
           shared = mmap(0, 4096, 3, 1, fd, 0);
           if (shared == -1) return 9;
+          fd_again = open("/tmp/vm22-shared", 2);
+          if (fd_again < 0) return 18;
+          shared_again = mmap(0, 4096, 3, 1, fd_again, 0);
+          if (shared_again == -1 || shared_again[0] != 'a') return 19;
           shared[0] = 'P';
+          if (shared_again[0] != 'P') return 20;
           pid = fork();
           if (pid == 0) {
             if (shared[0] != 'P') exit(10);
@@ -71,11 +80,43 @@ test('Phase 22 demand paging, COW, shared mappings, guard page, and malloc work 
           }
           if (pid < 0 || waitpid(pid, &status, 0) != pid || status != 0) return 11;
           if (shared[1] != 'C') return 12;
+          if (lseek(fd, 0, 0) != 0 || read(fd, check, 3) != 3) return 31;
+          if (check[0] != 'P' || check[1] != 'C' || check[2] != 'c') return 32;
+          if (lseek(fd, 0, 0) != 0 || write(fd, "Z", 1) != 1) return 33;
+          if (shared[0] != 'Z' || shared_again[0] != 'Z') return 34;
           if (munmap(shared, 4096) < 0) return 13;
+          if (munmap(shared_again, 4096) < 0) return 21;
+          close(fd_again);
           if (lseek(fd, 0, 2) != 3) return 14;
           if (lseek(fd, 0, 0) != 0 || read(fd, check, 3) != 3) return 15;
           close(fd);
-          if (check[0] != 'P' || check[1] != 'C' || check[2] != 'c') return 16;
+          if (check[0] != 'Z' || check[1] != 'C' || check[2] != 'c') return 16;
+          fd_again = open("/tmp/vm22-shared", 1);
+          if (fd_again < 0) return 29;
+          if (mmap(0, 4096, 1, 2, fd_again, 0) != -1 || errno != 13) return 30;
+          close(fd_again);
+
+          readonly = mmap(0, 4096, 1, 0x22, -1, 0);
+          if (readonly == -1 || readonly[0] != 0) return 22;
+          pid = fork();
+          if (pid == 0) {
+            readonly[0] = 'X';
+            exit(23);
+          }
+          if (pid < 0 || waitpid(pid, &status, 0) != pid ||
+              (status & 127) != 11) return 24;
+
+          large = mmap(0, 4096, 3, 0x22, -1, 0);
+          if (large == -1) return 25;
+          large[0] = 'M';
+          pid = fork();
+          if (pid == 0) {
+            if (mprotect(large, 4096, 1) < 0) exit(26);
+            large[0] = 'N';
+            exit(27);
+          }
+          if (pid < 0 || waitpid(pid, &status, 0) != pid ||
+              (status & 127) != 11) return 28;
 
           pid = fork();
           if (pid == 0) {

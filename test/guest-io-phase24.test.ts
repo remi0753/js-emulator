@@ -35,9 +35,25 @@ test('Phase 24 poll and nonblocking descriptors work without busy waiting', () =
           char byte;
           int flags;
           int result;
+          int duplicate;
+          int pid;
+          int status;
           if (pipe(fds) < 0) return 1;
+          duplicate = dup(fds[0]);
+          if (duplicate < 0) return 11;
           flags = fcntl(fds[0], 3, 0);
           if (flags < 0 || fcntl(fds[0], 4, flags | 0x800) < 0) return 2;
+          if ((fcntl(duplicate, 3, 0) & 0x800) == 0) return 12;
+          pid = fork();
+          if (pid == 0) {
+            flags = fcntl(duplicate, 3, 0);
+            if (fcntl(duplicate, 4, flags & ~0x800) < 0) exit(13);
+            exit(0);
+          }
+          if (pid < 0 || waitpid(pid, &status, 0) != pid || status != 0) return 14;
+          if ((fcntl(fds[0], 3, 0) & 0x800) != 0) return 15;
+          flags = fcntl(fds[0], 3, 0);
+          if (fcntl(fds[0], 4, flags | 0x800) < 0) return 16;
           if (read(fds[0], &byte, 1) != -1 || errno != 11) return 3;
           if (write(fds[1], "P", 1) != 1) return 4;
           watched[0].fd = fds[0];
@@ -50,6 +66,7 @@ test('Phase 24 poll and nonblocking descriptors work without busy waiting', () =
           result = poll(watched, 1, 20);
           if (result != 0) return 8;
           close(fds[0]);
+          close(duplicate);
           flags = fcntl(fds[1], 3, 0);
           if (fcntl(fds[1], 4, flags | 0x800) < 0) return 9;
           if (write(fds[1], "X", 1) != -1 || errno != 32) return 10;

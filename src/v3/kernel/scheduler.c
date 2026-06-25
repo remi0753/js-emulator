@@ -112,6 +112,9 @@ void switch_to_next(void) {
             proc_table[i].ctx.pc =
               proc_table[i].ctx.pc + CFG_SYSCALL_INSTR_SIZE;
             proc_table[i].poll_deadline = 0;
+          } else if (proc_table[i].tty_deadline != 0) {
+            proc_table[i].tty_deadline = 0;
+            proc_table[i].tty_timed_out = 1;
           }
           proc_table[i].sleep_deadline = 0;
           proc_table[i].sleep_remaining = 0;
@@ -153,6 +156,9 @@ void on_timer(void) {
         proc_table[i].ctx.pc =
           proc_table[i].ctx.pc + CFG_SYSCALL_INSTR_SIZE;
         proc_table[i].poll_deadline = 0;
+      } else if (proc_table[i].tty_deadline != 0) {
+        proc_table[i].tty_deadline = 0;
+        proc_table[i].tty_timed_out = 1;
       }
       proc_table[i].sleep_deadline = 0;
       proc_table[i].sleep_remaining = 0;

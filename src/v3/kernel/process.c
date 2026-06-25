@@ -19,7 +19,7 @@ int alloc_proc(void) {
     i = i + 1;
   }
   if (nproc >= CFG_MAX_PROC) {
-    panic("too many processes");
+    return -1;
   }
   i = nproc;
   nproc = nproc + 1;
@@ -29,6 +29,7 @@ int alloc_proc(void) {
 int setup_process_boot(int path) {
   int idx;
   idx = alloc_proc();
+  if (idx < 0) panic("no process slot for init");
   build_args_single(path);
   if (spawn(idx, path) < 0) {
     panic("boot: invalid init executable");
@@ -51,7 +52,9 @@ int fork_process(int parent) {
   if (parent < 0 || parent >= nproc || proc_table[parent].state == CFG_ST_UNUSED) {
     panic("bad fork parent");
   }
+  if (free_frame_count() < 4) return -CFG_ENOMEM;
   idx = alloc_proc();
+  if (idx < 0) return -CFG_EAGAIN;
   pd = new_address_space();
   proc_table[idx].vm.ptbr = pd;
   vm_fork(idx, parent);
@@ -76,6 +79,7 @@ int fork_process(int parent) {
 int do_fork(int parent) {
   int idx;
   idx = fork_process(parent);
+  if (idx < 0) return idx;
   proc_table[idx].parent = parent;
   proc_table[idx].state = CFG_ST_RUNNABLE;
   copy_fds(idx, parent);

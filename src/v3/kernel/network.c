@@ -5,6 +5,14 @@ struct socket socket_table[CFG_NSOCKET];
 char net_tx_frame[1518];
 int net_ephemeral_port;
 
+struct arp_entry {
+  int used;
+  int address;
+  char mac[6];
+};
+
+struct arp_entry arp_table[8];
+
 int net_read16(char *p) {
   return ((p[0] & 255) << 8) | (p[1] & 255);
 }
@@ -42,12 +50,52 @@ int net_checksum(char *p, int length) {
   return (~sum) & 65535;
 }
 
+int net_udp_checksum(char *frame, int udp, int udp_length) {
+  int sum;
+  int i;
+  int word;
+  sum = 0;
+  sum = sum + net_read16(frame + 26);
+  sum = sum + net_read16(frame + 28);
+  sum = sum + net_read16(frame + 30);
+  sum = sum + net_read16(frame + 32);
+  sum = sum + CFG_IPPROTO_UDP;
+  sum = sum + udp_length;
+  i = 0;
+  while (i < udp_length) {
+    word = (frame[udp + i] & 255) << 8;
+    if (i + 1 < udp_length) word = word | (frame[udp + i + 1] & 255);
+    sum = sum + word;
+    while ((sum >> 16) != 0) sum = (sum & 65535) + (sum >> 16);
+    i = i + 2;
+  }
+  while ((sum >> 16) != 0) sum = (sum & 65535) + (sum >> 16);
+  return (~sum) & 65535;
+}
+
 void net_guest_mac(char *p) {
   p[0] = 2; p[1] = 0; p[2] = 0; p[3] = 0; p[4] = 0; p[5] = 2;
 }
 
 int net_guest_ip(void) {
   return 0x0a00020f;
+}
+
+int net_accepts_mac(char *mac) {
+  char guest[6];
+  int i;
+  int guest_match;
+  int broadcast;
+  net_guest_mac(guest);
+  guest_match = 1;
+  broadcast = 1;
+  i = 0;
+  while (i < 6) {
+    if ((mac[i] & 255) != (guest[i] & 255)) guest_match = 0;
+    if ((mac[i] & 255) != 255) broadcast = 0;
+    i = i + 1;
+  }
+  return guest_match != 0 || broadcast != 0;
 }
 
 void net_transmit(char *frame, int length) {
@@ -60,10 +108,82 @@ void net_transmit(char *frame, int length) {
   }
 }
 
+void net_learn_arp(int address, char *mac) {
+  int i;
+  int slot;
+  if (address == 0) return;
+  slot = -1;
+  i = 0;
+  while (i < 8) {
+    if (arp_table[i].used != 0 && arp_table[i].address == address) {
+      slot = i;
+    }
+    if (slot < 0 && arp_table[i].used == 0) slot = i;
+    i = i + 1;
+  }
+  if (slot < 0) slot = 0;
+  arp_table[slot].used = 1;
+  arp_table[slot].address = address;
+  i = 0;
+  while (i < 6) {
+    arp_table[slot].mac[i] = mac[i];
+    i = i + 1;
+  }
+}
+
+int net_lookup_arp(int address, char *mac) {
+  int i;
+  int j;
+  i = 0;
+  while (i < 8) {
+    if (arp_table[i].used != 0 && arp_table[i].address == address) {
+      j = 0;
+      while (j < 6) {
+        mac[j] = arp_table[i].mac[j];
+        j = j + 1;
+      }
+      return 1;
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+void net_send_arp_request(int address) {
+  int i;
+  i = 0;
+  while (i < 6) {
+    net_tx_frame[i] = 255;
+    i = i + 1;
+  }
+  net_guest_mac(net_tx_frame + 6);
+  net_write16(net_tx_frame + 12, 0x0806);
+  net_write16(net_tx_frame + 14, 1);
+  net_write16(net_tx_frame + 16, 0x0800);
+  net_tx_frame[18] = 6;
+  net_tx_frame[19] = 4;
+  net_write16(net_tx_frame + 20, 1);
+  net_guest_mac(net_tx_frame + 22);
+  net_write32(net_tx_frame + 28, net_guest_ip());
+  i = 0;
+  while (i < 6) {
+    net_tx_frame[32 + i] = 0;
+    i = i + 1;
+  }
+  net_write32(net_tx_frame + 38, address);
+  net_transmit(net_tx_frame, 42);
+}
+
 void net_reply_arp(char *frame, int length) {
   int i;
-  if (length < 42 || net_read16(frame + 20) != 1 ||
-      net_read32(frame + 38) != net_guest_ip()) return;
+  int operation;
+  if (length < 42 || net_read16(frame + 14) != 1 ||
+      net_read16(frame + 16) != 0x0800 ||
+      (frame[18] & 255) != 6 || (frame[19] & 255) != 4) return;
+  operation = net_read16(frame + 20);
+  if (operation != 1 && operation != 2) return;
+  net_learn_arp(net_read32(frame + 28), frame + 22);
+  if (operation != 1 || net_read32(frame + 38) != net_guest_ip()) return;
   i = 0;
   while (i < 6) {
     net_tx_frame[i] = frame[22 + i];
@@ -91,7 +211,8 @@ void net_reply_icmp(char *frame, int length, int ihl, int total) {
   int i;
   int sum;
   int icmp_length;
-  if (length < 14 + total || frame[14 + ihl] != 8) return;
+  if (length < 14 + total || frame[14 + ihl] != 8 ||
+      net_checksum(frame + 14 + ihl, total - ihl) != 0) return;
   i = 0;
   while (i < 6) {
     net_tx_frame[i] = frame[6 + i];
@@ -124,38 +245,45 @@ void net_receive_udp(char *frame, int length, int ihl, int total) {
   int udp;
   int destination_port;
   int payload_length;
+  int udp_length;
+  int source_address;
+  int source_port;
   int i;
   int s;
   udp = 14 + ihl;
   if (length < udp + 8 || total < ihl + 8) return;
   destination_port = net_read16(frame + udp + 2);
-  payload_length = net_read16(frame + udp + 4) - 8;
+  udp_length = net_read16(frame + udp + 4);
+  if (udp_length < 8 || ihl + udp_length > total) return;
+  if (net_read16(frame + udp + 6) != 0 &&
+      net_udp_checksum(frame, udp, udp_length) != 0) return;
+  payload_length = udp_length - 8;
   if (payload_length < 0 || payload_length > 512 ||
       udp + 8 + payload_length > length) return;
+  source_address = net_read32(frame + 26);
+  source_port = net_read16(frame + udp);
   s = 0;
   while (s < CFG_NSOCKET) {
     socket = &socket_table[s];
     if (socket->used != 0 && socket->type == CFG_SOCK_DGRAM &&
-        socket->local_port == destination_port) {
+        socket->local_port == destination_port &&
+        (socket->local_address == 0 ||
+         socket->local_address == net_guest_ip()) &&
+        (socket->remote_address == 0 ||
+         (socket->remote_address == source_address &&
+          socket->remote_port == source_port))) {
       if (socket->queue_count >= 4) return;
       datagram = &socket->queue[
         (socket->queue_head + socket->queue_count) % 4];
       datagram->length = payload_length;
-      datagram->source_address = net_read32(frame + 26);
-      datagram->source_port = net_read16(frame + udp);
+      datagram->source_address = source_address;
+      datagram->source_port = source_port;
       i = 0;
       while (i < payload_length) {
         datagram->data[i] = frame[udp + 8 + i];
         i = i + 1;
       }
       socket->queue_count = socket->queue_count + 1;
-      socket->remote_address = datagram->source_address;
-      socket->remote_port = datagram->source_port;
-      i = 0;
-      while (i < 6) {
-        socket->remote_mac[i] = frame[6 + i];
-        i = i + 1;
-      }
       wakeup(socket);
       poll_wakeup();
       return;
@@ -169,7 +297,9 @@ void net_receive_frame(char *frame, int length) {
   int ihl;
   int total;
   int protocol;
+  int fragment;
   if (length < 14) return;
+  if (net_accepts_mac(frame) == 0) return;
   ethertype = net_read16(frame + 12);
   if (ethertype == 0x0806) {
     net_reply_arp(frame, length);
@@ -181,6 +311,10 @@ void net_receive_frame(char *frame, int length) {
   ihl = (frame[14] & 15) * 4;
   total = net_read16(frame + 16);
   if (ihl < 20 || total < ihl || 14 + total > length) return;
+  if (net_checksum(frame + 14, ihl) != 0) return;
+  fragment = net_read16(frame + 20);
+  if ((fragment & 0x3fff) != 0) return;
+  net_learn_arp(net_read32(frame + 26), frame + 6);
   protocol = frame[23] & 255;
   if (protocol == 1) net_reply_icmp(frame, length, ihl, total);
   else if (protocol == CFG_IPPROTO_UDP) {
@@ -201,6 +335,11 @@ void network_init(void) {
   i = 0;
   while (i < CFG_NSOCKET) {
     socket_table[i].used = 0;
+    i = i + 1;
+  }
+  i = 0;
+  while (i < 8) {
+    arp_table[i].used = 0;
     i = i + 1;
   }
   net_ephemeral_port = 49152;
@@ -225,6 +364,7 @@ int socket_create(int caller, int domain, int type, int protocol) {
   socket_table[s].refs = 1;
   socket_table[s].type = type;
   socket_table[s].protocol = CFG_IPPROTO_UDP;
+  socket_table[s].status_flags = CFG_SOCK_DGRAM;
   file_set_socket(&proc_table[caller].files[fd], s);
   return fd;
 }
@@ -256,6 +396,9 @@ int socket_bind(int caller, int fd, int address, int length) {
   result = socket_copy_address(caller, address, length, &value);
   if (result < 0) return result;
   if (value.port <= 0 || value.port > 65535) return -CFG_EINVAL;
+  if (value.address != 0 && value.address != net_guest_ip()) {
+    return -CFG_EADDRNOTAVAIL;
+  }
   i = 0;
   while (i < CFG_NSOCKET) {
     if (i != s && socket_table[i].used != 0 &&
@@ -263,6 +406,7 @@ int socket_bind(int caller, int fd, int address, int length) {
     i = i + 1;
   }
   socket_table[s].local_port = value.port;
+  socket_table[s].local_address = value.address;
   return 0;
 }
 
@@ -323,7 +467,7 @@ int socket_send_destination(
   int caller, int socket_index, int buffer, int length,
   int address, int port
 ) {
-  struct socket *socket;
+  char destination_mac[6];
   int i;
   int ip_sum;
   int source_port;
@@ -334,14 +478,13 @@ int socket_send_destination(
   if (address == 0 || port == 0) return -CFG_EDESTADDRREQ;
   source_port = socket_allocate_port(socket_index);
   if (source_port < 0) return source_port;
-  socket = &socket_table[socket_index];
+  if (net_lookup_arp(address, destination_mac) == 0) {
+    net_send_arp_request(address);
+    return -CFG_EAGAIN;
+  }
   i = 0;
   while (i < 6) {
-    if (socket->remote_mac[0] == 0 && socket->remote_mac[1] == 0) {
-      net_tx_frame[i] = 255;
-    } else {
-      net_tx_frame[i] = socket->remote_mac[i];
-    }
+    net_tx_frame[i] = destination_mac[i];
     i = i + 1;
   }
   net_guest_mac(net_tx_frame + 6);
@@ -445,7 +588,8 @@ int socket_recv(int caller, int fd, int buffer, int length) {
   int s;
   s = socket_index_from_fd(caller, fd);
   if (s < 0) return -CFG_ENOTSOCK;
-  if ((proc_table[caller].files[fd].status_flags & CFG_O_NONBLOCK) != 0 &&
+  if ((file_get_status_flags(&proc_table[caller].files[fd]) &
+      CFG_O_NONBLOCK) != 0 &&
       socket_table[s].queue_count == 0) return -CFG_EAGAIN;
   return socket_recv_object(caller, s, buffer, length);
 }
@@ -472,7 +616,8 @@ int socket_recvfrom(int caller, int fd, int args) {
   if (s < 0) return -CFG_ENOTSOCK;
   if (copyin(caller, values, args, 20) < 0) return -CFG_EFAULT;
   if (values[2] != 0) return -CFG_EOPNOTSUPP;
-  if ((proc_table[caller].files[fd].status_flags & CFG_O_NONBLOCK) != 0 &&
+  if ((file_get_status_flags(&proc_table[caller].files[fd]) &
+      CFG_O_NONBLOCK) != 0 &&
       socket_table[s].queue_count == 0) return -CFG_EAGAIN;
   return socket_receive_datagram(caller, s, values[0], values[1],
     values[3], values[4]);

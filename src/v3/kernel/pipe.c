@@ -13,6 +13,8 @@ int alloc_pipe(void) {
       pipe_table[i].head = 0;
       pipe_table[i].nread = 1;
       pipe_table[i].nwrite = 1;
+      pipe_table[i].read_status_flags = 0;
+      pipe_table[i].write_status_flags = 1;
       return i;
     }
     i = i + 1;

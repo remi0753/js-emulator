@@ -5,7 +5,8 @@
 char line[128];
 char *args[20];
 char pathbuf[64];
-char *script_argv[3];
+char *script_argv[20];
+char candidate[64];
 char *redir_in;
 char *redir_out;
 int input_fd;
@@ -14,11 +15,17 @@ int pids[4];
 int starts[4];
 
 void exec_path(char *path, char **av) {
+  int i;
   exec(path, av);
   if (errno == 8) {
     script_argv[0] = "/bin/sh";
     script_argv[1] = path;
-    script_argv[2] = 0;
+    i = 1;
+    while (av[i] != 0 && i < 18) {
+      script_argv[i + 1] = av[i];
+      i = i + 1;
+    }
+    script_argv[i + 1] = 0;
     exec("/bin/sh", script_argv);
   }
 }
@@ -29,6 +36,8 @@ void exec_cmd(char **av) {
   char *cmd;
   char *search;
   int i;
+  int start;
+  int out;
   cmd = av[0];
   i = 0;
   while (cmd[i] != 0) {
@@ -40,14 +49,29 @@ void exec_cmd(char **av) {
   }
   search = getenv("PATH");
   if (search == 0) search = "/bin";
-  i = 0;
-  while (search[i] != 0 && search[i] != ':' && i < 48) {
-    pathbuf[i] = search[i];
-    i = i + 1;
+  start = 0;
+  while (1) {
+    i = start;
+    out = 0;
+    while (search[i] != 0 && search[i] != ':') {
+      if (out < 48) {
+        pathbuf[out] = search[i];
+        out = out + 1;
+      }
+      i = i + 1;
+    }
+    if (out == 0) {
+      pathbuf[0] = '.';
+      out = 1;
+    }
+    pathbuf[out] = 0;
+    if (path_join(candidate, 64, pathbuf, cmd) == 0) {
+      exec_path(candidate, av);
+      if (errno != 2 && errno != 20) return;
+    }
+    if (search[i] == 0) return;
+    start = i + 1;
   }
-  pathbuf[i] = 0;
-  if (path_join(pathbuf, 64, pathbuf, cmd) < 0) return;
-  exec_path(pathbuf, av);
 }
 
 // Read one line into `line` (NUL-terminated, newline stripped). Returns the
@@ -160,32 +184,79 @@ int apply_redirections(int use_input, int use_output) {
   return 0;
 }
 
-void run_pipeline(int nargs, int background) {
+int run_pipeline(int nargs, int background) {
   int commands;
   int command;
   int i;
   int group;
   int status;
+  int created_pipes;
+  int created_children;
   commands = 1;
-  starts[0] = 0;
   i = 0;
-  while (i < nargs && commands < 4) {
+  while (i < nargs) {
     if (args[i][0] == '|' && args[i][1] == 0) {
-      args[i] = 0;
-      starts[commands] = i + 1;
+      if (i == 0 || i + 1 == nargs ||
+          (args[i - 1][0] == '|' && args[i - 1][1] == 0)) {
+        write(2, "sh: bad pipeline\n", 17);
+        return -1;
+      }
+      if (commands >= 4) {
+        write(2, "sh: pipeline too long\n", 22);
+        return -1;
+      }
       commands = commands + 1;
     }
     i = i + 1;
   }
+  starts[0] = 0;
+  command = 1;
   i = 0;
+  while (i < nargs) {
+    if (args[i][0] == '|' && args[i][1] == 0) {
+      args[i] = 0;
+      starts[command] = i + 1;
+      command = command + 1;
+    }
+    i = i + 1;
+  }
+  i = 0;
+  created_pipes = 0;
   while (i + 1 < commands) {
-    if (pipe(pipefds + i * 2) < 0) return;
+    if (pipe(pipefds + i * 2) < 0) {
+      while (created_pipes > 0) {
+        created_pipes = created_pipes - 1;
+        close(pipefds[created_pipes * 2]);
+        close(pipefds[created_pipes * 2 + 1]);
+      }
+      return -1;
+    }
+    created_pipes = created_pipes + 1;
     i = i + 1;
   }
   group = 0;
   command = 0;
+  created_children = 0;
   while (command < commands) {
     pids[command] = fork();
+    if (pids[command] < 0) {
+      i = 0;
+      while (i < created_pipes * 2) {
+        close(pipefds[i]);
+        i = i + 1;
+      }
+      i = 0;
+      while (i < created_children) {
+        kill(pids[i], 9);
+        i = i + 1;
+      }
+      i = 0;
+      while (i < created_children) {
+        waitpid(pids[i], &status, 0);
+        i = i + 1;
+      }
+      return -1;
+    }
     if (pids[command] == 0) {
       if (command == 0) setpgid(0, 0);
       else setpgid(0, group);
@@ -210,6 +281,7 @@ void run_pipeline(int nargs, int background) {
     }
     if (command == 0) group = pids[0];
     setpgid(pids[command], group);
+    created_children = created_children + 1;
     command = command + 1;
   }
   i = 0;
@@ -226,6 +298,7 @@ void run_pipeline(int nargs, int background) {
     }
     tcsetpgrp(getpid());
   }
+  return 0;
 }
 
 int run_builtin(int nargs) {

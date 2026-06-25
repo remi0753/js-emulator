@@ -456,16 +456,77 @@ void vm_release(int proc) {
 
 int page_cache_find(int file, int offset) {
   int i;
+  int fs_type;
+  int object;
+  if (file_mmap_identity(file, &fs_type, &object) < 0) return -1;
   i = 0;
   while (i < CFG_PAGE_CACHE_SIZE) {
     if (page_cache[i].used != 0 &&
-        page_cache[i].file == file &&
+        page_cache[i].fs_type == fs_type &&
+        page_cache[i].object == object &&
         page_cache[i].offset == offset) {
       return i;
     }
     i = i + 1;
   }
   return -1;
+}
+
+void page_cache_flush_object(int object) {
+  int fs_type;
+  int node_object;
+  int i;
+  if (file_mmap_identity(object, &fs_type, &node_object) < 0) return;
+  i = 0;
+  while (i < CFG_PAGE_CACHE_SIZE) {
+    if (page_cache[i].used != 0 &&
+        page_cache[i].fs_type == fs_type &&
+        page_cache[i].object == node_object) {
+      page_cache_flush(i);
+    }
+    i = i + 1;
+  }
+}
+
+void page_cache_update_object(
+  int object, int offset, int length, int source, int caller
+) {
+  int fs_type;
+  int node_object;
+  int i;
+  int start;
+  int end;
+  int at;
+  int phys;
+  int next_length;
+  if (file_mmap_identity(object, &fs_type, &node_object) < 0) return;
+  i = 0;
+  while (i < CFG_PAGE_CACHE_SIZE) {
+    if (page_cache[i].used != 0 &&
+        page_cache[i].fs_type == fs_type &&
+        page_cache[i].object == node_object) {
+      start = offset;
+      if (start < page_cache[i].offset) start = page_cache[i].offset;
+      end = offset + length;
+      if (end > page_cache[i].offset + 4096) {
+        end = page_cache[i].offset + 4096;
+      }
+      at = start;
+      while (at < end) {
+        phys = user_phys_addr(caller, source + at - offset, 0);
+        if (phys >= 0) {
+          write8_at(page_cache[i].frame + at - page_cache[i].offset,
+            read8_at(phys));
+        }
+        at = at + 1;
+      }
+      next_length = end - page_cache[i].offset;
+      if (next_length > page_cache[i].length) {
+        page_cache[i].length = next_length;
+      }
+    }
+    i = i + 1;
+  }
 }
 
 void page_cache_flush(int slot) {
@@ -533,6 +594,8 @@ int page_cache_get(int file, int offset) {
   }
   page_cache[slot].used = 1;
   page_cache[slot].file = file;
+  file_mmap_identity(file, &page_cache[slot].fs_type,
+    &page_cache[slot].object);
   page_cache[slot].offset = offset;
   page_cache[slot].frame = frame;
   page_cache[slot].length = got;
@@ -632,6 +695,9 @@ int vm_mmap(int proc, int uargs) {
     }
     if ((offset & 4095) != 0 || offset < 0) {
       return -CFG_EINVAL;
+    }
+    if (proc_table[proc].files[fd].readable == 0) {
+      return -CFG_EACCES;
     }
     if ((flags & CFG_MAP_SHARED) != 0 &&
         (prot & CFG_PROT_WRITE) != 0 &&
@@ -855,6 +921,7 @@ int vm_mprotect(int proc, int address, int length, int prot) {
   int *pt;
   int pte;
   int flags;
+  int area;
   if ((address & 4095) != 0 || length <= 0 ||
       (prot & ~(CFG_PROT_READ | CFG_PROT_WRITE | CFG_PROT_EXEC)) != 0) {
     return -CFG_EINVAL;
@@ -881,9 +948,19 @@ int vm_mprotect(int proc, int address, int length, int prot) {
       } else {
         flags = flags | 1;
       }
-      if ((prot & CFG_PROT_WRITE) != 0 &&
-          (flags & (CFG_PTE_COW | CFG_PTE_SHARED)) == 0) {
-        flags = flags | 2;
+      flags = flags & ~2;
+      if ((prot & CFG_PROT_WRITE) != 0) {
+        area = vm_area_index(proc, page);
+        if (area >= 0 &&
+            (proc_table[proc].vm.areas[area].flags & CFG_MAP_SHARED) != 0 &&
+            proc_table[proc].vm.areas[area].file >= 0) {
+          flags = (flags & ~CFG_PTE_COW) | CFG_PTE_SHARED;
+        } else if ((flags & CFG_PTE_COW) != 0 ||
+            frame_refs[(pte & 0xfffff000) / 4096] > 1) {
+          flags = (flags & ~CFG_PTE_SHARED) | CFG_PTE_COW;
+        } else {
+          flags = (flags & ~(CFG_PTE_COW | CFG_PTE_SHARED)) | 2;
+        }
       }
       pt[(page >> 12) & 0x3ff] = (pte & 0xfffff000) | flags;
     }
@@ -924,6 +1001,11 @@ int vm_handle_page_fault(int proc, int address, int error) {
   }
   if ((pte & 1) != 0) {
     if ((error & 2) == 0) return -1;
+    area = vm_area_index(proc, page);
+    if (area >= 0 &&
+        (proc_table[proc].vm.areas[area].prot & CFG_PROT_WRITE) == 0) {
+      return -1;
+    }
     if ((pte & CFG_PTE_COW) != 0) {
       if (free_list == 0) return -1;
       old_frame = pte & 0xfffff000;
@@ -1017,7 +1099,8 @@ void copy_space(int src, int dst) {
         if ((spte & 1) != 0) {
           v = (di << 22) | (ti << 12);
           flags = spte & 0xfff;
-          if ((flags & CFG_PTE_SHARED) == 0) {
+          if ((flags & CFG_PTE_SHARED) == 0 &&
+              ((flags & 2) != 0 || (flags & CFG_PTE_COW) != 0)) {
             flags = (flags & ~2) | CFG_PTE_COW;
             spt[ti] = (spte & 0xfffff000) | flags;
           }
