@@ -616,16 +616,32 @@ For every milestone, use the same completion workflow:
   interrupts, job-control signals, and redirection without host-side special
   cases.
 
-- **Phase 22** ⬜ upgrade memory management toward Linux behavior.
+- **Phase 22** ✅ upgrade memory management toward Linux behavior.
 
-  Add VM areas (VMAs), lazy allocation, demand paging, guard pages, page cache,
-  file-backed `mmap`, anonymous `mmap`, copy-on-write mappings, `mprotect`, and
-  user heap growth through `brk`/`sbrk`. This is the point where the memory
-  manager stops being only a loader/page-table helper and starts behaving like a
-  Unix VM subsystem.
+  VMAs now retain mapping protections, private/shared mode, backing open-file
+  objects, and file offsets independently of descriptors. Anonymous mappings
+  and `brk` growth reserve address space without allocating frames; user faults
+  allocate zero-filled pages or demand-read file pages. A guard page below the
+  fixed user stack is excluded from executable images, heap growth, and
+  mappings.
 
-  Done when programs can allocate memory through libc `malloc`, map files,
-  share mapped pages across `fork`, and fault pages in lazily.
+  `fork` shares present frames and marks private pages copy-on-write, including
+  the executable image, stack, anonymous mappings, and private file mappings.
+  Shared file mappings use a guest-kernel page cache, remain physically shared
+  across `fork`, become dirty on the first write fault, and are written back on
+  unmap/address-space teardown or cache eviction. `mprotect` operates on lazy
+  VMAs as well as resident pages, while `munmap` trims/splits VMAs and releases
+  backing-file references. Kernel `copyin`/`copyout` also resolve valid lazy and
+  COW pages rather than incorrectly returning `EFAULT`.
+
+  The guest libc now provides `malloc`, `free`, and `calloc` over lazy `sbrk`.
+  End-to-end coverage in `test/guest-vm-phase22.test.ts` verifies large lazy
+  mappings, anonymous COW isolation, shared file visibility and write-back,
+  guard-page `SIGSEGV`, and libc heap allocation.
+
+  Done: programs allocate through libc `malloc`, map and share files across
+  `fork`, preserve private mappings with COW, and fault anonymous/file pages in
+  lazily.
 
 - **Phase 23** ⬜ build a libc and Linux-like userland ABI.
 

@@ -62,7 +62,7 @@
 #define CFG_FT_KBD 2
 #define CFG_FT_NONE 0
 #define CFG_FT_PIPE 4
-#define CFG_IDT 0x50000
+#define CFG_IDT 0x54000
 #define CFG_IDT_ENTRY_SIZE 8
 #define CFG_IDT_PRESENT 1
 #define CFG_IDT_USER 2
@@ -71,7 +71,7 @@
 #define CFG_KBD_DATA 96
 #define CFG_KBD_STATUS 100
 #define CFG_KBD_VECTOR 33
-#define CFG_KERNEL_PT 0x51000
+#define CFG_KERNEL_PT 0x55000
 #define CFG_KSTACK_TOP 0x60000
 #define CFG_MAP_ANONYMOUS 32
 #define CFG_MAP_FIXED 16
@@ -98,7 +98,9 @@
 #define CFG_O_RDWR 2
 #define CFG_O_TRUNC 1024
 #define CFG_O_WRONLY 1
+#define CFG_PAGE_CACHE_SIZE 128
 #define CFG_PAGEFAULT_VECTOR 14
+#define CFG_PHYS_FRAMES 1024
 #define CFG_PIPESZ 512
 #define CFG_POWER 1540
 #define CFG_POWER_OFF 0x2000
@@ -106,7 +108,9 @@
 #define CFG_PROT_NONE 0
 #define CFG_PROT_READ 1
 #define CFG_PROT_WRITE 2
+#define CFG_PTE_COW 512
 #define CFG_PTE_KERNEL 3
+#define CFG_PTE_SHARED 1024
 #define CFG_PTE_USER 7
 #define CFG_ROOTINO 1
 #define CFG_RTC_DATA 112
@@ -220,6 +224,7 @@
 #define CFG_TTY_VSUSP 10
 #define CFG_USER_BASE 0x400000
 #define CFG_USER_END 0x800000
+#define CFG_USER_GUARD_PAGE 0x7fe000
 #define CFG_USER_LOAD_BASE 0x400000
 #define CFG_USER_STACK_PAGE 0x7ff000
 #define CFG_USER_STACK_TOP 0x800000
@@ -352,6 +357,9 @@ void *sbrk(int increment);
 void *mmap(void *address, int length, int protection, int flags, int fd, int offset);
 int munmap(void *address, int length);
 int mprotect(void *address, int length, int protection);
+void *malloc(int size);
+void free(void *pointer);
+void *calloc(int count, int size);
 int gettimeofday(struct timeval *value, void *timezone);
 int clock_gettime(int clock_id, struct timespec *value);
 int uname(struct utsname *name);

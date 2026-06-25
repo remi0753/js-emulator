@@ -30,6 +30,8 @@ struct vm_area {
   int end;
   int prot;
   int flags;
+  int file;
+  int offset;
 };
 
 struct vm_space {
@@ -37,6 +39,15 @@ struct vm_space {
   int brk_start;
   int brk_end;
   struct vm_area areas[CFG_MAX_VMAS];
+};
+
+struct page_cache_entry {
+  int used;
+  int file;
+  int offset;
+  int frame;
+  int length;
+  int dirty;
 };
 
 typedef int (*file_io_fn)(int file, int caller, int buf, int len);
@@ -265,6 +276,7 @@ int copyout(int proc, int udst, int ksrc, int len);
 // the terminator). Returns the string length on success, or a negative errno.
 int copyinstr(int proc, int kdst, int usrc, int max);
 void free_frame(int frame);
+void retain_frame(int frame);
 int alloc_frame(void);
 int free_frame_count(void);
 void pmm_init(void);
@@ -275,6 +287,8 @@ void copy_space(int src, int dst);
 void free_space(int pd);
 void vm_init(int proc, int pd, int image_end);
 void vm_fork(int child, int parent);
+void vm_release(int proc);
+int vm_handle_page_fault(int proc, int address, int error);
 int vm_brk(int proc, int address);
 int vm_mmap(int proc, int args);
 int vm_munmap(int proc, int address, int length);
@@ -394,6 +408,12 @@ void clear_fds(int idx);
 void copy_fds(int dst, int src);
 void close_exec_fds(int idx);
 int file_mmap_read(struct file *file, int offset, int length, int destination);
+int file_mmap_retain(struct file *file);
+void file_mmap_retain_object(int object);
+void file_mmap_release(int object);
+int file_mmap_read_object(int object, int offset, int length, int destination);
+int file_mmap_write_object(int object, int offset, int length, int source);
+int file_mmap_size_object(int object);
 int file_getdents(struct file *file, int caller, int destination, int count);
 int file_is_tty(struct file *file);
 int file_stat(struct file *file, struct guest_stat *st);

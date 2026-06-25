@@ -102,10 +102,11 @@ Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 | `getpid`, `getppid`, `fork`, `exec`, `waitpid`, `exit` | implemented | guest-owned process lifecycle |
 | signals and process groups | implemented subset | Phase 17 signal/job-control model |
 | `nanosleep` | implemented | tick-resolution, signal-interruptible, reports remaining time |
-| `brk`, `sbrk` | implemented | eagerly maps and frees heap pages |
-| anonymous private `mmap` | implemented | eager allocation; `MAP_FIXED` requires an unused range |
-| private file-backed `mmap` | implemented | eager read; no shared write-back or page cache yet |
-| `munmap`, `mprotect` | implemented | page-granular VMA split/trim and PTE permissions |
+| `brk`, `sbrk` | implemented | lazy zero-filled heap pages; shrinking releases resident pages |
+| anonymous private `mmap` | implemented | lazy allocation; `fork` uses copy-on-write |
+| private file-backed `mmap` | implemented | demand paging through the page cache; writes are COW |
+| shared file-backed `mmap` | implemented | shared cached frames with dirty write-back |
+| `munmap`, `mprotect` | implemented | page-granular VMA split/trim; works before or after faults |
 | `fcntl` | implemented subset | `F_DUPFD`, `F_GETFD`, `F_SETFD`, `F_GETFL`; nonblocking deferred |
 | `ioctl` | implemented subset | foreground groups, termios modes, and terminal window size |
 | `gettimeofday`, `clock_gettime`, `uname` | implemented | 32-bit time values on this ISA |
@@ -116,7 +117,7 @@ Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 | `symlink`, `readlink` | implemented | relative/absolute traversal, bounded to eight expansions |
 | `lseek` | implemented | `SEEK_SET`, `SEEK_CUR`, `SEEK_END`; shared by dup/fork |
 | VFS mounts and pseudo filesystems | implemented | disk root plus devfs `/dev`, procfs `/proc`, and tmpfs `/tmp` |
-| `MAP_SHARED`, lazy mappings, COW mappings | unsupported | planned for Phase 22 |
+| stack guard page | implemented | the page below the fixed user stack is never allocated |
 | `O_NONBLOCK`, polling ioctls | unsupported | planned with the polling phase |
 | Linux binary ABI compatibility | intentionally unsupported | programs are compiled for custom32 |
 

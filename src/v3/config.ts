@@ -44,6 +44,7 @@ const TMP_FILE_SIZE = 512;
 const PIPESZ = 512;
 const MAXARG = 16;
 const MAX_VMAS = 16;
+const PAGE_CACHE_SIZE = 128;
 const ARGBUF_LEN = 512;
 const IPB = Math.floor(SECTOR_SIZE / DINODE_SIZE);
 const PTE_KERNEL = 3;
@@ -129,8 +130,8 @@ const SIGNAL = {
 export const GUEST_EXECUTABLE_MAGIC = 0x35315850;
 
 export const GUEST_KERNEL_LAYOUT = {
-  idt: 0x50000,
-  kernelPageTable: 0x51000,
+  idt: 0x54000,
+  kernelPageTable: 0x55000,
   kstackTop: 0x60000,
   framePoolBase: 0x100000,
   framePoolEnd: 0x380000,
@@ -219,6 +220,8 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_POWER_OFF: POWER_OFF,
   CFG_PTE_KERNEL: PTE_KERNEL,
   CFG_PTE_USER: PTE_USER,
+  CFG_PTE_COW: 1 << 9,
+  CFG_PTE_SHARED: 1 << 10,
   CFG_MAX_PROC: MAX_PROC,
   CFG_NFD: NFD,
   CFG_NFILE: NFILE,
@@ -229,12 +232,15 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_PIPESZ: PIPESZ,
   CFG_MAXARG: MAXARG,
   CFG_MAX_VMAS: MAX_VMAS,
+  CFG_PAGE_CACHE_SIZE: PAGE_CACHE_SIZE,
   CFG_ARGBUF_LEN: ARGBUF_LEN,
   CFG_FRAME_POOL_BASE: GUEST_KERNEL_LAYOUT.framePoolBase,
   CFG_FRAME_POOL_END: GUEST_KERNEL_LAYOUT.framePoolEnd,
+  CFG_PHYS_FRAMES: GUEST_KERNEL_LAYOUT.physSize / 4096,
   CFG_KERNEL_PT: GUEST_KERNEL_LAYOUT.kernelPageTable,
   CFG_USER_LOAD_BASE: GUEST_KERNEL_LAYOUT.userLoadBase,
   CFG_USER_STACK_PAGE: GUEST_KERNEL_LAYOUT.userStackPage,
+  CFG_USER_GUARD_PAGE: GUEST_KERNEL_LAYOUT.userStackPage - 4096,
   CFG_USER_STACK_TOP: GUEST_KERNEL_LAYOUT.userStackTop,
   CFG_USER_BASE: GUEST_KERNEL_LAYOUT.userBase,
   CFG_USER_END: GUEST_KERNEL_LAYOUT.userEnd,
@@ -494,6 +500,9 @@ void *sbrk(int increment);
 void *mmap(void *address, int length, int protection, int flags, int fd, int offset);
 int munmap(void *address, int length);
 int mprotect(void *address, int length, int protection);
+void *malloc(int size);
+void free(void *pointer);
+void *calloc(int count, int size);
 int gettimeofday(struct timeval *value, void *timezone);
 int clock_gettime(int clock_id, struct timespec *value);
 int uname(struct utsname *name);

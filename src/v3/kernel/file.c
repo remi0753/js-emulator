@@ -68,6 +68,67 @@ int file_mmap_read(struct file *file, int offset, int length, int destination) {
   return vnode_read(&open->vnode, current, offset, length, destination);
 }
 
+int file_mmap_retain(struct file *file) {
+  if (file->type != CFG_FT_FILE || file->object < 0 ||
+      file->object >= CFG_NFILE ||
+      open_file_table[file->object].used == 0 ||
+      open_file_table[file->object].vnode.inode.type != CFG_T_FILE) {
+    return -CFG_ENODEV;
+  }
+  open_file_table[file->object].refs =
+    open_file_table[file->object].refs + 1;
+  return file->object;
+}
+
+void file_mmap_retain_object(int object) {
+  if (object >= 0 && object < CFG_NFILE &&
+      open_file_table[object].used != 0) {
+    open_file_table[object].refs = open_file_table[object].refs + 1;
+  }
+}
+
+void file_mmap_release(int object) {
+  if (object < 0 || object >= CFG_NFILE ||
+      open_file_table[object].used == 0) {
+    return;
+  }
+  open_file_table[object].refs = open_file_table[object].refs - 1;
+  if (open_file_table[object].refs == 0) {
+    vnode_release(&open_file_table[object].vnode);
+    open_file_table[object].used = 0;
+  }
+}
+
+int file_mmap_read_object(
+  int object, int offset, int length, int destination
+) {
+  if (object < 0 || object >= CFG_NFILE ||
+      open_file_table[object].used == 0) {
+    return -CFG_EBADF;
+  }
+  return vnode_read(&open_file_table[object].vnode, current,
+    offset, length, destination);
+}
+
+int file_mmap_write_object(
+  int object, int offset, int length, int source
+) {
+  if (object < 0 || object >= CFG_NFILE ||
+      open_file_table[object].used == 0) {
+    return -CFG_EBADF;
+  }
+  return vnode_write(&open_file_table[object].vnode, current,
+    offset, length, source);
+}
+
+int file_mmap_size_object(int object) {
+  if (object < 0 || object >= CFG_NFILE ||
+      open_file_table[object].used == 0) {
+    return -CFG_EBADF;
+  }
+  return open_file_table[object].vnode.inode.size;
+}
+
 int file_getdents(struct file *file, int caller, int destination, int count) {
   struct open_file *open;
   if (file->type != CFG_FT_FILE || file->object < 0 ||

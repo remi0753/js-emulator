@@ -98,7 +98,7 @@ int load_exec_image(int pd, int path) {
   }
   entry = read32_at(exec_hdr + 4);
   memsz = read32_at(exec_hdr + 8);
-  if (memsz <= 0 || memsz > CFG_USER_STACK_PAGE - CFG_USER_LOAD_BASE) {
+  if (memsz <= 0 || memsz > CFG_USER_GUARD_PAGE - CFG_USER_LOAD_BASE) {
     return -CFG_ENOEXEC;
   }
   if (node.inode.size - 12 > memsz) {

@@ -53,9 +53,9 @@ int fork_process(int parent) {
   }
   idx = alloc_proc();
   pd = new_address_space();
-  copy_space(proc_table[parent].vm.ptbr, pd);
   proc_table[idx].vm.ptbr = pd;
   vm_fork(idx, parent);
+  copy_space(proc_table[parent].vm.ptbr, pd);
   i = 0;
   while (i < 8) {
     proc_table[idx].ctx.regs[i] = proc_table[parent].ctx.regs[i];
@@ -147,6 +147,7 @@ int do_waitpid(int parent, int pid, int status, int options) {
         return 0;
       }
       proc_table[parent].ctx.regs[0] = i;
+      vm_release(i);
       proc_table[i].state = CFG_ST_UNUSED;
       return proc_table[i].vm.ptbr; // reaped child's address space, freed by the caller
     }

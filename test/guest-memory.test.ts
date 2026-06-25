@@ -43,6 +43,16 @@ test('copyin/copyout translate through the requested process address space', () 
         int file_mmap_read(struct file *file, int offset, int length, int destination) {
           return -CFG_ENODEV;
         }
+        int file_mmap_retain(struct file *file) { return -CFG_ENODEV; }
+        void file_mmap_retain_object(int object) { }
+        void file_mmap_release(int object) { }
+        int file_mmap_read_object(
+          int object, int offset, int length, int destination
+        ) { return -CFG_ENODEV; }
+        int file_mmap_write_object(
+          int object, int offset, int length, int source
+        ) { return -CFG_ENODEV; }
+        int file_mmap_size_object(int object) { return -CFG_ENODEV; }
 
         int kmain(void) {
           int *pd0;

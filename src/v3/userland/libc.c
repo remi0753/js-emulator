@@ -332,6 +332,57 @@ int mprotect(void *address, int length, int protection) {
   return ret_errno(__syscall(CFG_SYS_MPROTECT, address, length, protection));
 }
 
+struct heap_block {
+  int size;
+  int free;
+  int next;
+};
+
+int heap_blocks;
+
+void *malloc(int size) {
+  struct heap_block *block;
+  int total;
+  if (size <= 0) return 0;
+  size = (size + 7) & 0xfffffff8;
+  block = heap_blocks;
+  while (block != 0) {
+    if (block->free != 0 && block->size >= size) {
+      block->free = 0;
+      return block + 1;
+    }
+    block = block->next;
+  }
+  total = size + sizeof(struct heap_block);
+  block = sbrk(total);
+  if (block == -1) return 0;
+  block->size = size;
+  block->free = 0;
+  block->next = heap_blocks;
+  heap_blocks = block;
+  return block + 1;
+}
+
+void free(void *pointer) {
+  struct heap_block *block;
+  if (pointer != 0) {
+    block = pointer;
+    block = block - 1;
+    block->free = 1;
+  }
+}
+
+void *calloc(int count, int size) {
+  void *pointer;
+  int total;
+  if (count <= 0 || size <= 0) return 0;
+  total = count * size;
+  if (total / count != size) return 0;
+  pointer = malloc(total);
+  if (pointer != 0) memset(pointer, 0, total);
+  return pointer;
+}
+
 int gettimeofday(struct timeval *value, void *timezone) {
   return ret_errno(__syscall(CFG_SYS_GETTIMEOFDAY, value, timezone, 0));
 }
