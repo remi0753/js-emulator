@@ -1,54 +1,9 @@
 // ls: getdents-based directory listing with a compact ls -l metadata view.
+#include "libc.h"
 
-struct dirent {
-  int ino;
-  int offset;
-  int reclen;
-  int type;
-  char name[16];
-};
-
-struct stat {
-  int dev;
-  int ino;
-  int mode;
-  int nlink;
-  int uid;
-  int gid;
-  int rdev;
-  int size;
-  int blksize;
-  int blocks;
-  int atime;
-  int mtime;
-  int ctime;
-};
-
-struct dirent entries[4];
 char fullpath[64];
-char numberbuf[16];
 char modebuf[11];
 char linkbuf[64];
-
-void print_number(int value) {
-  int i;
-  int start;
-  if (value == 0) {
-    write(1, "0", 1);
-    return;
-  }
-  i = 0;
-  while (value > 0) {
-    numberbuf[i] = '0' + value % 10;
-    value = value / 10;
-    i = i + 1;
-  }
-  start = i - 1;
-  while (start >= 0) {
-    write(1, numberbuf + start, 1);
-    start = start - 1;
-  }
-}
 
 void format_mode(int mode) {
   int bits[9];
@@ -110,13 +65,13 @@ void print_long(char *dir, char *name) {
   format_mode(value.mode);
   write(1, modebuf, 10);
   write(1, " ", 1);
-  print_number(value.nlink);
+  print_int(value.nlink);
   write(1, " ", 1);
-  print_number(value.uid);
+  print_int(value.uid);
   write(1, " ", 1);
-  print_number(value.gid);
+  print_int(value.gid);
   write(1, " ", 1);
-  print_number(value.size);
+  print_int(value.size);
   write(1, " ", 1);
   print_name(name);
   if ((value.mode & 0xf000) == 0xa000) {
@@ -132,10 +87,9 @@ void print_long(char *dir, char *name) {
 
 int main(int argc, char **argv) {
   char *path;
+  DIR *directory;
+  struct dirent *entry;
   int long_format;
-  int fd;
-  int n;
-  int i;
   long_format = 0;
   path = "/";
   if (argc >= 2) {
@@ -146,24 +100,20 @@ int main(int argc, char **argv) {
       path = argv[1];
     }
   }
-  fd = open(path, 0);
-  if (fd < 0) {
+  directory = opendir(path);
+  if (directory == 0) {
     write(2, "ls: cannot open\n", 16);
     return 1;
   }
-  n = getdents(fd, entries, sizeof(struct dirent) * 4);
-  while (n > 0) {
-    i = 0;
-    while (i < n / sizeof(struct dirent)) {
-      if (long_format != 0) print_long(path, entries[i].name);
-      else {
-        print_name(entries[i].name);
-        write(1, "\n", 1);
-      }
-      i = i + 1;
+  entry = readdir(directory);
+  while (entry != 0) {
+    if (long_format != 0) print_long(path, entry->name);
+    else {
+      print_name(entry->name);
+      write(1, "\n", 1);
     }
-    n = getdents(fd, entries, sizeof(struct dirent) * 4);
+    entry = readdir(directory);
   }
-  close(fd);
+  closedir(directory);
   return 0;
 }

@@ -643,17 +643,33 @@ For every milestone, use the same completion workflow:
   `fork`, preserve private mappings with COW, and fault anonymous/file pages in
   lazily.
 
-- **Phase 23** ⬜ build a libc and Linux-like userland ABI.
+- **Phase 23** ✅ build a libc and Linux-like userland ABI.
 
-  Create a libc layer for this OS/ISA: syscall wrappers, `crt0`, `malloc`,
-  stdio, string/memory functions, environment variables, path helpers, directory
-  iteration, time, signal wrappers, and terminal helpers. Then build a larger
-  userland: shell, coreutils-like tools, text tools, init scripts, test runner,
-  and package/image build helpers.
+  Added a shared public userland header and expanded the guest libc from syscall
+  stubs into a coherent C/POSIX-style layer: startup publishes `environ`;
+  `execve` carries `envp` through the kernel startup ABI; environment mutation,
+  heap allocation/reallocation, unbuffered `FILE` stdio, string/memory helpers,
+  path helpers, `DIR` iteration, time, signal, and terminal APIs are available
+  to compiled programs. The linker now removes unreachable label sections from
+  user executables so a broad static libc does not make every utility pay for
+  the whole library.
 
-  Done when normal user programs are written against libc instead of raw
-  assembly syscall snippets, and a disk image can boot into a usable shell
-  environment with scripts and pipelines.
+  The maintained programs include the shared libc header instead of duplicating
+  ABI structures. The shell supports quoted tokens, exported environment
+  variables, script files and `ENOEXEC` script fallback, redirection,
+  foreground/background jobs, and pipelines of up to four commands. The image
+  adds `wc`, `head`, `grep`, `mkdir`, `rm`, `mv`, `ln`, `touch`, `env`, a libc
+  test runner, `/etc/rc`, `/etc/profile`, a package manifest, and the executable
+  `/bin/selftest` shell script.
+
+  Coverage in `test/guest-libc-phase23.test.ts` boots the image, propagates an
+  exported variable through `exec`, runs text tools and a three-command
+  pipeline, executes the self-test script, and exercises stdio, directory,
+  environment, and path APIs.
+
+  Done: normal maintained user programs are written against libc, and a fresh
+  disk image boots into a shell environment with scripts, pipelines, init
+  files, core file/text tools, and a guest-side test runner.
 
 - **Phase 24** ⬜ add polling and asynchronous I/O foundations.
 

@@ -1,5 +1,6 @@
 // cat: copy each named file to stdout; with no arguments, copy stdin to stdout
 // (so it works as the tail of a pipeline).
+#include "libc.h"
 
 char buf[512];
 
@@ -11,7 +12,7 @@ void copy_fd(int fd) {
   while (n > 0) {
     off = 0;
     while (off < n) {
-      wrote = write(1, buf + off, n - off);
+      wrote = write(stdout->fd, buf + off, n - off);
       if (wrote <= 0) {
         return;
       }

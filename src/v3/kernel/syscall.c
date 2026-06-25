@@ -485,7 +485,7 @@ int h_fork(int caller, int a1, int a2, int a3) {
 }
 
 int h_exec(int caller, int a1, int a2, int a3) {
-  g_pending_free = do_exec(caller, a1, a2);
+  g_pending_free = do_exec(caller, a1, a2, a3);
   g_noret = 1; // do_exec set R0 (argc on success, -errno on failure)
   return 0;
 }

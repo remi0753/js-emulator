@@ -1,4 +1,5 @@
 // echo: print the arguments separated by spaces, followed by a newline.
+#include "libc.h"
 
 int main(int argc, char **argv) {
   int i;
@@ -10,6 +11,6 @@ int main(int argc, char **argv) {
     }
     i = i + 1;
   }
-  write(1, "\n", 1);
+  fputc('\n', stdout);
   return 0;
 }

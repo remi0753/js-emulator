@@ -430,15 +430,19 @@ extern char kpath[CFG_INITPATH_LEN]; // a path copied in from user memory
 extern char exec_hdr[12];            // the executable header (magic, entry, memSize)
 extern char argbuf[CFG_ARGBUF_LEN];  // packed NUL-terminated argv strings
 extern int arg_off[CFG_MAXARG];      // start offset of each arg in argbuf
+extern char envbuf[CFG_ARGBUF_LEN];  // packed NUL-terminated environment strings
+extern int env_off[CFG_MAXARG];      // start offset of each entry in envbuf
 extern int g_argc;                   // argument count staged for the next spawn
+extern int g_envc;                   // environment count staged for the next spawn
 extern int g_exec_image_end;         // page-aligned end of the staged executable image
 int copy_path_in(int proc, int upath);
 void build_args_single(int kstr);
 int build_args_from_user(int proc, int uargv);
+int build_env_from_user(int proc, int uenvp);
 int load_exec_image(int pd, int path);
 int setup_user_args(int idx, int pd);
 int spawn(int idx, int path);
-int do_exec(int idx, int upath, int uargv);
+int do_exec(int idx, int upath, int uargv, int uenvp);
 
 // --- syscall.c ---
 extern int g_noret;        // set when a handler set R0 itself (don't overwrite it)

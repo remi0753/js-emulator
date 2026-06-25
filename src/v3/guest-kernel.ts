@@ -34,9 +34,37 @@ function substituteDefines(source: string, defines: Defines, label: string): str
 }
 
 export const GUEST_MOTD = 'welcome to jscpu-os\n';
+export const GUEST_USER_PROGRAMS = [
+  'init',
+  'sh',
+  'echo',
+  'cat',
+  'ls',
+  'date',
+  'shutdown',
+  'spin',
+  'wc',
+  'head',
+  'grep',
+  'mkdir',
+  'rm',
+  'mv',
+  'ln',
+  'touch',
+  'env',
+  'runtests',
+] as const;
+
+function resolveUserlandInclude(name: string): string | undefined {
+  try {
+    return sourceFile(`userland/${name}`);
+  } catch {
+    return undefined;
+  }
+}
 
 const LIBC_SOURCE = substituteDefines(
-  sourceFile('userland/libc.c'),
+  preprocess(sourceFile('userland/libc.c'), resolveUserlandInclude),
   GUEST_KERNEL_DEFINES,
   'libc.c',
 );
@@ -44,7 +72,12 @@ const LIBC_SOURCE = substituteDefines(
 export function buildUserExecutable(name: string, programSource: string): Uint8Array {
   const base = GUEST_KERNEL_LAYOUT.userLoadBase;
   const libc = compileC(LIBC_SOURCE, { start: 'none', moduleId: `${name}_libc` });
-  const program = compileC(programSource, { start: 'user', moduleId: name, cStackSize: 4096 });
+  const expandedProgram = preprocess(programSource, resolveUserlandInclude);
+  const program = compileC(substituteDefines(expandedProgram, GUEST_KERNEL_DEFINES, name), {
+    start: 'user',
+    moduleId: name,
+    cStackSize: 4096,
+  });
   const linked = linkExecutable([program, libc], { textOrigin: base });
 
   const [textSegment, dataSegment] = linked.executable.segments;
@@ -72,7 +105,7 @@ export interface GuestDiskImageOptions {
 }
 
 export function buildGuestDiskImage(options: GuestDiskImageOptions = {}): Uint8Array {
-  const fsDisk = BlockDisk.blank(1024);
+  const fsDisk = BlockDisk.blank(2048);
   const ports = new PortBus();
   ports.register(PORT.DISK_DATA, 1, fsDisk);
   ports.register(PORT.DISK_POS, 1, fsDisk);
@@ -84,11 +117,25 @@ export function buildGuestDiskImage(options: GuestDiskImageOptions = {}): Uint8A
   fs.mkdir('/dev');
   fs.mkdir('/proc');
   fs.mkdir('/tmp');
-  for (const name of ['init', 'sh', 'echo', 'cat', 'ls', 'date', 'shutdown', 'spin']) {
+  for (const name of GUEST_USER_PROGRAMS) {
     fs.writeFile(`/bin/${name}`, buildUserExecutable(name, sourceFile(`userland/${name}.c`)));
     fs.chmod(`/bin/${name}`, 0o755);
   }
+  fs.writeFile(
+    '/bin/selftest',
+    new TextEncoder().encode('#!/bin/sh\nruntests\necho script-pipeline | cat | cat\n'),
+  );
+  fs.chmod('/bin/selftest', 0o755);
   fs.writeFile('/etc/motd', new TextEncoder().encode(GUEST_MOTD));
+  fs.writeFile(
+    '/etc/rc',
+    new TextEncoder().encode('# system initialization script\ntouch /tmp/booted\n'),
+  );
+  fs.writeFile('/etc/profile', new TextEncoder().encode('export PATH=/bin\n'));
+  fs.writeFile(
+    '/etc/packages',
+    new TextEncoder().encode(`${GUEST_USER_PROGRAMS.join('\n')}\nselftest\n`),
+  );
 
   const kernel = options.kernel ?? buildGuestKernelImage();
   const kernelBlocks = Math.ceil(kernel.flat.length / BLOCK_SIZE);

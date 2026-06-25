@@ -47,7 +47,7 @@ Pointers are **user virtual addresses**; the kernel reaches them through the MMU
 | 2 | `YIELD`  | —                             | give up the CPU (go to the ready-queue tail)                |
 | 3 | `GETPID` | —                             | R0 = this process's PID                                     |
 | 4 | `FORK`   | —                             | duplicate the process; R0 = child pid (parent) / 0 (child)  |
-| 5 | `EXEC`   | R1 = path ptr, R2 = argv ptr  | replace the image with the executable at `path`, passing `argv`; -1 on error |
+| 5 | `EXEC`   | R1 = path, R2 = argv, R3 = envp | replace the image, passing argument and environment vectors; -1 on error |
 | 6 | `WAIT`   | R1 = status ptr (0 = ignore)  | reap a child; R0 = child pid (status written to ptr), -1 if none |
 | 7 | `OPEN`   | R1 = path ptr, R2 = flags     | open/create a file; R0 = fd / -1                            |
 | 8 | `CLOSE`  | R1 = fd                       | close a descriptor; R0 = 0 / -1                            |
@@ -196,11 +196,14 @@ for writing. `open` flags (`O.*` in abi.ts): `RDONLY=0`, `WRONLY=1`, `RDWR=2`,
 - `/tmp` is a bounded in-memory filesystem. Its files support ordinary
   create/read/write/stat/seek/unlink operations and disappear on reboot.
 
-### Arguments & stdin (Phase 5)
+### Process startup, arguments, and environment
 
-- `exec` takes an `argv` vector (R2): a user array of string pointers terminated by
-  NULL. The kernel copies the strings onto the new program's stack and starts it
-  with **argc in R0** and the **argv pointer in R1**. R2 = 0 means no arguments.
+- `exec` takes NULL-terminated `argv` (R2) and `envp` (R3) vectors. The kernel
+  copies both onto the new program's stack and starts it with **argc in R0**,
+  **argv in R1**, and **envp in R2**. libc startup publishes R2 as the global
+  `environ`; `exec()` inherits it and `execve()` accepts an explicit vector.
+- The boot-created init process starts with `PATH=/bin`, `HOME=/`, and
+  `TERM=jscpu`. libc provides `getenv`, `setenv`, `unsetenv`, and `putenv`.
 
 ### Blocking I/O, pipes & COW fork (Phase 6)
 

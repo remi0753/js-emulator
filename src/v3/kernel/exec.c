@@ -1,13 +1,16 @@
-// Executable loading and argv setup: copy paths/arguments in from user memory,
-// load a flat executable image into a fresh address space, lay out argv on the
-// user stack, and rebuild a caller's address space for exec.
+// Executable loading and process startup: copy paths, argv, and envp in from
+// user memory, load a flat executable image into a fresh address space, lay out
+// the vectors on the user stack, and rebuild a caller's address space for exec.
 #include "kernel.h"
 
 char kpath[CFG_INITPATH_LEN]; // a path copied in from user memory
 char exec_hdr[12];            // the executable header (magic, entry, memSize)
 char argbuf[CFG_ARGBUF_LEN];  // packed NUL-terminated argv strings
 int arg_off[CFG_MAXARG];      // start offset of each arg in argbuf
+char envbuf[CFG_ARGBUF_LEN];  // packed NUL-terminated environment strings
+int env_off[CFG_MAXARG];      // start offset of each entry in envbuf
 int g_argc;                   // argument count staged for the next spawn
+int g_envc;                   // environment count staged for the next spawn
 int g_exec_image_end;
 
 // Copy a NUL-terminated path from user memory into the kpath kernel buffer.
@@ -29,6 +32,15 @@ void build_args_single(int kstr) {
   }
   argbuf[total] = 0;
   g_argc = 1;
+
+  // The boot-created init process starts with a small conventional environment.
+  env_off[0] = 0;
+  memcpy(envbuf, "PATH=/bin", 10);
+  env_off[1] = 10;
+  memcpy(envbuf + 10, "HOME=/", 7);
+  env_off[2] = 17;
+  memcpy(envbuf + 17, "TERM=jscpu", 11);
+  g_envc = 3;
 }
 
 // Stage argv copied from a user char*[] (NULL-terminated) into argbuf.
@@ -66,6 +78,46 @@ int build_args_from_user(int proc, int uargv) {
     }
   }
   g_argc = argc;
+  return 0;
+}
+
+// Stage envp copied from a user char*[] (NULL-terminated). A NULL envp keeps a
+// useful minimal environment for compatibility with older raw exec callers.
+int build_env_from_user(int proc, int uenvp) {
+  int envc;
+  int total;
+  int ptr;
+  int len;
+  if (uenvp == 0) {
+    env_off[0] = 0;
+    memcpy(envbuf, "PATH=/bin", 10);
+    env_off[1] = 10;
+    memcpy(envbuf + 10, "HOME=/", 7);
+    env_off[2] = 17;
+    memcpy(envbuf + 17, "TERM=jscpu", 11);
+    g_envc = 3;
+    return 0;
+  }
+  envc = 0;
+  total = 0;
+  while (envc < CFG_MAXARG) {
+    if (copyin(proc, &ptr, uenvp + envc * 4, 4) < 0) {
+      return -CFG_EFAULT;
+    }
+    if (ptr == 0) break;
+    env_off[envc] = total;
+    len = copyinstr(proc, envbuf + total, ptr, CFG_ARGBUF_LEN - total);
+    if (len < 0) return len;
+    total = total + len + 1;
+    envc = envc + 1;
+  }
+  if (envc == CFG_MAXARG) {
+    if (copyin(proc, &ptr, uenvp + envc * 4, 4) < 0) {
+      return -CFG_EFAULT;
+    }
+    if (ptr != 0) return -CFG_E2BIG;
+  }
+  g_envc = envc;
   return 0;
 }
 
@@ -124,13 +176,17 @@ int load_exec_image(int pd, int path) {
   return entry;
 }
 
-// Build the user stack page and lay out argv on it: strings near the top, then a
-// NULL-terminated argv[] pointer array. Sets the new process's R0 = argc,
-// R1 = argv, and the hardware sp just below the argv array.
+// Build the user stack page and lay out argv/envp on it: strings near the top,
+// then NULL-terminated envp[] and argv[] pointer arrays. Startup registers are
+// R0 = argc, R1 = argv, R2 = envp.
 int setup_user_args(int idx, int pd) {
   int sframe;
-  int total;
+  int argtotal;
+  int envtotal;
   int strbase;
+  int argstr;
+  int envstr;
+  int envaddr;
   int argvaddr;
   int i;
   int avaddr;
@@ -138,25 +194,46 @@ int setup_user_args(int idx, int pd) {
   zero_page(sframe);
   map_page(pd, CFG_USER_STACK_PAGE, sframe, CFG_PTE_USER);
 
-  total = 0;
+  argtotal = 0;
   if (g_argc > 0) {
-    total = arg_off[g_argc - 1];
-    while (argbuf[total] != 0) {
-      total = total + 1;
+    argtotal = arg_off[g_argc - 1];
+    while (argbuf[argtotal] != 0) {
+      argtotal = argtotal + 1;
     }
-    total = total + 1; // include the final string's NUL
+    argtotal = argtotal + 1;
   }
-  strbase = (CFG_USER_STACK_TOP - total) & 0xfffffffc;
-  if (total > 0) {
-    memcpy(sframe + (strbase - CFG_USER_STACK_PAGE), argbuf, total);
+  envtotal = 0;
+  if (g_envc > 0) {
+    envtotal = env_off[g_envc - 1];
+    while (envbuf[envtotal] != 0) {
+      envtotal = envtotal + 1;
+    }
+    envtotal = envtotal + 1;
   }
-  argvaddr = (strbase - (g_argc + 1) * 4) & 0xfffffffc;
+  strbase = (CFG_USER_STACK_TOP - argtotal - envtotal) & 0xfffffffc;
+  argstr = strbase;
+  envstr = strbase + argtotal;
+  if (argtotal > 0) {
+    memcpy(sframe + (argstr - CFG_USER_STACK_PAGE), argbuf, argtotal);
+  }
+  if (envtotal > 0) {
+    memcpy(sframe + (envstr - CFG_USER_STACK_PAGE), envbuf, envtotal);
+  }
+  envaddr = (strbase - (g_envc + 1) * 4) & 0xfffffffc;
+  argvaddr = (envaddr - (g_argc + 1) * 4) & 0xfffffffc;
   if (argvaddr <= CFG_USER_STACK_PAGE) {
     return -CFG_E2BIG;
   }
   i = 0;
+  while (i < g_envc) {
+    avaddr = envstr + env_off[i];
+    write32_at(sframe + (envaddr - CFG_USER_STACK_PAGE) + i * 4, avaddr);
+    i = i + 1;
+  }
+  write32_at(sframe + (envaddr - CFG_USER_STACK_PAGE) + g_envc * 4, 0);
+  i = 0;
   while (i < g_argc) {
-    avaddr = strbase + arg_off[i];
+    avaddr = argstr + arg_off[i];
     write32_at(sframe + (argvaddr - CFG_USER_STACK_PAGE) + i * 4, avaddr);
     i = i + 1;
   }
@@ -164,7 +241,8 @@ int setup_user_args(int idx, int pd) {
 
   proc_table[idx].ctx.regs[0] = g_argc; // R0 = argc
   proc_table[idx].ctx.regs[1] = argvaddr; // R1 = argv
-  i = 2;
+  proc_table[idx].ctx.regs[2] = envaddr; // R2 = envp / libc environ
+  i = 3;
   while (i < 8) {
     proc_table[idx].ctx.regs[i] = 0;
     i = i + 1;
@@ -200,7 +278,7 @@ int spawn(int idx, int path) {
   return 0;
 }
 
-int do_exec(int idx, int upath, int uargv) {
+int do_exec(int idx, int upath, int uargv, int uenvp) {
   int result;
   int old_pd;
   result = copy_path_in(idx, upath);
@@ -209,6 +287,11 @@ int do_exec(int idx, int upath, int uargv) {
     return 0;
   }
   result = build_args_from_user(idx, uargv);
+  if (result < 0) {
+    proc_table[idx].ctx.regs[0] = result;
+    return 0;
+  }
+  result = build_env_from_user(idx, uenvp);
   if (result < 0) {
     proc_table[idx].ctx.regs[0] = result;
     return 0;

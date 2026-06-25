@@ -871,6 +871,7 @@ class Codegen {
     data.push(...this.stringLiterals);
     bss.push({ name: '__stack', size: this.options.cStackSize });
     data.push({ name: '__csp', bytes: new Uint8Array(4), size: 4 });
+    data.push({ name: 'environ', bytes: new Uint8Array(4), size: 4 });
 
     return {
       name: 'c-object',
@@ -901,6 +902,7 @@ class Codegen {
     this.emit(`  MOV R5, __stack`);
     this.emit(`  STORE R5, __csp`);
     if (this.options.start === 'user') {
+      this.emit(`  STORE R2, environ`);
       this.emitPushValueFromReg('R0');
       this.emitPushValueFromReg('R1');
       this.emit(`  CALL ${entry}`);

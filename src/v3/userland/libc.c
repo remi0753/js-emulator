@@ -1,33 +1,10 @@
-// Minimal libc for the Phase 15 guest userland: thin wrappers over the guest
-// kernel's INT 0x80 syscall ABI. Compiled as a freestanding object (start:
-// 'none') and linked into every program; crt0 and the string/memory runtime
-// helpers (memcpy/memset/strlen/strcmp) come from the toolchain runtime.
+// libc for custom32 userland. It provides the syscall boundary plus the small,
+// coherent C/POSIX surface used by the maintained shell and utilities.
 //
 // The syscall-number tokens are substituted by ../guest-kernel.ts so the numbers
 // stay a single source of truth shared with the kernel.
 
-// Last error number, set whenever a syscall wrapper fails. Programs that want
-// the specific cause declare `extern int errno;` and read it after a -1 return.
-int errno;
-
-typedef void (*sighandler_t)(int signal);
-
-struct sigaction {
-  sighandler_t handler;
-  int mask;
-  int flags;
-  int restorer;
-};
-
-struct timespec {
-  int tv_sec;
-  int tv_nsec;
-};
-
-struct timeval {
-  int tv_sec;
-  int tv_usec;
-};
+#include "libc.h"
 
 struct mmap_args {
   int address;
@@ -38,54 +15,15 @@ struct mmap_args {
   int offset;
 };
 
-struct utsname {
-  char sysname[32];
-  char nodename[32];
-  char release[32];
-  char version[32];
-  char machine[32];
-  char domainname[32];
-};
+int errno;
 
-struct dirent {
-  int ino;
-  int offset;
-  int reclen;
-  int type;
-  char name[16];
-};
-
-struct termios {
-  int iflag;
-  int oflag;
-  int cflag;
-  int lflag;
-  int line;
-  int cc[12];
-};
-
-struct winsize {
-  int rows;
-  int cols;
-  int xpixel;
-  int ypixel;
-};
-
-struct stat {
-  int dev;
-  int ino;
-  int mode;
-  int nlink;
-  int uid;
-  int gid;
-  int rdev;
-  int size;
-  int blksize;
-  int blocks;
-  int atime;
-  int mtime;
-  int ctime;
-};
+FILE stdin_object = {0, 1, 0, 0};
+FILE stdout_object = {1, 2, 0, 0};
+FILE stderr_object = {2, 2, 0, 0};
+FILE *stdin = &stdin_object;
+FILE *stdout = &stdout_object;
+FILE *stderr = &stderr_object;
+char minus_text[2] = {45, 0};
 
 sighandler_t signal_handlers[32];
 int signal_current;
@@ -142,7 +80,11 @@ int waitpid(int pid, int *status, int options) {
 }
 
 int exec(char *path, char **argv) {
-  return ret_errno(__syscall(CFG_SYS_EXEC, path, argv, 0));
+  return ret_errno(__syscall(CFG_SYS_EXEC, path, argv, environ));
+}
+
+int execve(char *path, char **argv, char **envp) {
+  return ret_errno(__syscall(CFG_SYS_EXEC, path, argv, envp));
 }
 
 int getpid() {
@@ -383,6 +325,27 @@ void *calloc(int count, int size) {
   return pointer;
 }
 
+void *realloc(void *pointer, int size) {
+  struct heap_block *old_block;
+  void *next;
+  int copy;
+  if (pointer == 0) return malloc(size);
+  if (size <= 0) {
+    free(pointer);
+    return 0;
+  }
+  old_block = pointer;
+  old_block = old_block - 1;
+  if (old_block->size >= size) return pointer;
+  next = malloc(size);
+  if (next == 0) return 0;
+  copy = old_block->size;
+  if (copy > size) copy = size;
+  memcpy(next, pointer, copy);
+  free(pointer);
+  return next;
+}
+
 int gettimeofday(struct timeval *value, void *timezone) {
   return ret_errno(__syscall(CFG_SYS_GETTIMEOFDAY, value, timezone, 0));
 }
@@ -471,4 +434,533 @@ int time() {
 // Power the machine off cleanly. Does not return.
 void shutdown() {
   __syscall(CFG_SYS_SHUTDOWN, 0, 0, 0);
+}
+
+// --- strings and memory ----------------------------------------------------
+
+void *memmove(void *destination, void *source, int length) {
+  char *d;
+  char *s;
+  int i;
+  d = destination;
+  s = source;
+  if (d < s) return memcpy(destination, source, length);
+  i = length - 1;
+  while (i >= 0) {
+    d[i] = s[i];
+    i = i - 1;
+  }
+  return destination;
+}
+
+int memcmp(void *left, void *right, int length) {
+  char *a;
+  char *b;
+  int i;
+  a = left;
+  b = right;
+  i = 0;
+  while (i < length) {
+    if (a[i] != b[i]) return a[i] - b[i];
+    i = i + 1;
+  }
+  return 0;
+}
+
+int strncmp(char *left, char *right, int length) {
+  int i;
+  i = 0;
+  while (i < length) {
+    if (left[i] != right[i]) return left[i] - right[i];
+    if (left[i] == 0) return 0;
+    i = i + 1;
+  }
+  return 0;
+}
+
+char *strcpy(char *destination, char *source) {
+  int i;
+  i = 0;
+  while (source[i] != 0) {
+    destination[i] = source[i];
+    i = i + 1;
+  }
+  destination[i] = 0;
+  return destination;
+}
+
+char *strncpy(char *destination, char *source, int length) {
+  int i;
+  i = 0;
+  while (i < length && source[i] != 0) {
+    destination[i] = source[i];
+    i = i + 1;
+  }
+  while (i < length) {
+    destination[i] = 0;
+    i = i + 1;
+  }
+  return destination;
+}
+
+char *strcat(char *destination, char *source) {
+  int at;
+  int i;
+  at = strlen(destination);
+  i = 0;
+  while (source[i] != 0) {
+    destination[at + i] = source[i];
+    i = i + 1;
+  }
+  destination[at + i] = 0;
+  return destination;
+}
+
+char *strchr(char *text, int character) {
+  int i;
+  i = 0;
+  while (text[i] != 0) {
+    if (text[i] == character) return text + i;
+    i = i + 1;
+  }
+  if (character == 0) return text + i;
+  return 0;
+}
+
+char *strrchr(char *text, int character) {
+  char *found;
+  int i;
+  found = 0;
+  i = 0;
+  while (text[i] != 0) {
+    if (text[i] == character) found = text + i;
+    i = i + 1;
+  }
+  if (character == 0) return text + i;
+  return found;
+}
+
+char *strstr(char *text, char *needle) {
+  int i;
+  int length;
+  length = strlen(needle);
+  if (length == 0) return text;
+  i = 0;
+  while (text[i] != 0) {
+    if (strncmp(text + i, needle, length) == 0) return text + i;
+    i = i + 1;
+  }
+  return 0;
+}
+
+char *strdup(char *text) {
+  char *copy;
+  copy = malloc(strlen(text) + 1);
+  if (copy != 0) strcpy(copy, text);
+  return copy;
+}
+
+int atoi(char *text) {
+  int sign;
+  int value;
+  int i;
+  sign = 1;
+  value = 0;
+  i = 0;
+  if (text[0] == 45) {
+    sign = -1;
+    i = 1;
+  }
+  while (text[i] >= '0' && text[i] <= '9') {
+    value = value * 10 + text[i] - '0';
+    i = i + 1;
+  }
+  return value * sign;
+}
+
+// --- unbuffered stdio ------------------------------------------------------
+
+FILE *fdopen(int fd, char *mode) {
+  FILE *stream;
+  stream = malloc(sizeof(FILE));
+  if (stream == 0) return 0;
+  stream->fd = fd;
+  stream->flags = 0;
+  if (mode[0] == 'r') stream->flags = 1;
+  else stream->flags = 2;
+  stream->error = 0;
+  stream->eof = 0;
+  return stream;
+}
+
+FILE *fopen(char *path, char *mode) {
+  int flags;
+  int fd;
+  flags = 0;
+  if (mode[0] == 'w') flags = 0x601;
+  else if (mode[0] == 'a') flags = 0x201;
+  fd = open(path, flags);
+  if (fd < 0) return 0;
+  if (mode[0] == 'a') lseek(fd, 0, 2);
+  return fdopen(fd, mode);
+}
+
+int fclose(FILE *stream) {
+  int result;
+  if (stream == 0) return -1;
+  result = close(stream->fd);
+  if (stream != stdin && stream != stdout && stream != stderr) free(stream);
+  return result;
+}
+
+int fflush(FILE *stream) {
+  return 0;
+}
+
+int fread(void *buffer, int size, int count, FILE *stream) {
+  char *bytes;
+  int total;
+  int done;
+  int n;
+  if (size <= 0 || count <= 0) return 0;
+  bytes = buffer;
+  total = size * count;
+  done = 0;
+  while (done < total) {
+    n = read(stream->fd, bytes + done, total - done);
+    if (n < 0) {
+      stream->error = 1;
+      break;
+    }
+    if (n == 0) {
+      stream->eof = 1;
+      break;
+    }
+    done = done + n;
+  }
+  return done / size;
+}
+
+int fwrite(void *buffer, int size, int count, FILE *stream) {
+  char *bytes;
+  int total;
+  int done;
+  int n;
+  if (size <= 0 || count <= 0) return 0;
+  bytes = buffer;
+  total = size * count;
+  done = 0;
+  while (done < total) {
+    n = write(stream->fd, bytes + done, total - done);
+    if (n <= 0) {
+      stream->error = 1;
+      break;
+    }
+    done = done + n;
+  }
+  return done / size;
+}
+
+int fgetc(FILE *stream) {
+  char c;
+  if (read(stream->fd, &c, 1) != 1) {
+    stream->eof = 1;
+    return -1;
+  }
+  return c;
+}
+
+int fputc(int character, FILE *stream) {
+  char c;
+  c = character;
+  if (write(stream->fd, &c, 1) != 1) {
+    stream->error = 1;
+    return -1;
+  }
+  return c;
+}
+
+char *fgets(char *buffer, int size, FILE *stream) {
+  int i;
+  int c;
+  if (size <= 0) return 0;
+  i = 0;
+  while (i + 1 < size) {
+    c = fgetc(stream);
+    if (c < 0) break;
+    buffer[i] = c;
+    i = i + 1;
+    if (c == '\n') break;
+  }
+  buffer[i] = 0;
+  if (i == 0) return 0;
+  return buffer;
+}
+
+int fputs(char *text, FILE *stream) {
+  int length;
+  length = strlen(text);
+  if (fwrite(text, 1, length, stream) != length) return -1;
+  return 0;
+}
+
+int puts(char *text) {
+  if (fputs(text, stdout) < 0) return -1;
+  return fputc('\n', stdout);
+}
+
+int printf(char *text) {
+  return fputs(text, stdout);
+}
+
+int fprintf(FILE *stream, char *text) {
+  return fputs(text, stream);
+}
+
+int print_int(int value) {
+  char digits[16];
+  int i;
+  int start;
+  if (value == 0) return write(1, "0", 1);
+  if (value < 0) {
+    write(1, minus_text, 1);
+    value = 0 - value;
+  }
+  i = 0;
+  while (value > 0) {
+    digits[i] = '0' + value % 10;
+    value = value / 10;
+    i = i + 1;
+  }
+  start = i - 1;
+  while (start >= 0) {
+    write(1, digits + start, 1);
+    start = start - 1;
+  }
+  return i;
+}
+
+// --- directories -----------------------------------------------------------
+
+DIR *opendir(char *path) {
+  DIR *directory;
+  int fd;
+  fd = open(path, 0);
+  if (fd < 0) return 0;
+  directory = malloc(sizeof(DIR));
+  if (directory == 0) {
+    close(fd);
+    return 0;
+  }
+  directory->fd = fd;
+  directory->next = 0;
+  directory->count = 0;
+  return directory;
+}
+
+struct dirent *readdir(DIR *directory) {
+  int bytes;
+  if (directory->next >= directory->count) {
+    bytes = getdents(directory->fd, directory->entries,
+      sizeof(struct dirent) * 4);
+    if (bytes <= 0) return 0;
+    directory->count = bytes / sizeof(struct dirent);
+    directory->next = 0;
+  }
+  directory->next = directory->next + 1;
+  return &directory->entries[directory->next - 1];
+}
+
+void rewinddir(DIR *directory) {
+  lseek(directory->fd, 0, 0);
+  directory->next = 0;
+  directory->count = 0;
+}
+
+int closedir(DIR *directory) {
+  int result;
+  result = close(directory->fd);
+  free(directory);
+  return result;
+}
+
+// --- environment -----------------------------------------------------------
+
+int env_name_length(char *entry) {
+  int i;
+  i = 0;
+  while (entry[i] != 0 && entry[i] != '=') i = i + 1;
+  return i;
+}
+
+int env_count(void) {
+  int count;
+  count = 0;
+  if (environ == 0) return 0;
+  while (environ[count] != 0) count = count + 1;
+  return count;
+}
+
+char *getenv(char *name) {
+  int i;
+  int length;
+  length = strlen(name);
+  i = 0;
+  while (environ != 0 && environ[i] != 0) {
+    if (env_name_length(environ[i]) == length &&
+        strncmp(environ[i], name, length) == 0) {
+      return environ[i] + length + 1;
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+int putenv(char *entry) {
+  char **next;
+  int count;
+  int i;
+  int name_length;
+  int replace;
+  count = env_count();
+  name_length = env_name_length(entry);
+  replace = -1;
+  i = 0;
+  while (i < count) {
+    if (env_name_length(environ[i]) == name_length &&
+        strncmp(environ[i], entry, name_length) == 0) {
+      replace = i;
+    }
+    i = i + 1;
+  }
+  next = malloc((count + 2) * 4);
+  if (next == 0) return -1;
+  i = 0;
+  while (i < count) {
+    next[i] = environ[i];
+    i = i + 1;
+  }
+  if (replace >= 0) next[replace] = entry;
+  else {
+    next[count] = entry;
+    count = count + 1;
+  }
+  next[count] = 0;
+  environ = next;
+  return 0;
+}
+
+int setenv(char *name, char *value, int overwrite) {
+  char *entry;
+  int name_length;
+  int value_length;
+  if (strchr(name, '=') != 0 || name[0] == 0) {
+    errno = 22;
+    return -1;
+  }
+  if (overwrite == 0 && getenv(name) != 0) return 0;
+  name_length = strlen(name);
+  value_length = strlen(value);
+  entry = malloc(name_length + value_length + 2);
+  if (entry == 0) return -1;
+  strcpy(entry, name);
+  entry[name_length] = '=';
+  strcpy(entry + name_length + 1, value);
+  return putenv(entry);
+}
+
+int unsetenv(char *name) {
+  char **next;
+  int count;
+  int length;
+  int i;
+  int out;
+  count = env_count();
+  length = strlen(name);
+  next = malloc((count + 1) * 4);
+  if (next == 0) return -1;
+  i = 0;
+  out = 0;
+  while (i < count) {
+    if (env_name_length(environ[i]) != length ||
+        strncmp(environ[i], name, length) != 0) {
+      next[out] = environ[i];
+      out = out + 1;
+    }
+    i = i + 1;
+  }
+  next[out] = 0;
+  environ = next;
+  return 0;
+}
+
+// --- path and time helpers -------------------------------------------------
+
+char basename_buffer[128];
+char dirname_buffer[128];
+
+char *basename(char *path) {
+  int end;
+  int start;
+  int out;
+  end = strlen(path);
+  while (end > 1 && path[end - 1] == '/') end = end - 1;
+  start = end;
+  while (start > 0 && path[start - 1] != '/') start = start - 1;
+  out = 0;
+  while (start < end && out < 127) {
+    basename_buffer[out] = path[start];
+    start = start + 1;
+    out = out + 1;
+  }
+  basename_buffer[out] = 0;
+  return basename_buffer;
+}
+
+char *dirname(char *path) {
+  int end;
+  int out;
+  end = strlen(path);
+  while (end > 1 && path[end - 1] == '/') end = end - 1;
+  while (end > 0 && path[end - 1] != '/') end = end - 1;
+  while (end > 1 && path[end - 1] == '/') end = end - 1;
+  if (end == 0) {
+    dirname_buffer[0] = '.';
+    dirname_buffer[1] = 0;
+    return dirname_buffer;
+  }
+  out = 0;
+  while (out < end && out < 127) {
+    dirname_buffer[out] = path[out];
+    out = out + 1;
+  }
+  dirname_buffer[out] = 0;
+  return dirname_buffer;
+}
+
+int path_join(char *output, int size, char *left, char *right) {
+  int at;
+  int i;
+  if (strlen(left) + strlen(right) + 2 > size) {
+    errno = 36;
+    return -1;
+  }
+  strcpy(output, left);
+  at = strlen(output);
+  if (at > 0 && output[at - 1] != '/') {
+    output[at] = '/';
+    at = at + 1;
+  }
+  i = 0;
+  while (right[i] == '/') i = i + 1;
+  strcpy(output + at, right + i);
+  return 0;
+}
+
+int sleep(int seconds) {
+  struct timespec request;
+  request.tv_sec = seconds;
+  request.tv_nsec = 0;
+  if (nanosleep(&request, 0) < 0) return -1;
+  return 0;
 }

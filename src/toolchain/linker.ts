@@ -15,6 +15,7 @@ export interface LinkOptions {
   textOrigin?: number;
   dataOrigin?: number;
   entry?: string;
+  gcSections?: boolean;
 }
 
 export interface LinkedImage {
@@ -52,7 +53,8 @@ const SHARED_TEXT_LABELS = new Set([
   'strcmp_done',
 ]);
 
-const SHARED_DATA_SYMBOLS = new Set(['__csp', '__stack']);
+const SHARED_DATA_SYMBOLS = new Set(['__csp', '__stack', 'environ']);
+const RESERVED_RUNTIME_DATA_SYMBOLS = new Set(['__csp', '__stack']);
 const DEFAULT_TEXT_ORIGIN = 0x1000;
 
 export function linkExecutable(objects: CompiledObject[], options: LinkOptions = {}): LinkedImage {
@@ -63,7 +65,9 @@ export function linkExecutable(objects: CompiledObject[], options: LinkOptions =
   // Objects may each carry crt0 + the runtime helpers (identical, shared
   // symbols). Drop duplicate label-led blocks so several objects can link
   // together; each object's private labels are already namespaced.
-  const textSource = dedupeText(objects.map((o) => o.text).join('\n'));
+  const dedupedText = dedupeText(objects.map((o) => o.text).join('\n'));
+  const textSource =
+    options.gcSections === false ? dedupedText : eliminateDeadText(dedupedText, entryName);
 
   const textProbe = assemble(textSource, textOrigin, { externals: zeroDataSymbols(objects) });
   const dataOrigin = options.dataOrigin ?? align(textOrigin + textProbe.size, 0x1000);
@@ -135,7 +139,7 @@ function rejectReservedRuntimeDefinitions(objects: CompiledObject[]): void {
         throw new Error(`link: duplicate text symbol: ${name}`);
       }
     }
-    for (const name of SHARED_DATA_SYMBOLS) {
+    for (const name of RESERVED_RUNTIME_DATA_SYMBOLS) {
       if (obj.globals.has(name)) {
         throw new Error(`link: duplicate data symbol: ${name}`);
       }
@@ -155,6 +159,7 @@ export function linkKernelImage(objects: CompiledObject[], options: LinkOptions 
     textOrigin,
     dataOrigin,
     entry: options.entry ?? '_start',
+    gcSections: false,
   });
   const segments = linked.executable.segments;
   assertNoOverlap(segments);
@@ -200,6 +205,56 @@ function dedupeText(text: string): string {
     i = end;
   }
   return out.join('\n');
+}
+
+// Guest executables are statically linked, and Phase 23's libc is intentionally
+// broader than any one utility needs. Keep only label blocks reachable from the
+// selected entry point. Direct calls, jumps, and function-address loads all
+// appear as label tokens in the emitted assembly, so a small graph walk is
+// sufficient; conditional blocks also retain their lexical fallthrough.
+function eliminateDeadText(text: string, entry: string): string {
+  const lines = text.split('\n');
+  const blocks: { name: string; lines: string[] }[] = [];
+  let current: { name: string; lines: string[] } | undefined;
+  for (const line of lines) {
+    const match = /^([A-Za-z_]\w*):$/.exec(line.trim());
+    if (match) {
+      current = { name: match[1]!, lines: [line] };
+      blocks.push(current);
+    } else if (current) {
+      current.lines.push(line);
+    }
+  }
+  const indexes = new Map(blocks.map((block, index) => [block.name, index]));
+  if (!indexes.has(entry)) return text;
+
+  const reachable = new Set<string>();
+  const pending = [entry];
+  while (pending.length > 0) {
+    const name = pending.pop()!;
+    if (reachable.has(name)) continue;
+    reachable.add(name);
+    const index = indexes.get(name);
+    if (index === undefined) continue;
+    const block = blocks[index]!;
+    const body = block.lines.slice(1).join('\n');
+    for (const token of body.match(/[A-Za-z_]\w*/g) ?? []) {
+      if (indexes.has(token) && !reachable.has(token)) pending.push(token);
+    }
+    const instructions = block.lines
+      .slice(1)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    const last = instructions[instructions.length - 1] ?? '';
+    if (!/^(RET|IRET|HLT|JMP)\b/.test(last)) {
+      const next = blocks[index + 1];
+      if (next && !reachable.has(next.name)) pending.push(next.name);
+    }
+  }
+  return blocks
+    .filter((block) => reachable.has(block.name))
+    .flatMap((block) => block.lines)
+    .join('\n');
 }
 
 function assertNoOverlap(segments: KernelImage['segments']): void {
