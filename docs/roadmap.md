@@ -1004,6 +1004,33 @@ chibicc tokenizer / preprocessor / parser / type checker
   static locals, explicit casts, conditional preprocessing, and macro argument
   substitution, plus switch/do-while control flow through the VM.
 
+  Later Phase 32 slices extend this further. The preprocessor gained `#include`
+  (with a pluggable resolver, `#ifndef` include guards, `#pragma once`, and a
+  nesting-depth guard) and the `#` stringize / `##` paste operators; the host
+  `custom32-cc` driver gained `-I` include directories for the chibicc
+  frontend. The declarator parser was replaced with chibicc's recursive
+  double-parse declarator, so nested function pointers, pointer-to-array,
+  function-returning-pointer, and name-less abstract declarators (casts,
+  `sizeof`) all parse through one path. Initializers were rebuilt around
+  chibicc's Initializer tree: designated initializers (`.member =`, `[index] =`,
+  with nested chains), correct aggregate zero-fill for partial local
+  initializers, and pointer/address initializers for globals (`&g`, `&g[i]`
+  with a byte addend, function names, string literals, arrays of string
+  pointers) lowered to `abs32` symbol relocations spliced into the emitted data.
+  Integer promotions were fixed so `unsigned char`/`unsigned short` promote to
+  signed `int` (only int/long-ranked unsigned types stay unsigned), correcting
+  the signedness of division, shifts, and comparisons in the usual arithmetic
+  conversions. These slices add guest-executed coverage for preprocessor
+  includes/stringize/paste, complex declarators, designated/address/zero-fill
+  initializers, and integer-promotion arithmetic in
+  `test/chibicc-phase32.test.ts`.
+
+  Remaining Phase 32 work (not yet implemented): `long long` type/constants/
+  helpers and the 64-bit argument/return ABI; variadic functions
+  (`va_list`/`va_start`/`va_arg`); aggregate call/return (struct/union
+  arguments, small aggregate returns, hidden-pointer returns); bit-fields;
+  compound literals; VLAs; and `float`/`double` through soft-float helpers.
+
   Done when the host cross-compiler can build a broad set of small C conformance
   and regression programs for custom32 and run them deterministically inside the
   guest.
