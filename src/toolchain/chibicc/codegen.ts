@@ -566,7 +566,7 @@ class Generator {
   // shifts, and comparisons go through the `__i64_*`/`__u64_*` runtime helpers
   // (see runtime64.ts), which take the operand words as ordinary 32-bit
   // arguments and return the 64-bit result in R0:R1 (compares return an int).
-  // Helper arguments are pushed right-to-left, like any other call.
+  // Helper arguments are pushed left-to-right, like any other call.
 
   // Map a 64-bit binary node to its runtime helper symbol.
   private helper64(node: Node): string {
@@ -674,26 +674,26 @@ class Generator {
     this.emit('  STORER R2, R1');
   }
 
-  // helper(a_lo, a_hi, b_lo, b_hi) -> R0:R1. Arguments are pushed right-to-left,
-  // so push b (high then low) first, then a (high then low).
+  // helper(a_lo, a_hi, b_lo, b_hi) -> R0:R1. Push left-to-right: a (low then
+  // high), then b (low then high).
   private gen64Binary(node: Node, helper: string): void {
-    this.gen64Value(node.rhs!);
-    this.pushReg('R1'); // b_hi
-    this.pushReg('R0'); // b_lo
     this.gen64Value(node.lhs!);
-    this.pushReg('R1'); // a_hi
     this.pushReg('R0'); // a_lo
+    this.pushReg('R1'); // a_hi
+    this.gen64Value(node.rhs!);
+    this.pushReg('R0'); // b_lo
+    this.pushReg('R1'); // b_hi
     this.emit(`  CALL ${helper}`);
     this.adjustCsp(-4 * 4);
   }
 
   // helper(v_lo, v_hi, amount) -> R0:R1
   private gen64Shift(node: Node, helper: string): void {
-    this.genExpr(node.rhs!); // shift amount (32-bit), pushed first (rightmost)
-    this.push();
     this.gen64Value(node.lhs!);
-    this.pushReg('R1'); // v_hi
     this.pushReg('R0'); // v_lo
+    this.pushReg('R1'); // v_hi
+    this.genExpr(node.rhs!); // shift amount (32-bit)
+    this.push();
     this.emit(`  CALL ${helper}`);
     this.adjustCsp(-3 * 4);
   }
@@ -701,8 +701,8 @@ class Generator {
   // helper(v_lo, v_hi) -> R0:R1
   private gen64Unary(operand: Node, helper: string): void {
     this.gen64Value(operand);
-    this.pushReg('R1'); // v_hi
     this.pushReg('R0'); // v_lo
+    this.pushReg('R1'); // v_hi
     this.emit(`  CALL ${helper}`);
     this.adjustCsp(-2 * 4);
   }
@@ -710,12 +710,12 @@ class Generator {
   // helper(a_lo, a_hi, b_lo, b_hi) -> R0 = -1/0/1, turned into a 0/1 boolean.
   private gen64Compare(node: Node): void {
     const unsigned = isUnsignedInteger(node.lhs?.ty) || isUnsignedInteger(node.rhs?.ty);
-    this.gen64Value(node.rhs!);
-    this.pushReg('R1'); // b_hi
-    this.pushReg('R0'); // b_lo
     this.gen64Value(node.lhs!);
-    this.pushReg('R1'); // a_hi
     this.pushReg('R0'); // a_lo
+    this.pushReg('R1'); // a_hi
+    this.gen64Value(node.rhs!);
+    this.pushReg('R0'); // b_lo
+    this.pushReg('R1'); // b_hi
     this.emit(`  CALL ${unsigned ? '__u64_cmp' : '__i64_cmp'}`);
     this.adjustCsp(-4 * 4);
     // R0 holds the signed comparison result; compare it against 0.
@@ -739,14 +739,12 @@ class Generator {
       this.genBuiltin(node);
       return;
     }
-    // Arguments are pushed right-to-left so the first argument ends up at the
-    // top of the argument area (closest to the frame base), matching
-    // assignOffsets and keeping fixed parameters addressable independent of any
-    // trailing variadic arguments (see docs/custom32-c-abi.md).
+    // Arguments are pushed left-to-right, matching the bootstrap compiler's ABI
+    // (chibicc objects link against bootstrap-compiled crt0/libc, so the two
+    // must agree). A `long long` argument occupies two slots, low word first.
     const args = node.args ?? [];
     let words = 0;
-    for (let k = args.length - 1; k >= 0; k--) {
-      const arg = args[k]!;
+    for (const arg of args) {
       if (is64(arg.ty)) {
         this.gen64Value(arg); // R0=low, R1=high
         this.pushReg('R0'); // low word (lower address)

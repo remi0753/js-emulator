@@ -1682,16 +1682,16 @@ class Parser {
   // positive offsets growing upward.
   private assignOffsets(fn: Obj): void {
     const params = fn.params ?? [];
-    // Arguments are pushed right-to-left, so the first parameter lands at the
-    // top of the argument area (closest to R6) and later ones at progressively
-    // more negative offsets. Each occupies a 4-byte-rounded slot, low word
-    // first, so a `long long` parameter spans two slots. This is independent of
-    // any trailing variadic arguments.
+    // Arguments are pushed left-to-right (matching the bootstrap compiler), so
+    // the first parameter is at the most negative offset from R6. Each occupies
+    // a 4-byte-rounded slot, low word first, so a `long long` parameter spans
+    // two slots.
     const slot = (ty: Type): number => align(Math.max(1, ty.size), 4);
+    const paramBytes = params.reduce((sum, p) => sum + slot(p.ty), 0);
     let acc = 0;
     for (const p of params) {
+      p.offset = -(paramBytes - acc);
       acc += slot(p.ty);
-      p.offset = -acc;
     }
     let cursor = 0;
     for (const local of fn.locals ?? []) {
