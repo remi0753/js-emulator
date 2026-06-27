@@ -129,6 +129,9 @@ export interface Obj {
   isParam?: boolean;
   // Global variable storage.
   initData?: Uint8Array; // initialized bytes, or undefined for bss
+  // Symbol relocations applied over initData (pointer/address initializers):
+  // each writes `&symbol + addend` into the 4 bytes at `offset`.
+  initRelocs?: GReloc[];
   isString?: boolean; // anonymous string-literal storage
   // Function.
   hasBody?: boolean;
@@ -141,6 +144,24 @@ export interface Obj {
 export interface Program {
   // Globals, string literals, and functions in definition order.
   objects: Obj[];
+}
+
+// A relocation applied to a global's initializer bytes.
+export interface GReloc {
+  offset: number;
+  symbol: string;
+  addend: number;
+}
+
+// chibicc's Initializer tree: aggregates carry one child Init per element or
+// member, scalars carry the initializing expression. Absent children stay
+// expr-less and lower to zero (aggregate zero-fill).
+interface Init {
+  ty: Type;
+  expr: Node | null;
+  children: Init[] | null;
+  // For unions, the index of the member selected by the initializer.
+  unionActive?: number;
 }
 
 interface DeclSpec {
@@ -627,141 +648,264 @@ class Parser {
     // type for resolution and emits no storage; a plain `int x;` is a tentative
     // definition that lands in BSS.
     if (!spec.isExtern && this.consume('=')) {
-      obj.initData = this.globalInitializer(ty);
+      const init = this.globalInitializer(ty);
+      obj.initData = init.data;
+      if (init.relocs.length > 0) obj.initRelocs = init.relocs;
     }
     this.globals.set(name, obj);
     this.objects.push(obj);
   }
 
-  // Constant initializer for a scalar global (the slice supports integer
-  // constants; richer initializers arrive with Phase 32).
-  private globalInitializer(ty: Type): Uint8Array {
-    const size = Math.max(1, ty.size);
-    const bytes = new Uint8Array(size);
-    this.writeInitializer(bytes, 0, ty);
-    return bytes;
+  // Constant initializer for a global: build the Init tree, then lower it to
+  // bytes plus symbol relocations (for pointer/address initializers).
+  private globalInitializer(ty: Type): { data: Uint8Array; relocs: GReloc[] } {
+    const init = this.initializer(ty);
+    const data = new Uint8Array(Math.max(1, ty.size));
+    const relocs: GReloc[] = [];
+    this.writeGlobalInit(data, relocs, 0, init);
+    return { data, relocs };
   }
 
   private localInitializer(obj: Obj): Node[] {
+    const init = this.initializer(obj.ty);
     const base: Node = { kind: 'var', line: this.peek().line, variable: obj };
     const out: Node[] = [];
-    this.localInitializerInto(base, obj.ty, out);
+    this.lowerLocalInit(base, init, out);
     return out.map((lhs) => ({ kind: 'exprstmt', line: lhs.line, lhs }));
   }
 
-  private localInitializerInto(lhs: Node, ty: Type, out: Node[]): void {
-    if (this.consume('{')) {
-      if (ty.kind === 'array') {
-        const len = ty.arrayLen ?? 0;
-        for (let i = 0; i < len && !this.equal('}'); i++) {
-          const elem = this.arrayElement(lhs, i);
-          this.localInitializerInto(elem, elementType(ty), out);
-          this.consume(',');
-        }
-        while (!this.equal('}')) {
-          this.assign();
-          this.consume(',');
-        }
-      } else if (ty.kind === 'struct') {
-        for (const member of ty.members ?? []) {
-          if (this.equal('}')) break;
-          const elem: Node = { kind: 'member', line: lhs.line, lhs, member };
-          this.localInitializerInto(elem, member.ty, out);
-          this.consume(',');
-        }
-        while (!this.equal('}')) {
-          this.assign();
-          this.consume(',');
-        }
-      } else if (ty.kind === 'union') {
-        const member = ty.members?.[0];
-        if (member && !this.equal('}')) {
-          this.localInitializerInto(
-            { kind: 'member', line: lhs.line, lhs, member },
-            member.ty,
-            out,
-          );
-          this.consume(',');
-        }
-        while (!this.equal('}')) {
-          this.assign();
-          this.consume(',');
-        }
-      } else if (!this.equal('}')) {
-        out.push({ kind: 'assign', line: lhs.line, lhs, rhs: this.assign() });
-        this.consume(',');
-      }
-      this.expect('}');
-      return;
-    }
+  // --- initializer tree (chibicc's Initializer) ----------------------------
 
-    if (ty.kind === 'array' && elementType(ty).kind === 'char' && this.peek().kind === 'str') {
-      const str = this.peek().str;
-      this.pos++;
-      const n = Math.min(str.length, ty.arrayLen ?? 0);
-      for (let i = 0; i < n; i++) {
-        out.push({
-          kind: 'assign',
-          line: lhs.line,
-          lhs: this.arrayElement(lhs, i),
-          rhs: { kind: 'num', line: lhs.line, value: str[i]! },
-        });
-      }
-      return;
-    }
-
-    out.push({ kind: 'assign', line: lhs.line, lhs, rhs: this.assign() });
+  // Parse an initializer for `ty` into an Init tree. Aggregates allocate a child
+  // Init per element/member; absent children stay expr-less and lower to zero.
+  private initializer(ty: Type): Init {
+    const init = this.newInit(ty);
+    this.initializer2(init);
+    return init;
   }
 
-  private writeInitializer(bytes: Uint8Array, off: number, ty: Type): void {
-    if (this.consume('{')) {
-      if (ty.kind === 'array') {
-        const len = ty.arrayLen ?? 0;
-        const elem = elementType(ty);
-        for (let i = 0; i < len && !this.equal('}'); i++) {
-          this.writeInitializer(bytes, off + i * elem.size, elem);
-          this.consume(',');
-        }
-        while (!this.equal('}')) {
-          this.assign();
-          this.consume(',');
-        }
-      } else if (ty.kind === 'struct') {
-        for (const member of ty.members ?? []) {
-          if (this.equal('}')) break;
-          this.writeInitializer(bytes, off + member.offset, member.ty);
-          this.consume(',');
-        }
-        while (!this.equal('}')) {
-          this.assign();
-          this.consume(',');
-        }
-      } else if (ty.kind === 'union') {
-        const member = ty.members?.[0];
-        if (member && !this.equal('}')) {
-          this.writeInitializer(bytes, off + member.offset, member.ty);
-          this.consume(',');
-        }
-        while (!this.equal('}')) {
-          this.assign();
-          this.consume(',');
-        }
-      } else if (!this.equal('}')) {
-        this.writeScalar(bytes, off, ty, this.evalConst(this.assign()));
-        this.consume(',');
-      }
+  private newInit(ty: Type): Init {
+    if (ty.kind === 'array') {
+      const elem = elementType(ty);
+      const len = ty.arrayLen ?? 0;
+      return { ty, expr: null, children: Array.from({ length: len }, () => this.newInit(elem)) };
+    }
+    if (ty.kind === 'struct' || ty.kind === 'union') {
+      return { ty, expr: null, children: (ty.members ?? []).map((m) => this.newInit(m.ty)) };
+    }
+    return { ty, expr: null, children: null };
+  }
+
+  private initializer2(init: Init): void {
+    const ty = init.ty;
+    if (ty.kind === 'array' && elementType(ty).kind === 'char' && this.peek().kind === 'str') {
+      this.stringInit(init);
+      return;
+    }
+    if (this.equal('{')) {
+      if (ty.kind === 'array') return this.arrayInit(init);
+      if (ty.kind === 'struct') return this.structInit(init);
+      if (ty.kind === 'union') return this.unionInit(init);
+      // A scalar wrapped in braces: `int x = { 5 };`.
+      this.expect('{');
+      if (!this.equal('}')) init.expr = this.assign();
+      this.consume(',');
       this.expect('}');
       return;
     }
+    init.expr = this.assign();
+  }
 
-    if (ty.kind === 'array' && elementType(ty).kind === 'char' && this.peek().kind === 'str') {
-      const str = this.peek().str;
+  private stringInit(init: Init): void {
+    const str = this.peek().str;
+    const line = this.peek().line;
+    this.pos++;
+    const children = init.children ?? [];
+    const n = Math.min(str.length, children.length);
+    for (let i = 0; i < n; i++) {
+      children[i]!.expr = { kind: 'num', line, value: str[i]! };
+    }
+  }
+
+  private arrayInit(init: Init): void {
+    this.expect('{');
+    const children = init.children ?? [];
+    for (let i = 0; !this.consumeEnd(); ) {
+      if (i > 0) this.expect(',');
+      if (this.equal('[')) {
+        this.pos++;
+        i = this.constIndex();
+        this.expect(']');
+        if (i < children.length) this.designationTail(children[i]!);
+        else this.error('array designator out of range');
+        i++;
+        continue;
+      }
+      if (i < children.length) this.initializer2(children[i]!);
+      else this.skipInitializer();
+      i++;
+    }
+  }
+
+  private structInit(init: Init): void {
+    this.expect('{');
+    const members = init.ty.members ?? [];
+    const children = init.children ?? [];
+    for (let mi = 0; !this.consumeEnd(); ) {
+      if (mi > 0) this.expect(',');
+      if (this.equal('.')) {
+        this.pos++;
+        const name = this.expectIdent();
+        mi = members.findIndex((m) => m.name === name);
+        if (mi < 0) this.error(`struct has no member '${name}'`);
+        this.designationTail(children[mi]!);
+        mi++;
+        continue;
+      }
+      if (mi < members.length) this.initializer2(children[mi]!);
+      else this.skipInitializer();
+      mi++;
+    }
+  }
+
+  private unionInit(init: Init): void {
+    this.expect('{');
+    const members = init.ty.members ?? [];
+    const children = init.children ?? [];
+    let active = 0;
+    if (this.equal('.')) {
       this.pos++;
-      bytes.set(str.slice(0, Math.min(str.length, ty.size)), off);
+      const name = this.expectIdent();
+      active = members.findIndex((m) => m.name === name);
+      if (active < 0) this.error(`union has no member '${name}'`);
+      this.designationTail(children[active]!);
+    } else if (!this.equal('}') && children.length > 0) {
+      this.initializer2(children[0]!);
+    }
+    init.unionActive = active;
+    this.consume(',');
+    this.expect('}');
+  }
+
+  // Parse the tail of a designator: further `[index]` / `.member` designators,
+  // then `=` and the value, into `init`.
+  private designationTail(init: Init): void {
+    if (this.equal('[')) {
+      this.pos++;
+      const i = this.constIndex();
+      this.expect(']');
+      this.designationTail((init.children ?? [])[i]!);
       return;
     }
+    if (this.equal('.')) {
+      this.pos++;
+      const name = this.expectIdent();
+      const members = init.ty.members ?? [];
+      const mi = members.findIndex((m) => m.name === name);
+      if (mi < 0) this.error(`aggregate has no member '${name}'`);
+      if (init.ty.kind === 'union') init.unionActive = mi;
+      this.designationTail((init.children ?? [])[mi]!);
+      return;
+    }
+    this.consume('=');
+    this.initializer2(init);
+  }
 
-    this.writeScalar(bytes, off, ty, this.evalConst(this.assign()));
+  // Consume the closing brace of an initializer list, allowing a trailing comma.
+  private consumeEnd(): boolean {
+    if (this.consume('}')) return true;
+    if (this.equal(',') && this.peek(1).text === '}') {
+      this.pos += 2;
+      return true;
+    }
+    return false;
+  }
+
+  // Skip an excess initializer (more initializers than the aggregate has slots).
+  private skipInitializer(): void {
+    if (this.equal('{')) {
+      this.pos++;
+      let depth = 1;
+      while (depth > 0 && !this.isEof()) {
+        if (this.equal('{')) depth++;
+        else if (this.equal('}')) depth--;
+        this.pos++;
+      }
+      return;
+    }
+    this.assign();
+  }
+
+  private constIndex(): number {
+    const v = this.evalConst(this.assign());
+    if (v < 0) this.error('negative array designator');
+    return v;
+  }
+
+  // Lower an Init tree to assignment statements for a local object, zero-filling
+  // every leaf that has no initializing expression.
+  private lowerLocalInit(lhs: Node, init: Init, out: Node[]): void {
+    const ty = init.ty;
+    if (ty.kind === 'array') {
+      const children = init.children ?? [];
+      for (let i = 0; i < children.length; i++) {
+        this.lowerLocalInit(this.arrayElement(lhs, i), children[i]!, out);
+      }
+      return;
+    }
+    if (ty.kind === 'struct') {
+      const members = ty.members ?? [];
+      const children = init.children ?? [];
+      for (let mi = 0; mi < members.length; mi++) {
+        const elem: Node = { kind: 'member', line: lhs.line, lhs, member: members[mi]! };
+        this.lowerLocalInit(elem, children[mi]!, out);
+      }
+      return;
+    }
+    if (ty.kind === 'union') {
+      const active = init.unionActive ?? 0;
+      const member = ty.members?.[active];
+      const child = (init.children ?? [])[active];
+      if (member && child) {
+        const elem: Node = { kind: 'member', line: lhs.line, lhs, member };
+        this.lowerLocalInit(elem, child, out);
+      }
+      return;
+    }
+    const rhs: Node = init.expr ?? { kind: 'num', line: lhs.line, value: 0 };
+    out.push({ kind: 'assign', line: lhs.line, lhs, rhs });
+  }
+
+  // Lower an Init tree to global initializer bytes plus symbol relocations.
+  private writeGlobalInit(bytes: Uint8Array, relocs: GReloc[], off: number, init: Init): void {
+    const ty = init.ty;
+    if (ty.kind === 'array') {
+      const elem = elementType(ty);
+      const children = init.children ?? [];
+      for (let i = 0; i < children.length; i++) {
+        this.writeGlobalInit(bytes, relocs, off + i * elem.size, children[i]!);
+      }
+      return;
+    }
+    if (ty.kind === 'struct') {
+      const members = ty.members ?? [];
+      const children = init.children ?? [];
+      for (let mi = 0; mi < members.length; mi++) {
+        this.writeGlobalInit(bytes, relocs, off + (members[mi]!.offset ?? 0), children[mi]!);
+      }
+      return;
+    }
+    if (ty.kind === 'union') {
+      const active = init.unionActive ?? 0;
+      const member = ty.members?.[active];
+      const child = (init.children ?? [])[active];
+      if (member && child) this.writeGlobalInit(bytes, relocs, off + (member.offset ?? 0), child);
+      return;
+    }
+    if (!init.expr) return; // zero-filled
+    const c = this.evalConstReloc(init.expr);
+    if (c.label) relocs.push({ offset: off, symbol: c.label, addend: c.value });
+    else this.writeScalar(bytes, off, ty, c.value);
   }
 
   private writeScalar(bytes: Uint8Array, off: number, ty: Type, value: number): void {
@@ -770,6 +914,63 @@ class Parser {
     for (let i = 0; i < n; i++) {
       bytes[off + i] = v & 0xff;
       v >>>= 8;
+    }
+  }
+
+  // Evaluate a relocatable constant: a plain integer, or a label (symbol
+  // address) plus an integer addend, for pointer/address initializers.
+  private evalConstReloc(node: Node): { label?: string; value: number } {
+    switch (node.kind) {
+      case 'addr':
+        return this.evalConstAddr(node.lhs!);
+      case 'var': {
+        const obj = node.variable!;
+        // Arrays and functions decay to their address.
+        if (obj.ty.kind === 'array' || obj.ty.kind === 'func') {
+          if (obj.isLocal) this.error('initializer is not a constant expression');
+          return { label: obj.name, value: 0 };
+        }
+        this.error('initializer is not a constant expression');
+        break;
+      }
+      case 'cast':
+        return this.evalConstReloc(node.lhs!);
+      case 'add': {
+        const l = this.evalConstReloc(node.lhs!);
+        const r = this.evalConstReloc(node.rhs!);
+        if (l.label && r.label) this.error('initializer is not a constant expression');
+        return { label: l.label ?? r.label, value: (l.value + r.value) | 0 };
+      }
+      case 'sub': {
+        const l = this.evalConstReloc(node.lhs!);
+        const r = this.evalConstReloc(node.rhs!);
+        if (r.label) this.error('initializer is not a constant expression');
+        return { label: l.label, value: (l.value - r.value) | 0 };
+      }
+      default:
+        return { value: this.evalConst(node) };
+    }
+  }
+
+  // Evaluate the address of an lvalue as a label plus an integer addend.
+  private evalConstAddr(node: Node): { label: string; value: number } {
+    switch (node.kind) {
+      case 'var': {
+        const obj = node.variable!;
+        if (obj.isLocal) this.error('initializer is not a constant expression');
+        return { label: obj.name, value: 0 };
+      }
+      case 'member': {
+        const base = this.evalConstAddr(node.lhs!);
+        return { label: base.label, value: base.value + (node.member?.offset ?? 0) };
+      }
+      case 'deref': {
+        const r = this.evalConstReloc(node.lhs!);
+        if (!r.label) this.error('initializer is not a constant expression');
+        return { label: r.label, value: r.value };
+      }
+      default:
+        this.error('initializer is not a constant expression');
     }
   }
 
@@ -811,7 +1012,11 @@ class Parser {
       if (ty.kind === 'void') this.error(`variable '${name}' declared void`);
       if (spec.isStatic) {
         const obj = this.newStaticLocal(name, ty);
-        if (this.consume('=')) obj.initData = this.globalInitializer(ty);
+        if (this.consume('=')) {
+          const init = this.globalInitializer(ty);
+          obj.initData = init.data;
+          if (init.relocs.length > 0) obj.initRelocs = init.relocs;
+        }
         continue;
       }
       const obj = this.newLocal(name, ty);

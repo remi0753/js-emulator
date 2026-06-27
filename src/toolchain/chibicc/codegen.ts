@@ -20,7 +20,7 @@
 // to it is future work tracked in that document's migration notes.
 
 import { SYSCALL_INT } from '../../isa.ts';
-import type { Node, Obj, Program } from './parse.ts';
+import type { GReloc, Node, Obj, Program } from './parse.ts';
 import { isUnsignedInteger } from './type.ts';
 
 export class CodegenError extends Error {
@@ -112,7 +112,7 @@ class Generator {
     const size = Math.max(1, obj.ty.size);
     if (obj.initData) {
       this.data.push(`${obj.name}:`);
-      this.emitBytes(this.data, obj.initData);
+      this.emitInitData(this.data, obj.initData, obj.initRelocs ?? []);
       if (size > obj.initData.length) this.data.push(`  .space ${size - obj.initData.length}`);
       return;
     }
@@ -120,9 +120,26 @@ class Generator {
     this.bss.push(`  .space ${size}`);
   }
 
-  private emitBytes(out: string[], bytes: Uint8Array): void {
-    for (let i = 0; i < bytes.length; i += 16) {
-      out.push(`  .byte ${[...bytes.slice(i, i + 16)].join(',')}`);
+  // Emit initializer data, splicing in `.word symbol+addend` at each relocation
+  // slot (the assembler turns the symbol operand into an abs32 relocation) and
+  // emitting the surrounding bytes as `.byte` runs.
+  private emitInitData(out: string[], bytes: Uint8Array, relocs: GReloc[]): void {
+    const sorted = [...relocs].sort((a, b) => a.offset - b.offset);
+    let i = 0;
+    let r = 0;
+    while (i < bytes.length) {
+      if (r < sorted.length && sorted[r]!.offset === i) {
+        const { symbol, addend } = sorted[r]!;
+        out.push(`  .word ${addend !== 0 ? `${symbol}+${addend}` : symbol}`);
+        i += 4;
+        r++;
+        continue;
+      }
+      const end = r < sorted.length ? Math.min(bytes.length, sorted[r]!.offset) : bytes.length;
+      for (let j = i; j < end; j += 16) {
+        out.push(`  .byte ${[...bytes.slice(j, Math.min(j + 16, end))].join(',')}`);
+      }
+      i = end;
     }
   }
 

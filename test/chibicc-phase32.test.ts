@@ -375,6 +375,59 @@ int main(void) {
 }
 `;
 
+const INITIALIZER_SRC = `
+struct Point { int x; int y; int z; };
+
+int gnum = 42;
+int *pnum = &gnum;                 /* pointer to a global */
+char *greeting = "Hi";             /* pointer to a string literal */
+char *names[2] = { "ab", "cde" };  /* array of string pointers */
+struct Point gp = { .z = 3, .x = 1 };  /* designated, y zero-filled */
+int arr[4] = { 0, 0, 7, 0 };
+int *mid = &arr[2];                /* &g[i] with a byte addend */
+int one(void) { return 1; }
+int (*fp)(void) = one;             /* function-pointer initializer */
+
+int slen(char *s) {
+  int n = 0;
+  while (s[n]) { n = n + 1; }
+  return n;
+}
+
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+
+int putnum(int v) {
+  char buf[12];
+  int i = 11;
+  buf[11] = 0;
+  if (v == 0) { return puts("0"); }
+  while (v > 0) {
+    i = i - 1;
+    buf[i] = 48 + v % 10;
+    v = v / 10;
+  }
+  return puts(buf + i);
+}
+
+int main(void) {
+  int total = 0;
+  total = total + *pnum;                       /* 42 */
+  total = total + slen(greeting);              /* + 2 = 44 */
+  total = total + slen(names[0]) + slen(names[1]); /* + 2 + 3 = 49 */
+  total = total + gp.x + gp.y + gp.z;          /* 1 + 0 + 3 = + 4 = 53 */
+  int a[4] = { [1] = 10, [3] = 30 };           /* local designated + zero-fill */
+  total = total + a[0] + a[1] + a[2] + a[3];   /* 0+10+0+30 = + 40 = 93 */
+  struct Point lp = { .y = 5 };                /* local zero-fill */
+  total = total + lp.x + lp.y + lp.z;          /* + 5 = 98 */
+  total = total + fp();                        /* + 1 = 99 */
+  total = total + *mid;                        /* arr[2] = 7 -> + 7 = 106 */
+  puts("init=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+
 function linkProgram(src: string, name: string): Uint8Array {
   return linkGuestExecutable([crt0Object(), compileObject(src, { name })]);
 }
@@ -456,6 +509,16 @@ test('chibicc Phase 32 frontend accepts typedef, enum, struct, and initializers'
     compile('int g[3]; int (*ap)[3]; int *f(void){return g;} int main(void){return 0;}'),
   );
   assert.match(compile(DECLARATOR_SRC), /\.global get_storage/);
+  // Initializers: pointer/address globals emit relocations; designators parse.
+  const initAsm = compile(INITIALIZER_SRC);
+  assert.match(initAsm, /\.word gnum/); // pnum = &gnum
+  assert.match(initAsm, /\.word arr\+8/); // mid = &arr[2]
+  assert.match(initAsm, /\.word one/); // fp = one
+  assert.match(initAsm, /\.word \.L\.str\.\d+/); // greeting/names string pointers
+  assert.match(
+    compile('struct S{int x;int y;}; struct S s = {.y=9}; int main(void){return s.y;}'),
+    /\.global s/,
+  );
 });
 
 test('chibicc Phase 32 aggregate program runs deterministically in the guest', () => {
@@ -496,6 +559,16 @@ test('chibicc Phase 32 conditional preprocessing runs in the guest', () => {
 
   const out = bootAndRun(disk, 'preproc');
   assert.ok(out.includes('preproc=42\n'), `missing preprocessor result in:\n${out}`);
+});
+
+test('chibicc Phase 32 initializers run in the guest', () => {
+  const disk = buildGuestDiskImage();
+  const fs = installFs(disk);
+  fs.writeFile('/bin/initz', linkProgram(INITIALIZER_SRC, 'initz.o'));
+  fs.chmod('/bin/initz', 0o755);
+
+  const out = bootAndRun(disk, 'initz');
+  assert.ok(out.includes('init=106\n'), `missing initializer result in:\n${out}`);
 });
 
 test('chibicc Phase 32 complex declarators run in the guest', () => {
