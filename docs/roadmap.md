@@ -846,22 +846,36 @@ chibicc tokenizer / preprocessor / parser / type checker
   existing compiler path has a documented migration path away from its
   bootstrap-only conventions.
 
-- **Phase 29** ⬜ define object files, archives, and host assembler/linker tools.
+- **Phase 29** ✅ define object files, archives, and host assembler/linker tools.
 
-  Make the project object format explicit: section headers, text/data/bss
-  sections, symbol tables, local/global/undefined symbols, relocations, string
-  tables, archive members, library search, executable output, and deterministic
-  output ordering. Add an object/archive dumper so failing link tests can be
-  inspected without reading binary blobs by hand.
+  Made the project object format explicit. A relocatable object
+  (`src/formats/object.ts`, magic `OBJ1`) carries text/data/bss sections, a
+  symbol table (local/global/undefined/abs symbols), an `abs32` relocation
+  table, and a string table, serialized in deterministic order. Static archives
+  (`src/formats/archive.ts`, magic `AJR1`) hold ordered object members and back
+  on-demand library search. A relocatable assembler
+  (`src/toolchain/as.ts`) turns assembly into objects — every label becomes a
+  symbol and every identifier operand an `abs32` relocation — with `.text`/
+  `.data`/`.bss`/`.global`/`.word`/`.byte`/`.string`/`.space` directives and
+  `name+N` addends. The object linker (`src/toolchain/object-linker.ts`)
+  resolves globals/undefineds, pulls archive members to a fixed point, lays out
+  sections at concrete addresses, applies relocations, and emits either the
+  guest loadable header or the generic JEX container. An object/archive dumper
+  (`src/toolchain/dump.ts`) renders sections, symbols, and relocations.
 
-  Turn the existing assembler and linker pieces into command-line host tools:
-  `custom32-as`, `custom32-ld`, and `custom32-ar`. They should support multiple
-  translation units, static archives, absolute code/data relocations, and
-  executables consumable by the guest loader.
+  Turned these pieces into command-line host tools — `custom32-as`,
+  `custom32-ld`, `custom32-ar`, and `custom32-objdump` (`tools/custom32-*.ts`,
+  also `npm run as|ld|ar|objdump` and `bin` entries) — supporting multiple
+  translation units, static archives, `-L`/`-l` library search, absolute
+  code/data relocations, and executables consumable by the guest loader. The
+  format and tools are documented in `docs/custom32-objfmt.md`.
 
-  Done when hand-written assembly objects and archives can be assembled, linked,
-  dumped, installed into a disk image, executed inside the guest, and verified
-  by stdout plus exit status.
+  Done: `test/object-toolchain-phase29.test.ts` assembles hand-written `puts`/
+  `putdigit` helpers into `libio.a`, links `/bin/child` and `/bin/hello` against
+  it (pulling only the needed members), dumps the objects/archive, installs the
+  executables into a disk image, boots the guest, and verifies that `hello`
+  forks/execs `child` and reports its decoded exit status (`child exited 7`) —
+  exercised both in-process and through the four CLIs.
 
 - **Phase 30** ⬜ add a host `custom32-cc` driver and ABI smoke suite.
 

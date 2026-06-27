@@ -9,11 +9,21 @@
     "gen:c-headers": "node tools/gen-c-headers.ts",
     "build:img": "node tools/mkimg.ts",
     "boot": "node tools/boot.ts",
+    "as": "node tools/custom32-as.ts",
+    "ld": "node tools/custom32-ld.ts",
+    "ar": "node tools/custom32-ar.ts",
+    "objdump": "node tools/custom32-objdump.ts",
     "demo": "node demo/multitask.ts",
     "demo:v3": "node demo/v3.ts",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "check": "biome check --write ."
+  },
+  "bin": {
+    "custom32-as": "tools/custom32-as.ts",
+    "custom32-ld": "tools/custom32-ld.ts",
+    "custom32-ar": "tools/custom32-ar.ts",
+    "custom32-objdump": "tools/custom32-objdump.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
