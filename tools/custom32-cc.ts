@@ -47,6 +47,20 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+function needsChibiccI64Runtime(objects: ObjectFile[]): boolean {
+  return objects.some((obj) =>
+    obj.symbols.some(
+      (sym) =>
+        sym.section === 'undef' &&
+        (sym.name.startsWith('__i64_') ||
+          sym.name.startsWith('__u64_') ||
+          /^__(add|sub|mul|div)[sd]f3$/.test(sym.name) ||
+          /^__cmp[sd]f2$/.test(sym.name) ||
+          /^__(float|fix|extend|trunc)/.test(sym.name)),
+    ),
+  );
+}
+
 function parseInt32(value: string): number {
   const n = value.startsWith('0x') ? Number.parseInt(value, 16) : Number.parseInt(value, 10);
   if (!Number.isFinite(n)) fail(`invalid number: ${value}`);
@@ -162,7 +176,10 @@ function main(argv: string[]): void {
   }
 
   // Stage 2: link. crt0 (startup + runtime) is linked first unless suppressed.
-  const chibiccRuntimes = frontend === 'chibicc' && !noStartFiles ? [i64RuntimeObject()] : [];
+  const chibiccRuntimes =
+    frontend === 'chibicc' && !noStartFiles && needsChibiccI64Runtime(objects)
+      ? [i64RuntimeObject()]
+      : [];
   if (frontend === 'chibicc' && !noStartFiles) archives.push(floatRuntimeArchive());
   const linkInputs = noStartFiles ? objects : [crt0Object(), ...objects, ...chibiccRuntimes];
   if (linkInputs.length === 0) fail('no objects to link');
