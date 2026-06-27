@@ -915,7 +915,7 @@ chibicc tokenizer / preprocessor / parser / type checker
   `argv[0]`/`environ[0]`) and the decoded child exit status (`child exited 7`) —
   exercised both in-process and through the `custom32-cc` CLI.
 
-- **Phase 31** ⬜ import a real C frontend and land the first custom32 backend
+- **Phase 31** ✅ import a real C frontend and land the first custom32 backend
   slice.
 
   Vendor or mirror the chosen chibicc revision in a clearly isolated toolchain
@@ -931,9 +931,39 @@ chibicc tokenizer / preprocessor / parser / type checker
   variables, `if`, `while`, function calls, global data, string literals, and
   `return`.
 
-  Done when a host-built custom32 C compiler compiles
-  `int main(void) { return 42; }`, assembles and links the result, runs it in the
-  guest, and observes exit status 42.
+  Added a real C frontend in the isolated `src/toolchain/chibicc/` directory: a
+  TypeScript port of chibicc's architecture (Rui Ueyama, MIT), structured to
+  mirror upstream's file split — `tokenize.ts`, `preprocess.ts`, `type.ts`,
+  `parse.ts` — with the target-dependent pieces split out into `codegen.ts`, the
+  custom32 backend. The whole project implements its CPU/OS/toolchain in
+  TypeScript and has no host C compiler in its pipeline, so chibicc is ported
+  rather than vendored as buildable C; `PROVENANCE.md` records the mapping, the
+  slice scope, and the ABI decision. The frontend (tokenizer, minimal object-like
+  macro preprocessor, parser, `add_type`) is target independent; the only
+  target-specific surfaces are the ABI type sizes in `type.ts` (sourced from
+  `docs/custom32-c-abi.md`) and all of `codegen.ts`.
+
+  The Phase 31 slice covers integer expressions (arithmetic/bitwise/shift/
+  comparison/logical/unary), `int`/`char`/`void` with pointers and arrays, local/
+  parameter/global variables, string and character literals, `if`/`while`/`for`/
+  `break`/`continue`/`return`/blocks, function definitions, prototypes, and direct
+  calls, plus the `__syscall` intrinsic for libc-free programs. Pointer-arithmetic
+  scaling and `a[i]` desugaring happen in the parser (chibicc's `new_add`/
+  `new_sub`), so the backend never reasons about element sizes. `codegen.ts` emits
+  the same software-stack ABI as the bootstrap compiler, so chibicc objects
+  assemble through `as.ts` and link against the existing, tested `crt0Object()`
+  startup/runtime and bootstrap libc through the Phase 29 object pipeline. The
+  host driver gains a `custom32-cc --frontend chibicc` switch that swaps just the
+  `.c` compilation while reusing the whole assemble/link/install flow; the
+  hardware-`SP` ABI migration in `docs/custom32-c-abi.md` remains future work.
+
+  Done: `test/chibicc-phase31.test.ts` compiles `int main(void) { return 42; }`
+  with the host-built chibicc compiler, assembles and links it, installs it as
+  `/bin/ret42`, boots the guest, and a chibicc-compiled launcher (exercising
+  globals, char arrays, pointer indexing, `while`/`if`, the operator set, calls,
+  string literals, and `__syscall`) forks/execs it, waits, and reports the decoded
+  exit status `ret42 exited 42` — exercised both in-process and through the
+  `custom32-cc --frontend chibicc` CLI.
 
 - **Phase 32** ⬜ broaden C language support for real programs.
 

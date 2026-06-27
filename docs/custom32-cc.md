@@ -115,6 +115,24 @@ the console output (`compute=117`, the child's echoed `argv[0]`/`environ[0]`, an
 which also asserts the CLI-built executable matches the in-process pipeline byte
 for byte.
 
+## Selecting the C frontend (Phase 31)
+
+`custom32-cc --frontend chibicc` swaps just the `.c` compilation step from the
+bootstrap compiler (`src/toolchain/c.ts`) to the real C frontend in
+[`src/toolchain/chibicc/`](../src/toolchain/chibicc/), while reusing the whole
+assemble → link → install flow above. The default remains `--frontend
+bootstrap`.
+
+The chibicc frontend is a TypeScript port of
+[chibicc](https://github.com/rui314/chibicc)'s architecture, kept isolated so the
+imported frontend (`tokenize.ts`/`preprocess.ts`/`type.ts`/`parse.ts`) stays
+separate from the custom32 backend (`codegen.ts`); see
+[`PROVENANCE.md`](../src/toolchain/chibicc/PROVENANCE.md). Its Phase 31 slice
+emits the same software-stack ABI as the bootstrap compiler, so chibicc objects
+link against the same `crt0Object()` and bootstrap libc. The end-to-end coverage
+is `test/chibicc-phase31.test.ts`, which builds `int main(void) { return 42; }`
+through this driver, boots the guest, and observes exit status 42.
+
 ## npm scripts
 
 `npm run cc` invokes the driver; it is also exposed as the `bin` entry
