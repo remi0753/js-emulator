@@ -435,18 +435,25 @@ class Parser {
     if (this.consume('(')) {
       if (this.consume('*')) {
         const name = this.expectIdent();
+        const inner = this.typeSuffix(pointerTo(base));
         this.expect(')');
         if (this.equal('(')) {
           const fn = this.funcParams(base);
-          return { ty: pointerTo(fn), name };
+          return { ty: this.retargetFunctionPointer(inner, fn), name };
         }
-        return { ty: this.typeSuffix(pointerTo(base)), name };
+        return { ty: inner, name };
       }
       this.error('unsupported parenthesized declarator');
     }
     const name = this.expectIdent();
     ty = this.typeSuffix(ty);
     return { ty, name };
+  }
+
+  private retargetFunctionPointer(ty: Type, fn: Type): Type {
+    if (ty.kind === 'ptr') return pointerTo(fn);
+    if (ty.kind === 'array') return arrayOf(this.retargetFunctionPointer(elementType(ty), fn), ty.arrayLen ?? 0);
+    this.error('expected a function pointer declarator');
   }
 
   // type-name = declspec abstract-declarator

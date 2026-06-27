@@ -34,6 +34,7 @@ enum {
 Pair global = { 1, 40, 2 };
 char word[4] = "abc";
 op ops[2];
+int (*direct_ops[2])(int, int);
 
 int add(int a, int b) { return a + b; }
 int mul(int a, int b) { return a * b; }
@@ -65,8 +66,11 @@ int main(void) {
   op fp = add;
   ops[0] = add;
   ops[1] = mul;
+  direct_ops[0] = add;
+  direct_ops[1] = mul;
   int total = sizeof(Pair) + sizeof(p.tag) + pp->a + p.b + global.a + global.b + word[1] + STEP;
   total = total + ops[0](4, 5) + ops[1](6, 7) + fp(10, 5);
+  total = total + direct_ops[0](3, 4) + direct_ops[1](2, 8);
   puts("phase32=");
   putnum(total);
   puts("\\n");
@@ -276,7 +280,7 @@ test('chibicc Phase 32 aggregate program runs deterministically in the guest', (
   fs.chmod('/bin/phase32', 0o755);
 
   const out = bootAndRun(disk, 'phase32');
-  assert.ok(out.includes('phase32=237\n'), `missing phase32 result in:\n${out}`);
+  assert.ok(out.includes('phase32=260\n'), `missing phase32 result in:\n${out}`);
 });
 
 test('chibicc Phase 32 unsigned arithmetic and zero-extension run in the guest', () => {

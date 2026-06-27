@@ -987,8 +987,10 @@ chibicc tokenizer / preprocessor / parser / type checker
   `.`/`->` member access, scalar/aggregate/string initializers, and short
   load/store codegen. It also supports function-pointer typedef declarators
   such as `typedef int (*op)(int, int)`, function-name decay to code addresses,
-  and indirect calls through variables or array elements using `CALLR`. Unsigned
-  integer types now select unsigned comparisons, division/remainder, logical
+  direct function-pointer array declarators such as
+  `int (*ops[2])(int, int)`, and indirect calls through variables or array
+  elements using `CALLR`. Unsigned integer types now select unsigned comparisons,
+  division/remainder, logical
   right shift, and zero-extending byte/halfword loads. Function-local `static`
   objects are emitted as internal data/BSS symbols, casts now support scalar
   narrowing/sign-extension for the integer subset, and the preprocessor handles
@@ -997,8 +999,9 @@ chibicc tokenizer / preprocessor / parser / type checker
   `test/chibicc-phase32.test.ts`, including guest-executed programs that exercise
   typedefs, enums, struct padding, aggregate globals/locals, char-array string
   initialization, member access, 16-bit fields, function-pointer dispatch,
-  unsigned arithmetic, persistent static locals, explicit casts, conditional
-  preprocessing, and macro argument substitution through the VM.
+  direct function-pointer array declarators, unsigned arithmetic, persistent
+  static locals, explicit casts, conditional preprocessing, and macro argument
+  substitution through the VM.
 
   Done when the host cross-compiler can build a broad set of small C conformance
   and regression programs for custom32 and run them deterministically inside the
