@@ -1045,17 +1045,21 @@ chibicc tokenizer / preprocessor / parser / type checker
   for aggregate calls/returns, bit-field layout/signedness/boundaries,
   compound literal lifetime, and VLA stack allocation/runtime sizeof.
 
+  The cross-compiler software-stack ABI has now moved to right-to-left argument
+  staging in both the bootstrap compiler (`src/toolchain/c.ts`) and the chibicc
+  backend, including crt0/runtime helper assembly offsets. This gives fixed
+  parameters stable frame offsets independent of trailing argument count.
+  chibicc now accepts variadic prototypes/definitions, provides a built-in
+  `stdarg.h` with `va_list`, `va_start`, `va_arg`, and `va_end`, and lowers
+  `va_arg` over the current upward-growing `__csp` stack by pre-decrementing
+  the saved boundary pointer. Guest-executed ABI tests cover mixed variadic
+  arguments (`int`, `long long`, pointer, and aggregate) plus bootstrap↔chibicc
+  cross-object calls after the ABI migration.
+
   Remaining Phase 32 work (not yet implemented): `float`/`double` arithmetic,
   comparison, conversion, and constants through soft-float helpers. The parser
   recognizes `float` and `double` type names, but arithmetic is rejected until
-  the helper runtime is added. Variadic functions
-  (`va_list`/`va_start`/`va_arg`) are deferred: they require the first parameter
-  to sit at a fixed frame offset independent of trailing arguments, which needs
-  the documented right-to-left push order in both the chibicc backend and the
-  bootstrap compiler (`src/toolchain/c.ts`) that builds crt0/libc/kernel — a
-  cross-compiler ABI change out of scope for the current slice. The chibicc
-  backend therefore stays on the bootstrap compiler's left-to-right convention
-  and emits a targeted diagnostic for `...` parameter lists.
+  the helper runtime is added.
 
   Done when the host cross-compiler can build a broad set of small C conformance
   and regression programs for custom32 and run them deterministically inside the

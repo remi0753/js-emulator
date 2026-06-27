@@ -24,9 +24,34 @@ export interface CompileOptions {
   resolveInclude?: IncludeResolver;
 }
 
+const BUILTIN_INCLUDES = new Map<string, string>([
+  [
+    'stdarg.h',
+    `#ifndef __CUSTOM32_STDARG_H
+#define __CUSTOM32_STDARG_H
+typedef char *va_list;
+#define va_start(ap, last) __builtin_va_start(ap, last)
+#define va_arg(ap, ty) __builtin_va_arg(ap, ty)
+#define va_end(ap) ((void)0)
+#endif
+`,
+  ],
+]);
+
+function resolveIncludeWithBuiltins(
+  resolver: IncludeResolver | undefined,
+): IncludeResolver | undefined {
+  return (name, isAngle) => {
+    const resolved = resolver?.(name, isAngle);
+    if (resolved) return resolved;
+    const builtin = BUILTIN_INCLUDES.get(name);
+    return builtin === undefined ? undefined : { path: `<${name}>`, text: builtin };
+  };
+}
+
 // Parse and type-check a translation unit into a typed program.
 function frontend(source: string, options: CompileOptions = {}): Program {
-  const program = parse(preprocess(source, options.resolveInclude));
+  const program = parse(preprocess(source, resolveIncludeWithBuiltins(options.resolveInclude)));
   for (const obj of program.objects) {
     if (obj.isFunction && obj.bodyNode) addType(obj.bodyNode);
   }

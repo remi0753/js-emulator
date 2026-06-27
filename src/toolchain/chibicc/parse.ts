@@ -87,7 +87,9 @@ export type NodeKind =
   | 'member'
   | 'cast'
   | 'compoundlit'
-  | 'vlaalloc';
+  | 'vlaalloc'
+  | 'vastart'
+  | 'vaarg';
 
 export interface Node {
   kind: NodeKind;
@@ -121,6 +123,8 @@ export interface Node {
   initStmts?: Node[];
   vlaLen?: Node;
   vlaSizeObj?: Obj;
+  vaList?: Node;
+  vaParam?: Obj;
   // Switch cases.
   cases?: { value: number; body: Node }[];
   defaultCase?: Node;
@@ -607,13 +611,15 @@ class Parser {
   private funcParams(returnType: Type): Type {
     this.expect('(');
     const params: Type[] = [];
+    let isVariadic = false;
     this.pendingParams = [];
     if (this.equal('void') && this.peek(1).text === ')') {
       this.pos++;
     } else if (!this.equal(')')) {
       do {
         if (this.consume('...')) {
-          this.error('variadic functions require the pending custom32 ABI migration');
+          isVariadic = true;
+          break;
         }
         const spec = this.declspec();
         const { ty, name } = this.paramDeclarator(spec.ty);
@@ -624,7 +630,7 @@ class Parser {
       } while (this.consume(','));
     }
     this.expect(')');
-    return funcType(returnType, params);
+    return funcType(returnType, params, isVariadic);
   }
 
   private paramDeclarator(base: Type): { ty: Type; name?: string } {
@@ -1487,6 +1493,8 @@ class Parser {
 
     if (t.kind === 'ident') {
       this.pos++;
+      if (t.text === '__builtin_va_start' && this.equal('(')) return this.vaStart(t.line);
+      if (t.text === '__builtin_va_arg' && this.equal('(')) return this.vaArg(t.line);
       if (this.equal('(')) return this.funcall(t.text, t.line);
       const enumValue = this.findEnum(t.text);
       if (enumValue !== undefined && !this.findLocal(t.text) && !this.globals.has(t.text)) {
@@ -1497,6 +1505,30 @@ class Parser {
     }
 
     this.error(`unexpected token '${t.text}'`);
+  }
+
+  private vaStart(line: number): Node {
+    this.expect('(');
+    const ap = this.assign();
+    this.expect(',');
+    const name = this.expectIdent();
+    this.expect(')');
+    const obj = this.findLocal(name);
+    if (!obj?.isParam) this.error('va_start second argument must be a parameter');
+    return { kind: 'vastart', line, vaList: ap, vaParam: obj, ty: tyVoid };
+  }
+
+  private vaArg(line: number): Node {
+    this.expect('(');
+    const ap = this.assign();
+    this.expect(',');
+    const ty = this.typeName();
+    this.expect(')');
+    const node: Node = { kind: 'vaarg', line, vaList: ap, castType: ty, ty };
+    if (isAggregate(ty) && this.currentFn) {
+      node.variable = this.newLocal(`.vaarg.${this.anonCount++}`, ty);
+    }
+    return node;
   }
 
   private compoundLiteral(ty: Type, line: number): Node {
@@ -1823,18 +1855,17 @@ class Parser {
   // positive offsets growing upward.
   private assignOffsets(fn: Obj): void {
     const params = fn.params ?? [];
-    // Arguments are pushed left-to-right (matching the bootstrap compiler), so
-    // the first parameter is at the most negative offset from R6. Each occupies
-    // a 4-byte-rounded slot, low word first, so a `long long` parameter spans
-    // two slots.
+    // Arguments are pushed right-to-left, so each fixed parameter's offset is
+    // independent of any trailing variadic arguments. Each occupies a
+    // 4-byte-rounded slot, low word first, so a `long long` parameter spans two
+    // slots.
     const slot = (ty: Type): number => align(Math.max(1, ty.size), 4);
     const hiddenReturnBytes = isAggregate(fn.ty.returnType) ? 4 : 0;
-    const paramBytes = hiddenReturnBytes + params.reduce((sum, p) => sum + slot(p.ty), 0);
-    fn.returnBufferOffset = hiddenReturnBytes > 0 ? -paramBytes : undefined;
+    fn.returnBufferOffset = hiddenReturnBytes > 0 ? -hiddenReturnBytes : undefined;
     let acc = hiddenReturnBytes;
     for (const p of params) {
-      p.offset = -(paramBytes - acc);
       acc += slot(p.ty);
+      p.offset = -acc;
     }
     let cursor = 0;
     for (const local of fn.locals ?? []) {

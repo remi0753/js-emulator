@@ -47,6 +47,7 @@ export interface Type {
   // Return and parameter types for `func`.
   returnType?: Type;
   params?: Type[];
+  isVariadic?: boolean;
   // Members for `struct` / `union`.
   members?: Member[];
   tag?: string;
@@ -79,8 +80,8 @@ export function vlaOf(base: Type, len: Node): Type {
   return { kind: 'array', size: 4, align: 4, base, isVLA: true, vlaLen: len };
 }
 
-export function funcType(returnType: Type, params: Type[]): Type {
-  return { kind: 'func', size: 1, align: 1, returnType, params };
+export function funcType(returnType: Type, params: Type[], isVariadic = false): Type {
+  return { kind: 'func', size: 1, align: 1, returnType, params, isVariadic };
 }
 
 export function structType(members: Member[], size: number, align: number, tag?: string): Type {
@@ -160,6 +161,7 @@ export function addType(node: Node | null | undefined): void {
   addType(node.funcExpr);
   for (const stmt of node.initStmts ?? []) addType(stmt);
   addType(node.vlaLen);
+  addType(node.vaList);
 
   switch (node.kind) {
     case 'add':
@@ -225,6 +227,12 @@ export function addType(node: Node | null | undefined): void {
       return;
     case 'vlaalloc':
       node.ty = tyVoid;
+      return;
+    case 'vastart':
+      node.ty = tyVoid;
+      return;
+    case 'vaarg':
+      node.ty = node.castType ?? tyInt;
       return;
     case 'cast':
       node.ty = node.castType ?? tyInt;

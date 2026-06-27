@@ -163,6 +163,8 @@ The migration path is:
 
 Current compatibility status: the bootstrap compiler now emits signed
 `IDIV`/`IMOD`, arithmetic `SAR` for signed `int >>`, and benefits from
-overflow-aware signed branches. It does not yet implement `short`, `long`,
-`long long`, unsigned integer types, floats, doubles, variadics, bit-fields, or
-the hardware-`SP` function ABI.
+overflow-aware signed branches. Its software-stack call ABI now stages
+arguments right-to-left to match the chibicc backend and keep fixed-parameter
+frame offsets independent of variadic argument count. It does not yet implement
+`short`, `long`, `long long`, unsigned integer types, floats, doubles,
+source-level variadic functions, bit-fields, or the hardware-`SP` function ABI.

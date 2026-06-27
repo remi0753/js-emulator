@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { Fs } from '../src/storage/fs.ts';
 import { PortBlockDevice } from '../src/storage/port-block-device.ts';
-import { crt0Object } from '../src/toolchain/cc.ts';
+import { compileObject as bootstrapCompileObject, crt0Object } from '../src/toolchain/cc.ts';
 import { compile, compileObject } from '../src/toolchain/chibicc/index.ts';
 import { i64RuntimeObject } from '../src/toolchain/chibicc/runtime64.ts';
 import { linkGuestExecutable } from '../src/v3/guest-cc.ts';
@@ -658,6 +658,117 @@ int main(void) {
 }
 `;
 
+const VARIADIC_SRC = `
+#include <stdarg.h>
+
+struct Pair { int a; int b; };
+
+int slen(char *s) {
+  int n = 0;
+  while (s[n]) { n = n + 1; }
+  return n;
+}
+
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+
+int putnum(int v) {
+  char buf[12];
+  int i = 11;
+  buf[11] = 0;
+  if (v == 0) { return puts("0"); }
+  while (v > 0) {
+    i = i - 1;
+    buf[i] = 48 + v % 10;
+    v = v / 10;
+  }
+  return puts(buf + i);
+}
+
+int collect(int fixed, ...) {
+  va_list ap;
+  va_start(ap, fixed);
+  int a = va_arg(ap, int);
+  long long wide = va_arg(ap, long long);
+  char *s = va_arg(ap, char *);
+  struct Pair p = va_arg(ap, struct Pair);
+  va_end(ap);
+  return fixed + a + (int)wide + s[1] + p.a + p.b;
+}
+
+int main(void) {
+  struct Pair p = { 2, 4 };
+  int total = collect(5, 7, 40LL, "az", p);
+  puts("variadic=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+
+const BOOTSTRAP_ABI_CALLER_SRC = `
+extern int mix(int a, int b, int c);
+
+int slen(char *s) {
+  int n = 0;
+  while (s[n]) { n = n + 1; }
+  return n;
+}
+
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+
+int putnum(int v) {
+  char buf[12];
+  int i = 11;
+  buf[11] = 0;
+  if (v == 0) { return puts("0"); }
+  while (v > 0) {
+    i = i - 1;
+    buf[i] = 48 + v % 10;
+    v = v / 10;
+  }
+  return puts(buf + i);
+}
+
+int main(void) {
+  puts("boot-to-chibicc=");
+  putnum(mix(1, 2, 3));
+  puts("\\n");
+  return 0;
+}
+`;
+
+const CHIBICC_ABI_CALLER_SRC = `
+extern int bmix(int a, int b, int c);
+
+int slen(char *s) {
+  int n = 0;
+  while (s[n]) { n = n + 1; }
+  return n;
+}
+
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+
+int putnum(int v) {
+  char buf[12];
+  int i = 11;
+  buf[11] = 0;
+  if (v == 0) { return puts("0"); }
+  while (v > 0) {
+    i = i - 1;
+    buf[i] = 48 + v % 10;
+    v = v / 10;
+  }
+  return puts(buf + i);
+}
+
+int main(void) {
+  puts("chibicc-to-boot=");
+  putnum(bmix(4, 5, 6));
+  puts("\\n");
+  return 0;
+}
+`;
+
 function linkProgram(src: string, name: string): Uint8Array {
   return linkGuestExecutable([crt0Object(), compileObject(src, { name })]);
 }
@@ -733,7 +844,7 @@ test('chibicc Phase 32 frontend accepts typedef, enum, struct, and initializers'
     () => compile('#include "missing.h"\n', { resolveInclude: () => undefined }),
     /cannot find include/,
   );
-  assert.throws(() => compile('#include "x.h"\n'), /not supported/);
+  assert.throws(() => compile('#include "x.h"\n'), /cannot find include/);
   // Declarators: pointer-to-array, function-returning-pointer, abstract types.
   assert.equal(
     compile('int main(void) { return sizeof(int (*)(int)); }').match(/MOV R0, 4/)?.length,
@@ -779,8 +890,8 @@ test('chibicc Phase 32 frontend accepts typedef, enum, struct, and initializers'
   const compoundVlaAsm = compile(COMPOUND_VLA_SRC);
   assert.match(compoundVlaAsm, /\.L\.compound\./);
   assert.match(compoundVlaAsm, /STORE R5, __csp/);
-  // Variadics still require the cross-compiler ABI migration documented in the roadmap.
-  assert.throws(() => compile('int f(int a, ...){ return a; }'), /ABI migration/);
+  assert.doesNotThrow(() => compile('int f(int a, ...){ return a; }'));
+  assert.match(compile(VARIADIC_SRC), /LOADR R0, R0/);
   assert.throws(
     () => compile('float f(float a, float b){ return a + b; }'),
     /invalid operands to \+/,
@@ -915,4 +1026,50 @@ test('chibicc Phase 32 compound literals and VLAs run in the guest', () => {
 
   const out = bootAndRun(disk, 'compound-vla');
   assert.ok(out.includes('compound-vla=59\n'), `missing compound/VLA result in:\n${out}`);
+});
+
+test('chibicc Phase 32 variadic va_list traversal runs in the guest', () => {
+  const disk = buildGuestDiskImage();
+  const fs = installFs(disk);
+  fs.writeFile('/bin/variadic', linkProgram(VARIADIC_SRC, 'variadic.o'));
+  fs.chmod('/bin/variadic', 0o755);
+
+  const out = bootAndRun(disk, 'variadic');
+  assert.ok(out.includes('variadic=180\n'), `missing variadic result in:\n${out}`);
+});
+
+test('chibicc Phase 32 right-to-left ABI crosses bootstrap and chibicc objects', () => {
+  const disk = buildGuestDiskImage();
+  const fs = installFs(disk);
+  fs.writeFile(
+    '/bin/b2c',
+    linkGuestExecutable([
+      crt0Object(),
+      bootstrapCompileObject(BOOTSTRAP_ABI_CALLER_SRC, {
+        name: 'boot-caller.o',
+        moduleId: 'bootcaller',
+      }),
+      compileObject('int mix(int a, int b, int c) { return a * 100 + b * 10 + c; }', {
+        name: 'chibicc-callee.o',
+      }),
+    ]),
+  );
+  fs.chmod('/bin/b2c', 0o755);
+  fs.writeFile(
+    '/bin/c2b',
+    linkGuestExecutable([
+      crt0Object(),
+      compileObject(CHIBICC_ABI_CALLER_SRC, { name: 'chibicc-caller.o' }),
+      bootstrapCompileObject('int bmix(int a, int b, int c) { return a * 100 + b * 10 + c; }', {
+        name: 'boot-callee.o',
+        moduleId: 'bootcallee',
+      }),
+    ]),
+  );
+  fs.chmod('/bin/c2b', 0o755);
+
+  const out1 = bootAndRun(disk, 'b2c');
+  assert.ok(out1.includes('boot-to-chibicc=123\n'), `missing bootstrap->chibicc ABI in:\n${out1}`);
+  const out2 = bootAndRun(disk, 'c2b');
+  assert.ok(out2.includes('chibicc-to-boot=456\n'), `missing chibicc->bootstrap ABI in:\n${out2}`);
 });

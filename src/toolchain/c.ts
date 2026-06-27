@@ -903,8 +903,8 @@ class Codegen {
     this.emit(`  STORE R5, __csp`);
     if (this.options.start === 'user') {
       this.emit(`  STORE R2, environ`);
-      this.emitPushValueFromReg('R0');
       this.emitPushValueFromReg('R1');
+      this.emitPushValueFromReg('R0');
       this.emit(`  CALL ${entry}`);
       this.emitAdjustCsp(-8);
       this.emit(`  MOVR R1, R0`);
@@ -918,14 +918,13 @@ class Codegen {
 
   private emitFunction(fn: FuncDecl): void {
     const paramScope = new Map<string, LocalDecl>();
-    const paramBytes = fn.params.length * 4;
     for (let i = 0; i < fn.params.length; i++) {
       const p = fn.params[i]!;
       paramScope.set(p.name, {
         name: p.name,
         type: p.type,
         init: null,
-        offset: -(paramBytes - i * 4),
+        offset: -((i + 1) * 4),
       });
     }
     this.scopes = [paramScope];
@@ -1356,7 +1355,8 @@ class Codegen {
     const isVar = !!this.lookupLocal(expr.callee) || this.globals.has(expr.callee);
     const indirect = isVar && !this.functions.has(expr.callee);
     const variableType = indirect ? this.resolveVar(expr.callee) : undefined;
-    for (const arg of expr.args) {
+    for (let i = expr.args.length - 1; i >= 0; i--) {
+      const arg = expr.args[i]!;
       this.emitExpr(arg);
       this.emitPushValueFromReg('R0');
     }
@@ -1380,7 +1380,8 @@ class Codegen {
   // preserves its declared return type for subsequent pointer arithmetic and
   // dereferences.
   private emitCallPtr(expr: Extract<Expr, { kind: 'callptr' }>): CType {
-    for (const arg of expr.args) {
+    for (let i = expr.args.length - 1; i >= 0; i--) {
+      const arg = expr.args[i]!;
       this.emitExpr(arg);
       this.emitPushValueFromReg('R0');
     }
@@ -1778,7 +1779,7 @@ memcpy:
   PUSH R6
   LOAD R6, __csp
   MOVR R1, R6
-  MOV R7, 12
+  MOV R7, 4
   SUB R1, R7
   LOADR R2, R1
   MOVR R1, R6
@@ -1786,7 +1787,7 @@ memcpy:
   SUB R1, R7
   LOADR R3, R1
   MOVR R1, R6
-  MOV R7, 4
+  MOV R7, 12
   SUB R1, R7
   LOADR R4, R1
   MOVR R0, R2
@@ -1809,7 +1810,7 @@ memset:
   PUSH R6
   LOAD R6, __csp
   MOVR R1, R6
-  MOV R7, 12
+  MOV R7, 4
   SUB R1, R7
   LOADR R2, R1
   MOVR R1, R6
@@ -1817,7 +1818,7 @@ memset:
   SUB R1, R7
   LOADR R3, R1
   MOVR R1, R6
-  MOV R7, 4
+  MOV R7, 12
   SUB R1, R7
   LOADR R4, R1
   MOVR R0, R2
@@ -1859,11 +1860,11 @@ strcmp:
   PUSH R6
   LOAD R6, __csp
   MOVR R1, R6
-  MOV R7, 8
+  MOV R7, 4
   SUB R1, R7
   LOADR R2, R1
   MOVR R1, R6
-  MOV R7, 4
+  MOV R7, 8
   SUB R1, R7
   LOADR R3, R1
 strcmp_loop:

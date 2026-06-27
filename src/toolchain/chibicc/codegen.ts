@@ -15,7 +15,7 @@
 //     arguments and locals; the hardware SP only carries return addresses.
 //   - R6 is the frame base. Parameters sit at negative offsets (the caller
 //     pushed them), locals at positive offsets.
-//   - Arguments are pushed left-to-right; the caller pops them after the call.
+//   - Arguments are pushed right-to-left; the caller pops them after the call.
 // The hardware-SP ABI in docs/custom32-c-abi.md is the eventual target; moving
 // to it is future work tracked in that document's migration notes.
 
@@ -118,6 +118,10 @@ class Generator {
     this.emit(`  MOV R7, ${Math.abs(delta)}`);
     this.emit(delta >= 0 ? '  ADD R5, R7' : '  SUB R5, R7');
     this.emit('  STORE R5, __csp');
+  }
+
+  private slotSize(ty: Node['ty']): number {
+    return Math.floor((Math.max(1, ty?.size ?? 4) + 3) / 4) * 4;
   }
 
   // --- globals -------------------------------------------------------------
@@ -355,6 +359,12 @@ class Generator {
           return;
         }
         break;
+      case 'vaarg':
+        if (isAggregate(node.ty)) {
+          this.genVaArg(node);
+          return;
+        }
+        break;
       default:
         break;
     }
@@ -517,6 +527,55 @@ class Generator {
     this.emit('  STORE R5, __csp');
   }
 
+  private genVaStart(node: Node): void {
+    this.genAddr(node.vaList!);
+    this.push();
+    this.genAddr({
+      kind: 'var',
+      line: node.line,
+      variable: node.vaParam,
+      ty: node.vaParam?.ty,
+    });
+    this.pop('R1');
+    this.emit('  STORER R1, R0');
+    this.emit('  MOV R0, 0');
+  }
+
+  // With the current upward-growing software stack, right-to-left calls place
+  // variadic arguments below the fixed arguments. `va_list` therefore stores a
+  // boundary pointer and each `va_arg` pre-decrements it by the requested slot.
+  private advanceVaList(node: Node): void {
+    const size = this.slotSize(node.castType);
+    this.genAddr(node.vaList!);
+    this.push(); // address of the va_list object
+    this.emit('  LOADR R0, R0');
+    this.emit(`  MOV R7, ${size}`);
+    this.emit('  SUB R0, R7');
+    this.emit('  MOVR R2, R0');
+    this.pop('R1');
+    this.emit('  STORER R1, R2');
+    this.emit('  MOVR R0, R2');
+  }
+
+  private genVaArg(node: Node): void {
+    this.advanceVaList(node);
+    if (isAggregate(node.castType)) {
+      if (!node.variable) throw new CodegenError('aggregate va_arg without a temporary');
+      this.push();
+      this.genAddr({ kind: 'var', line: node.line, variable: node.variable, ty: node.variable.ty });
+      this.emit('  MOVR R1, R0');
+      this.pop('R0');
+      this.copyBytes(Math.max(1, node.castType?.size ?? 1));
+      this.genAddr({ kind: 'var', line: node.line, variable: node.variable, ty: node.variable.ty });
+      return;
+    }
+    if (is64(node.castType)) {
+      this.load64();
+      return;
+    }
+    this.load({ kind: 'deref', line: node.line, lhs: node.vaList, ty: node.castType });
+  }
+
   private genExpr(node: Node): void {
     // 64-bit values live in the R0(low):R1(high) pair and take a separate path.
     if (is64(node.ty)) {
@@ -560,6 +619,12 @@ class Generator {
         return;
       case 'vlaalloc':
         this.genVlaAlloc(node);
+        return;
+      case 'vastart':
+        this.genVaStart(node);
+        return;
+      case 'vaarg':
+        this.genVaArg(node);
         return;
       case 'funcall':
         this.genCall(node);
@@ -737,7 +802,7 @@ class Generator {
   // shifts, and comparisons go through the `__i64_*`/`__u64_*` runtime helpers
   // (see runtime64.ts), which take the operand words as ordinary 32-bit
   // arguments and return the 64-bit result in R0:R1 (compares return an int).
-  // Helper arguments are pushed left-to-right, like any other call.
+  // Helper arguments are pushed right-to-left, like any other call.
 
   // Map a 64-bit binary node to its runtime helper symbol.
   private helper64(node: Node): string {
@@ -789,6 +854,9 @@ class Generator {
         return;
       case 'funcall':
         this.genCall(node); // result returns in R0:R1
+        return;
+      case 'vaarg':
+        this.genVaArg(node);
         return;
       case 'neg':
         this.gen64Unary(node.lhs!, '__i64_neg');
@@ -845,26 +913,25 @@ class Generator {
     this.emit('  STORER R2, R1');
   }
 
-  // helper(a_lo, a_hi, b_lo, b_hi) -> R0:R1. Push left-to-right: a (low then
-  // high), then b (low then high).
+  // helper(a_lo, a_hi, b_lo, b_hi) -> R0:R1.
   private gen64Binary(node: Node, helper: string): void {
-    this.gen64Value(node.lhs!);
-    this.pushReg('R0'); // a_lo
-    this.pushReg('R1'); // a_hi
     this.gen64Value(node.rhs!);
-    this.pushReg('R0'); // b_lo
     this.pushReg('R1'); // b_hi
+    this.pushReg('R0'); // b_lo
+    this.gen64Value(node.lhs!);
+    this.pushReg('R1'); // a_hi
+    this.pushReg('R0'); // a_lo
     this.emit(`  CALL ${helper}`);
     this.adjustCsp(-4 * 4);
   }
 
   // helper(v_lo, v_hi, amount) -> R0:R1
   private gen64Shift(node: Node, helper: string): void {
-    this.gen64Value(node.lhs!);
-    this.pushReg('R0'); // v_lo
-    this.pushReg('R1'); // v_hi
     this.genExpr(node.rhs!); // shift amount (32-bit)
     this.push();
+    this.gen64Value(node.lhs!);
+    this.pushReg('R1'); // v_hi
+    this.pushReg('R0'); // v_lo
     this.emit(`  CALL ${helper}`);
     this.adjustCsp(-3 * 4);
   }
@@ -872,8 +939,8 @@ class Generator {
   // helper(v_lo, v_hi) -> R0:R1
   private gen64Unary(operand: Node, helper: string): void {
     this.gen64Value(operand);
-    this.pushReg('R0'); // v_lo
     this.pushReg('R1'); // v_hi
+    this.pushReg('R0'); // v_lo
     this.emit(`  CALL ${helper}`);
     this.adjustCsp(-2 * 4);
   }
@@ -881,12 +948,12 @@ class Generator {
   // helper(a_lo, a_hi, b_lo, b_hi) -> R0 = -1/0/1, turned into a 0/1 boolean.
   private gen64Compare(node: Node): void {
     const unsigned = isUnsignedInteger(node.lhs?.ty) || isUnsignedInteger(node.rhs?.ty);
-    this.gen64Value(node.lhs!);
-    this.pushReg('R0'); // a_lo
-    this.pushReg('R1'); // a_hi
     this.gen64Value(node.rhs!);
-    this.pushReg('R0'); // b_lo
     this.pushReg('R1'); // b_hi
+    this.pushReg('R0'); // b_lo
+    this.gen64Value(node.lhs!);
+    this.pushReg('R1'); // a_hi
+    this.pushReg('R0'); // a_lo
     this.emit(`  CALL ${unsigned ? '__u64_cmp' : '__i64_cmp'}`);
     this.adjustCsp(-4 * 4);
     // R0 holds the signed comparison result; compare it against 0.
@@ -910,35 +977,19 @@ class Generator {
       this.genBuiltin(node);
       return;
     }
-    // Arguments are pushed left-to-right, matching the bootstrap compiler's ABI
+    // Arguments are pushed right-to-left, matching the bootstrap compiler's ABI
     // (chibicc objects link against bootstrap-compiled crt0/libc, so the two
     // must agree). A `long long` argument occupies two slots, low word first.
     const args = node.args ?? [];
     let words = 0;
+    for (let i = args.length - 1; i >= 0; i--) {
+      words += this.pushCallArg(args[i]!);
+    }
     if (isAggregate(node.funcReturn)) {
       if (!node.variable) throw new CodegenError('aggregate call without a return buffer');
       this.genAddr({ kind: 'var', line: node.line, variable: node.variable, ty: node.variable.ty });
       this.push();
       words += 1;
-    }
-    for (const arg of args) {
-      if (is64(arg.ty)) {
-        this.gen64Value(arg); // R0=low, R1=high
-        this.pushReg('R0'); // low word (lower address)
-        this.pushReg('R1'); // high word (higher address)
-        words += 2;
-      } else if (isAggregate(arg.ty)) {
-        this.genAddr(arg);
-        this.emit('  LOAD R1, __csp');
-        this.copyBytes(Math.max(1, arg.ty?.size ?? 1));
-        const bytes = Math.floor((Math.max(1, arg.ty?.size ?? 1) + 3) / 4) * 4;
-        this.adjustCsp(bytes);
-        words += bytes / 4;
-      } else {
-        this.genExpr(arg);
-        this.push();
-        words += 1;
-      }
     }
     if (node.funcExpr) {
       this.genExpr(node.funcExpr);
@@ -950,6 +1001,26 @@ class Generator {
     if (isAggregate(node.funcReturn) && node.variable) {
       this.genAddr({ kind: 'var', line: node.line, variable: node.variable, ty: node.variable.ty });
     }
+  }
+
+  private pushCallArg(arg: Node): number {
+    if (is64(arg.ty)) {
+      this.gen64Value(arg); // R0=low, R1=high
+      this.pushReg('R0'); // low word (lower address)
+      this.pushReg('R1'); // high word (higher address)
+      return 2;
+    }
+    if (isAggregate(arg.ty)) {
+      this.genAddr(arg);
+      this.emit('  LOAD R1, __csp');
+      this.copyBytes(Math.max(1, arg.ty?.size ?? 1));
+      const bytes = this.slotSize(arg.ty);
+      this.adjustCsp(bytes);
+      return bytes / 4;
+    }
+    this.genExpr(arg);
+    this.push();
+    return 1;
   }
 
   // Target intrinsics. The slice supports `__syscall` (the userland trap) plus a
