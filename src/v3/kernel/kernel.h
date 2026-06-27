@@ -468,7 +468,7 @@ extern struct chardev chardev_table[CFG_NCHARDEV];
 extern struct irq_slot irq_table[CFG_NIRQ];
 extern struct vnode_ops sys_vnode_ops;
 void device_init(void);
-void register_chardev(
+int register_chardev(
   int major, char *name, int mode, vnode_io_fn read, vnode_io_fn write
 );
 int chardev_lookup(char *name);

@@ -26,6 +26,10 @@ struct tmp_node {
 struct tmp_node tmp_nodes[CFG_NTMPNODE];
 char proc_text[512]; // scratch for /proc status and maps text
 
+int proc_text_size(void) {
+  return 512;
+}
+
 void vnode_clear(struct vnode *node) {
   memset(node, 0, sizeof(struct vnode));
 }
@@ -374,34 +378,76 @@ int append_number(char *dst, int at, int value) {
   return at;
 }
 
+int proc_append_char(int at, int c) {
+  if (at < proc_text_size()) {
+    proc_text[at] = c;
+  }
+  return at + 1;
+}
+
+int proc_append_text(int at, char *text) {
+  int i;
+  i = 0;
+  while (text[i] != 0) {
+    at = proc_append_char(at, text[i]);
+    i = i + 1;
+  }
+  return at;
+}
+
+int proc_append_number(int at, int value) {
+  char digits[12];
+  int n;
+  int i;
+  if (value == 0) {
+    return proc_append_char(at, '0');
+  }
+  n = 0;
+  while (value > 0) {
+    digits[n] = '0' + value % 10;
+    value = value / 10;
+    n = n + 1;
+  }
+  i = n - 1;
+  while (i >= 0) {
+    at = proc_append_char(at, digits[i]);
+    i = i - 1;
+  }
+  return at;
+}
+
+int proc_finish_len(int n) {
+  if (n > proc_text_size()) return proc_text_size();
+  return n;
+}
+
 int proc_status_text(int pid) {
   int n;
   int ppid;
   char state;
-  n = append_text(proc_text, 0, "Pid:\t");
-  n = append_number(proc_text, n, pid);
-  n = append_text(proc_text, n, "\nPPid:\t");
+  n = proc_append_text(0, "Pid:\t");
+  n = proc_append_number(n, pid);
+  n = proc_append_text(n, "\nPPid:\t");
   ppid = proc_table[pid].parent;
   if (ppid < 0) ppid = 0;
-  n = append_number(proc_text, n, ppid);
-  n = append_text(proc_text, n, "\nState:\t");
+  n = proc_append_number(n, ppid);
+  n = proc_append_text(n, "\nState:\t");
   if (proc_table[pid].state == CFG_ST_RUNNABLE) state = 'R';
   else if (proc_table[pid].state == CFG_ST_SLEEPING) state = 'S';
   else if (proc_table[pid].state == CFG_ST_STOPPED) state = 'T';
   else if (proc_table[pid].state == CFG_ST_ZOMBIE) state = 'Z';
   else state = '?';
-  proc_text[n] = state;
-  n = n + 1;
-  n = append_text(proc_text, n, "\nPgid:\t");
-  n = append_number(proc_text, n, proc_table[pid].pgid);
-  n = append_text(proc_text, n, "\nSid:\t");
-  n = append_number(proc_text, n, proc_table[pid].sid);
-  n = append_text(proc_text, n, "\nUid:\t");
-  n = append_number(proc_text, n, proc_table[pid].uid);
-  n = append_text(proc_text, n, "\nGid:\t");
-  n = append_number(proc_text, n, proc_table[pid].gid);
-  n = append_text(proc_text, n, "\n");
-  return n;
+  n = proc_append_char(n, state);
+  n = proc_append_text(n, "\nPgid:\t");
+  n = proc_append_number(n, proc_table[pid].pgid);
+  n = proc_append_text(n, "\nSid:\t");
+  n = proc_append_number(n, proc_table[pid].sid);
+  n = proc_append_text(n, "\nUid:\t");
+  n = proc_append_number(n, proc_table[pid].uid);
+  n = proc_append_text(n, "\nGid:\t");
+  n = proc_append_number(n, proc_table[pid].gid);
+  n = proc_append_text(n, "\n");
+  return proc_finish_len(n);
 }
 
 // Append a 32-bit value as eight lowercase hex digits (page-aligned addresses
@@ -420,9 +466,23 @@ int append_hex(char *dst, int at, int value) {
   return at;
 }
 
+int proc_append_hex(int at, int value) {
+  int shift;
+  int digit;
+  shift = 28;
+  while (shift >= 0) {
+    digit = (value >> shift) & 15;
+    if (digit < 10) at = proc_append_char(at, '0' + digit);
+    else at = proc_append_char(at, 'a' + digit - 10);
+    shift = shift - 4;
+  }
+  return at;
+}
+
 // /proc/<pid>/maps: a page-table / address-space dump. Reports the heap (brk)
 // span and every resident VM area with its protection bits, so a stuck process
-// can be inspected without instrumenting the emulator.
+// can be inspected without instrumenting the emulator. The text is truncated
+// to proc_text's capacity if future VMA growth would exceed this buffer.
 int proc_maps_text(int pid) {
   int n;
   int i;
@@ -431,34 +491,30 @@ int proc_maps_text(int pid) {
   // A '-' char literal collides with the minus operator in the C toolchain, so
   // dashes are written as their byte value (45).
   if (proc_table[pid].vm.brk_end > proc_table[pid].vm.brk_start) {
-    n = append_hex(proc_text, n, proc_table[pid].vm.brk_start);
-    proc_text[n] = 45;
-    n = n + 1;
-    n = append_hex(proc_text, n, proc_table[pid].vm.brk_end);
-    n = append_text(proc_text, n, " rw- [heap]\n");
+    n = proc_append_hex(n, proc_table[pid].vm.brk_start);
+    n = proc_append_char(n, 45);
+    n = proc_append_hex(n, proc_table[pid].vm.brk_end);
+    n = proc_append_text(n, " rw- [heap]\n");
   }
   i = 0;
   while (i < CFG_MAX_VMAS) {
     if (proc_table[pid].vm.areas[i].used != 0) {
-      n = append_hex(proc_text, n, proc_table[pid].vm.areas[i].start);
-      proc_text[n] = 45;
-      n = n + 1;
-      n = append_hex(proc_text, n, proc_table[pid].vm.areas[i].end);
-      proc_text[n] = ' ';
-      n = n + 1;
+      n = proc_append_hex(n, proc_table[pid].vm.areas[i].start);
+      n = proc_append_char(n, 45);
+      n = proc_append_hex(n, proc_table[pid].vm.areas[i].end);
+      n = proc_append_char(n, ' ');
       prot = proc_table[pid].vm.areas[i].prot;
-      if ((prot & CFG_PROT_READ) != 0) proc_text[n] = 'r'; else proc_text[n] = 45;
-      n = n + 1;
-      if ((prot & CFG_PROT_WRITE) != 0) proc_text[n] = 'w'; else proc_text[n] = 45;
-      n = n + 1;
-      if ((prot & CFG_PROT_EXEC) != 0) proc_text[n] = 'x'; else proc_text[n] = 45;
-      n = n + 1;
-      proc_text[n] = '\n';
-      n = n + 1;
+      if ((prot & CFG_PROT_READ) != 0) n = proc_append_char(n, 'r');
+      else n = proc_append_char(n, 45);
+      if ((prot & CFG_PROT_WRITE) != 0) n = proc_append_char(n, 'w');
+      else n = proc_append_char(n, 45);
+      if ((prot & CFG_PROT_EXEC) != 0) n = proc_append_char(n, 'x');
+      else n = proc_append_char(n, 45);
+      n = proc_append_char(n, '\n');
     }
     i = i + 1;
   }
-  return n;
+  return proc_finish_len(n);
 }
 
 int proc_read_op(int node_addr, int caller, int off, int buf, int len) {

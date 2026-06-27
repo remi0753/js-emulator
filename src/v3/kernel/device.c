@@ -17,6 +17,10 @@ struct irq_slot irq_table[CFG_NIRQ];
 struct vnode_ops sys_vnode_ops;
 char sys_text[256];
 
+int sys_text_size(void) {
+  return 256;
+}
+
 // --- char-device driver registration ---
 
 void copy_name(char *dst, char *src) {
@@ -29,16 +33,18 @@ void copy_name(char *dst, char *src) {
   dst[i] = 0;
 }
 
-void register_chardev(
+int register_chardev(
   int major, char *name, int mode, vnode_io_fn read, vnode_io_fn write
 ) {
-  if (major <= 0 || major >= CFG_NCHARDEV) return;
+  if (major <= 0 || major >= CFG_NCHARDEV) return -CFG_EINVAL;
+  if (chardev_table[major].used != 0) return -CFG_EEXIST;
   chardev_table[major].used = 1;
   chardev_table[major].major = major;
   chardev_table[major].mode = mode;
   copy_name(chardev_table[major].name, name);
   chardev_table[major].read = read;
   chardev_table[major].write = write;
+  return 0;
 }
 
 // Resolve a /dev name to its major number, or -1 if no driver claims it.
@@ -151,6 +157,7 @@ int cd_kmsg_read(int node, int caller, int off, int buf, int len) {
 
 int request_irq(int line, irq_fn handler, char *owner) {
   if (line < 0 || line >= CFG_NIRQ) return -CFG_EINVAL;
+  if (irq_table[line].used != 0) return -CFG_EEXIST;
   irq_table[line].used = 1;
   irq_table[line].handler = handler;
   copy_name(irq_table[line].owner, owner);
@@ -168,8 +175,51 @@ void irq_dispatch(int line) {
 
 // --- /sys inspection surface ---
 //
-// /sys is a tiny read-only pseudo-filesystem. /sys/devices lists registered
-// char devices (major, name); /sys/irq lists owned IRQ lines (line, owner).
+// /sys is a tiny pseudo-filesystem. Generated files are truncated to sys_text's
+// capacity rather than writing past the scratch buffer as more drivers appear.
+
+int sys_append_char(int n, int c) {
+  if (n < sys_text_size()) {
+    sys_text[n] = c;
+  }
+  return n + 1;
+}
+
+int sys_append_text(int n, char *text) {
+  int i;
+  i = 0;
+  while (text[i] != 0) {
+    n = sys_append_char(n, text[i]);
+    i = i + 1;
+  }
+  return n;
+}
+
+int sys_append_number(int n, int value) {
+  char digits[12];
+  int count;
+  int i;
+  if (value == 0) {
+    return sys_append_char(n, '0');
+  }
+  count = 0;
+  while (value > 0) {
+    digits[count] = '0' + value % 10;
+    value = value / 10;
+    count = count + 1;
+  }
+  i = count - 1;
+  while (i >= 0) {
+    n = sys_append_char(n, digits[i]);
+    i = i - 1;
+  }
+  return n;
+}
+
+int sys_finish_len(int n) {
+  if (n > sys_text_size()) return sys_text_size();
+  return n;
+}
 
 int sys_build_devices(void) {
   int i;
@@ -178,16 +228,14 @@ int sys_build_devices(void) {
   i = 1;
   while (i < CFG_NCHARDEV) {
     if (chardev_table[i].used != 0) {
-      n = append_number(sys_text, n, chardev_table[i].major);
-      sys_text[n] = ' ';
-      n = n + 1;
-      n = append_text(sys_text, n, chardev_table[i].name);
-      sys_text[n] = '\n';
-      n = n + 1;
+      n = sys_append_number(n, chardev_table[i].major);
+      n = sys_append_char(n, ' ');
+      n = sys_append_text(n, chardev_table[i].name);
+      n = sys_append_char(n, '\n');
     }
     i = i + 1;
   }
-  return n;
+  return sys_finish_len(n);
 }
 
 int sys_build_irq(void) {
@@ -197,24 +245,22 @@ int sys_build_irq(void) {
   i = 0;
   while (i < CFG_NIRQ) {
     if (irq_table[i].used != 0) {
-      n = append_number(sys_text, n, i);
-      sys_text[n] = ' ';
-      n = n + 1;
-      n = append_text(sys_text, n, irq_table[i].owner);
-      sys_text[n] = '\n';
-      n = n + 1;
+      n = sys_append_number(n, i);
+      n = sys_append_char(n, ' ');
+      n = sys_append_text(n, irq_table[i].owner);
+      n = sys_append_char(n, '\n');
     }
     i = i + 1;
   }
-  return n;
+  return sys_finish_len(n);
 }
 
 // /sys/trace holds the runtime trace bitmask as a decimal number plus newline.
 int sys_build_trace(void) {
   int n;
-  n = append_number(sys_text, 0, trace_flags);
-  sys_text[n] = '\n';
-  return n + 1;
+  n = sys_append_number(0, trace_flags);
+  n = sys_append_char(n, '\n');
+  return sys_finish_len(n);
 }
 
 int sys_text_for(int object) {
@@ -319,6 +365,20 @@ int sys_getdents_op(
 
 // --- bring-up: register built-in drivers and IRQ handlers ---
 
+void require_chardev(
+  int major, char *name, int mode, vnode_io_fn read, vnode_io_fn write
+) {
+  if (register_chardev(major, name, mode, read, write) < 0) {
+    panic("chardev registration failed");
+  }
+}
+
+void require_irq(int line, irq_fn handler, char *owner) {
+  if (request_irq(line, handler, owner) < 0) {
+    panic("irq registration failed");
+  }
+}
+
 void device_init(void) {
   int i;
   i = 0;
@@ -334,24 +394,24 @@ void device_init(void) {
 
   // Char devices. Majors 1-4 keep their historical object ids (console=1,
   // tty=4) so vnode_is_tty() and existing /dev ordering stay stable.
-  register_chardev(1, "console", CFG_S_IFCHR | 438, cd_console_read,
+  require_chardev(1, "console", CFG_S_IFCHR | 438, cd_console_read,
     cd_console_write);
-  register_chardev(2, "null", CFG_S_IFCHR | 438, cd_null_read, cd_sink_write);
-  register_chardev(3, "zero", CFG_S_IFCHR | 438, cd_zero_read, cd_sink_write);
-  register_chardev(4, "tty", CFG_S_IFCHR | 438, cd_console_read,
+  require_chardev(2, "null", CFG_S_IFCHR | 438, cd_null_read, cd_sink_write);
+  require_chardev(3, "zero", CFG_S_IFCHR | 438, cd_zero_read, cd_sink_write);
+  require_chardev(4, "tty", CFG_S_IFCHR | 438, cd_console_read,
     cd_console_write);
-  register_chardev(5, "rtc", CFG_S_IFCHR | 292, cd_rtc_read, cd_sink_write);
-  register_chardev(6, "random", CFG_S_IFCHR | 292, cd_random_read,
+  require_chardev(5, "rtc", CFG_S_IFCHR | 292, cd_rtc_read, cd_sink_write);
+  require_chardev(6, "random", CFG_S_IFCHR | 292, cd_random_read,
     cd_sink_write);
-  register_chardev(7, "urandom", CFG_S_IFCHR | 292, cd_random_read,
+  require_chardev(7, "urandom", CFG_S_IFCHR | 292, cd_random_read,
     cd_sink_write);
-  register_chardev(8, "kmsg", CFG_S_IFCHR | 292, cd_kmsg_read, cd_sink_write);
+  require_chardev(8, "kmsg", CFG_S_IFCHR | 292, cd_kmsg_read, cd_sink_write);
 
   // IRQ ownership: device drivers claim their interrupt lines. The timer
   // (line CFG_TIMER_IRQ) stays a dedicated scheduler stub and is not routed
   // through this table.
-  request_irq(CFG_KBD_IRQ, keyboard_isr, "keyboard");
-  request_irq(CFG_NET_IRQ, network_drain, "net");
+  require_irq(CFG_KBD_IRQ, keyboard_isr, "keyboard");
+  require_irq(CFG_NET_IRQ, network_drain, "net");
 
   sys_vnode_ops.read = sys_read_op;
   sys_vnode_ops.write = sys_write_op;

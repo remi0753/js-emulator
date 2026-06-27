@@ -137,6 +137,66 @@ test('Phase 27 userland tools: dmesg prints the kernel log and ps lists procs', 
   assert.match(out, /\n {4}\d+ [RSTZ?]\n/);
 });
 
+test('Phase 27 kmsg retains the newest log entries after wrapping', () => {
+  const disk = buildGuestDiskImage();
+  addProgram(
+    disk,
+    'p27wrap',
+    `
+      #include "libc.h"
+      char buf[4096];
+
+      int contains(int n, char *needle) {
+        int i;
+        int j;
+        i = 0;
+        while (i < n) {
+          j = 0;
+          while (needle[j] != 0 && i + j < n && buf[i + j] == needle[j]) j = j + 1;
+          if (needle[j] == 0) return 1;
+          i = i + 1;
+        }
+        return 0;
+      }
+
+      void set_trace(char *value) {
+        int fd;
+        fd = open("/sys/trace", 1);
+        if (fd >= 0) {
+          write(fd, value, 1);
+          close(fd);
+        }
+      }
+
+      int main(int argc, char **argv) {
+        int fd;
+        int i;
+        int n;
+        set_trace("1");
+        i = 0;
+        while (i < 260) {
+          getpid();
+          i = i + 1;
+        }
+        lseek(123, 777, 0);
+        set_trace("0");
+        fd = open("/dev/kmsg", 0);
+        if (fd < 0) return 1;
+        n = read(fd, buf, 4096);
+        close(fd);
+        if (n > 0 && contains(n, "lseek(123, 777, 0)") != 0) {
+          printf("wrap-ok\\n");
+          return 0;
+        }
+        printf("wrap-missing\\n");
+        return 2;
+      }
+    `,
+  );
+  const out = boot(disk, 'p27wrap\nshutdown\n');
+  assert.equal(out.includes('wrap-ok\n'), true, out);
+});
+
 test('Phase 27 /sys/trace reports the current trace bitmask and disk tracing works', () => {
   const disk = buildGuestDiskImage();
   addProgram(

@@ -1,6 +1,6 @@
 // Kernel log buffer and runtime tracing (Phase 27 observability).
 //
-// klog() records kernel messages into an in-memory buffer and mirrors them to
+// klog() records kernel messages into a ring buffer and mirrors them to
 // the serial console, so a failing run can be diagnosed both from host-side
 // serial output and from inside the guest by reading /dev/kmsg. Boot, exec,
 // shutdown, and panic messages all flow through klog, so they are captured.
@@ -12,14 +12,16 @@
 // user stdout (which goes straight to the console driver, not through klog).
 #include "kernel.h"
 
-char klog_buf[CFG_KLOG_SIZE]; // bounded kernel log; oldest bytes are kept
+char klog_buf[CFG_KLOG_SIZE]; // bounded kernel log; newest bytes are kept
 int klog_len;                 // bytes currently held (capped at CFG_KLOG_SIZE)
 int klog_total;               // total bytes ever written, including any dropped
 int trace_flags;              // runtime trace bitmask (syscall/disk/fault bits)
 
 void klog_putc(int c) {
+  int slot;
+  slot = klog_total % CFG_KLOG_SIZE;
+  klog_buf[slot] = c;
   if (klog_len < CFG_KLOG_SIZE) {
-    klog_buf[klog_len] = c;
     klog_len = klog_len + 1;
   }
   klog_total = klog_total + 1;
@@ -59,10 +61,12 @@ void klog_int(int value) {
   }
 }
 
-// Copy out a snapshot of the kernel log for /dev/kmsg. `off` is the byte offset
-// from the start of the retained buffer; the caller's page directory is live
-// during the read syscall, so the destination is written directly.
+// Copy out a snapshot of the retained kernel log for /dev/kmsg. `off` is the
+// byte offset from the oldest retained byte; the caller's page directory is
+// live during the read syscall, so the destination is written directly.
 int klog_read(int off, int dst, int len) {
+  int first;
+  int index;
   int take;
   int i;
   if (off < 0 || off >= klog_len) {
@@ -73,8 +77,10 @@ int klog_read(int off, int dst, int len) {
     take = len;
   }
   i = 0;
+  first = klog_total - klog_len;
   while (i < take) {
-    write8_at(dst + i, klog_buf[off + i]);
+    index = (first + off + i) % CFG_KLOG_SIZE;
+    write8_at(dst + i, klog_buf[index]);
     i = i + 1;
   }
   return take;
