@@ -1030,10 +1030,16 @@ chibicc tokenizer / preprocessor / parser / type checker
   declarators, designated/address/zero-fill initializers, integer-promotion
   arithmetic, and 64-bit arithmetic in `test/chibicc-phase32.test.ts`.
 
-  Remaining Phase 32 work (not yet implemented): variadic functions
-  (`va_list`/`va_start`/`va_arg`); aggregate call/return (struct/union
-  arguments, small aggregate returns, hidden-pointer returns); bit-fields;
-  compound literals; VLAs; and `float`/`double` through soft-float helpers.
+  Remaining Phase 32 work (not yet implemented): aggregate call/return
+  (struct/union arguments, small aggregate returns, hidden-pointer returns);
+  bit-fields; compound literals; VLAs; and `float`/`double` through soft-float
+  helpers. Variadic functions (`va_list`/`va_start`/`va_arg`) are deferred: they
+  require the first parameter to sit at a fixed frame offset independent of
+  trailing arguments, which needs the documented right-to-left push order in
+  both the chibicc backend and the bootstrap compiler (`src/toolchain/c.ts`)
+  that builds crt0/libc/kernel — a cross-compiler ABI change out of scope for
+  the current slice. The chibicc backend therefore stays on the bootstrap
+  compiler's left-to-right convention.
 
   Done when the host cross-compiler can build a broad set of small C conformance
   and regression programs for custom32 and run them deterministically inside the
