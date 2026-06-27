@@ -34,7 +34,7 @@ software `__csp` as a second stack.
 | Register | ABI role |
 |----------|----------|
 | `R0` | return value low word, scratch |
-| `R1` | return value high word or hidden aggregate-return pointer, scratch |
+| `R1` | return value high word, scratch |
 | `R2`-`R5` | scratch / caller-saved |
 | `R6` | callee-saved frame pointer when a frame pointer is emitted |
 | `R7` | callee-saved general register |
@@ -44,8 +44,11 @@ restore `R6`, `R7`, and `SP` before returning.
 
 ## Stack and Calls
 
-The stack is 8-byte aligned at every public function entry. A call pushes a
-4-byte return address. The caller then owns argument cleanup.
+The stack is 8-byte aligned at every public function entry. This is stricter
+than the current maximum object alignment of 4 bytes; it is a forward-compatible
+call-boundary rule for future double-width alignment, variadic traversal, and
+debug/unwind tooling. A call pushes a 4-byte return address. The caller then
+owns argument cleanup.
 
 Arguments are pushed right-to-left before `CALL`/`CALLR`. At callee entry,
 `SP` points at the return address, the first source-level argument is at
@@ -63,10 +66,11 @@ Scalar 32-bit and smaller values return in `R0`; narrow integer returns are
 extended to `int`. `long long` and `double` return low word in `R0` and high
 word in `R1`. `float` returns its binary32 bits in `R0`.
 
-Structs/unions of 4 bytes or less may return in `R0`. Structs/unions of 8 bytes
-or less may return in `R0:R1`. Larger aggregate returns use a hidden pointer:
-the caller allocates the result object, passes its address as an implicit first
-argument, and the callee returns that same address in `R0`.
+Structs/unions of 4 bytes or less are returned in `R0`. Structs/unions of 5 to
+8 bytes are returned in `R0:R1`, low-addressed bytes in `R0` and remaining bytes
+in `R1`. Larger aggregate returns use a hidden pointer: the caller allocates the
+result object, passes its address as an implicit first stack argument before the
+source-level arguments, and the callee returns that same address in `R0`.
 
 ## Aggregate Layout
 
@@ -134,7 +138,10 @@ errors. libc translates those to `-1` and sets positive `errno`.
 
 Syscalls are not C calls: they clobber `R0`-`R5` and flags, preserve the user
 stack according to trap-frame restore semantics, and preserve only registers the
-kernel explicitly restores as part of the syscall ABI.
+kernel explicitly restores as part of the syscall ABI. `docs/syscalls.md`
+currently defines syscall arguments only in `R1`-`R3`; `R4` and `R5` are not
+argument registers, but callers must still treat them as volatile across the
+trap.
 
 ## Bootstrap Compiler Migration
 
