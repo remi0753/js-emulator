@@ -483,9 +483,11 @@ feature lists. Use this practical order:
 6. **Polling and networking** — build nonblocking I/O and `poll` on the shared
    wait queues and `file_ops` readiness interface. Validate a deterministic UDP
    path before adding TCP.
-7. **Driver model, observability, then SMP** — consolidate devices behind VFS
-   and driver interfaces, make failures diagnosable, and add multi-core only
-   after single-core process, VFS, VM, signal, and driver semantics are stable.
+7. **Driver model, observability, C toolchain, then SMP** — consolidate devices
+   behind VFS and driver interfaces, make failures diagnosable, then stabilize
+   custom32 as a real C target before adding multi-core. SMP should wait until
+   single-core process, VFS, VM, signal, driver, and toolchain semantics are
+   stable enough to make concurrency failures isolatable.
 
 For every milestone, use the same completion workflow:
 
@@ -780,29 +782,217 @@ For every milestone, use the same completion workflow:
   instrumentation — a guest program reads the log, toggles tracing, inspects its
   own status and maps, and `dmesg`/`ps` surface the same data from the shell.
 
-- **Phase 28** ⬜ add multi-core only after single-core semantics are solid.
+### v5 — C toolchain and self-hosting path
+
+The next priority is making custom32 a real C target before introducing SMP.
+The goal is not to grow the current TypeScript C-like compiler into full C
+feature by feature. Instead, use a small, proven C compiler frontend such as
+[chibicc](https://github.com/rui314/chibicc), replace its x86-64 backend with a
+custom32 backend, and bootstrap from a host cross-compiler toward a compiler
+that runs inside the guest.
+
+Keep the first implementation deliberately small: static linking, no
+optimization, no PIC, no dynamic loader, no TLS, and soft-float rather than an
+FPU. The intended pipeline is:
+
+```text
+chibicc tokenizer / preprocessor / parser / type checker
+    -> custom32 code generator
+    -> custom32 assembler
+    -> custom32 static linker
+    -> guest executable
+```
+
+- **Phase 28** ⬜ stabilize custom32 as a real C target.
+
+  Before SMP, make the single-core machine a dependable target for ordinary C.
+  Audit and fix the ISA semantics that C depends on: signed overflow-aware
+  comparisons, unsigned comparisons, division/remainder, arithmetic right shift,
+  sign-extending byte/halfword loads, and runtime helper conventions for
+  64-bit integer and soft-float operations.
+
+  Freeze a documented ILP32 custom32 C ABI in `docs/custom32-c-abi.md`:
+  `char=1`, `short=2`, `int/long/pointer=4`, `long long=8`, `float=4`, and
+  `double=8`; argument order and stack layout; caller/callee-saved registers;
+  32-bit and 64-bit returns; hidden-pointer returns for large structs; stack
+  alignment; struct/union/enum/bit-field layout; function pointers; variadic
+  traversal; symbol visibility; relocation types; syscall boundary
+  expectations; and executable/linker assumptions.
+
+  Prefer one ABI stack based on the hardware `SP`. The current compiler's
+  software `__csp` is useful for bootstrapping, but retaining two stack
+  conventions would complicate `va_list`, `alloca`, debugging, and
+  interoperability.
+
+  Done when ABI documentation exists, focused ISA/ABI tests cover edge cases,
+  and the existing kernel/userland compiler path either follows the ABI or has a
+  documented migration path away from its bootstrap-only conventions.
+
+- **Phase 29** ⬜ define object files, archives, and host assembler/linker tools.
+
+  Make the project object format explicit: section headers, text/data/bss
+  sections, symbol tables, local/global/undefined symbols, relocations, string
+  tables, archive members, library search, executable output, and deterministic
+  output ordering. Add an object/archive dumper so failing link tests can be
+  inspected without reading binary blobs by hand.
+
+  Turn the existing assembler and linker pieces into command-line host tools:
+  `custom32-as`, `custom32-ld`, and `custom32-ar`. They should support multiple
+  translation units, static archives, absolute code/data relocations, and
+  executables consumable by the guest loader.
+
+  Done when hand-written assembly objects and archives can be assembled, linked,
+  dumped, installed into a disk image, executed inside the guest, and verified
+  by stdout plus exit status.
+
+- **Phase 30** ⬜ add a host `custom32-cc` driver and ABI smoke suite.
+
+  Add a `custom32-cc` host driver that can compile, assemble, link, search
+  libraries, and optionally install a guest executable into a disk image. Use the
+  current compiler only as a bootstrap input while the real C frontend is being
+  ported.
+
+  Build an ABI smoke suite before changing the real frontend. It should compile
+  and run tiny programs covering calls, globals, pointers, structs, arrays, libc
+  calls, multiple translation units, archives, startup code, argv/envp where
+  relevant, and exit status reporting.
+
+  Done when a host-side build can compile and link a non-trivial multi-file
+  program with a static library, install it into a disk image, execute it inside
+  the guest, and assert its stdout and exit status.
+
+- **Phase 31** ⬜ import a real C frontend and land the first custom32 backend
+  slice.
+
+  Vendor or mirror the chosen chibicc revision in a clearly isolated toolchain
+  directory. Preserve upstream tests where practical, and keep local custom32
+  changes separate from imported frontend code. Reuse the tokenizer, macro
+  preprocessor, parser, type checker, constant evaluation, initializer handling,
+  and C11 declarators.
+
+  Replace the target-dependent pieces: type sizes and alignment, assembly
+  emission, register use, calls, variadic calls, aggregate arguments/returns,
+  relocations, global initializers, `va_list`, target builtins, and predefined
+  target macros. The first backend slice only needs integer expressions, local
+  variables, `if`, `while`, function calls, global data, string literals, and
+  `return`.
+
+  Done when a host-built custom32 C compiler compiles
+  `int main(void) { return 42; }`, assembles and links the result, runs it in the
+  guest, and observes exit status 42.
+
+- **Phase 32** ⬜ broaden C language support for real programs.
+
+  Bring language support up in dependency order: the real preprocessor;
+  typedef/enum/struct/union; linkage and storage classes; complex declarators;
+  initializers; integer promotions; `long long`; variadic functions; aggregate
+  calls/returns; bit-fields; compound literals; VLAs; then `float`/`double`
+  through soft-float helpers. `_Atomic`, TLS, PIC, and dynamic linking can
+  remain unsupported during the bootstrap.
+
+  Add compiler tests at four levels where useful: frontend/compiler unit tests,
+  ABI boundary tests, differential tests against GCC/Clang, and execution tests
+  inside the VM. Cover integer limits, overflow-sensitive comparisons, shifts,
+  aggregate padding, bit-field boundaries, variadic arguments, relocations, and
+  soft-float edge cases.
+
+  Done when the host cross-compiler can build a broad set of small C conformance
+  and regression programs for custom32 and run them deterministically inside the
+  guest.
+
+- **Phase 33** ⬜ expand the guest libc and build environment for compiler-sized
+  programs.
+
+  The compiler needs a broader libc than ordinary userland tools. Provide
+  compiler-facing headers and APIs including `stddef.h`, `stdint.h`, `limits.h`,
+  `errno.h`, `stdarg.h`, a reliable allocator and enough heap/address space,
+  binary stdio with seek/buffering/error handling, `printf`/`fprintf`/`snprintf`
+  with real variadic arguments, integer parsing, ctype, environment and path
+  helpers, `open`/`read`/`write`/`close`/`stat`, temporary files, and enough
+  process execution to run build steps.
+
+  Increase the development VM from the default 16 MiB RAM and 1 MiB disk when
+  building large translation units. Start around 64-128 MiB RAM and a disk large
+  enough for sources, objects, archives, and temporary files. An arena allocator
+  that can discard a whole translation unit at once keeps the compiler simple.
+
+  Done when compiler-sized guest programs can parse files, allocate large
+  translation-unit state, emit temporary/output files, and report errors through
+  libc without exhausting the default development environment.
+
+- **Phase 34** ⬜ make the compiler runnable inside the guest.
+
+  Cross-compile the compiler as a guest executable, install it with its headers
+  and libraries into the disk image, and run it on small source files stored in
+  the guest filesystem. Port assembler/linker tools into userland, or provide an
+  in-process assembler/linker library usable by the guest compiler.
+
+  Keep instruction budgets, disk images, input files, and external events
+  deterministic so failed compiler runs replay exactly.
+
+  Done when the guest compiler compiles and runs small C programs inside the OS,
+  without relying on host-side compilation after boot.
+
+- **Phase 35** ⬜ bootstrap the compiler and climb real packages.
+
+  Use a conventional three-stage bootstrap:
+
+  ```text
+  host GCC/Clang builds the custom32 cross-compiler
+      -> stage 0 emits the guest-native compiler
+      -> stage 1 runs in the guest and rebuilds itself
+      -> stage 2 rebuilds itself again for comparison
+  ```
+
+  Stage-1 and stage-2 outputs should be reproducible or normalize to the same
+  result. After that, let compiler test failures and attempts to compile real
+  software determine the next missing feature. Start with tiny libraries, then
+  zlib/libpng, then SQLite.
+
+  Done when the guest compiler rebuilds itself at least once, the rebuild can be
+  replayed deterministically, and the package climb has a documented failure
+  queue rather than ad hoc missing-feature notes.
+
+- **Phase 36** ⬜ rebuild guest OS artifacts from inside the guest.
+
+  Use the guest compiler and guest build tools to rebuild meaningful parts of
+  the system: userland utilities first, then the guest kernel or a kernel module.
+  Export the produced artifact, boot it in a new VM run, and verify it with the
+  normal guest tests.
+
+  Done when a guest-built utility and a guest-built kernel artifact can be
+  produced in one VM run, booted or executed in another VM run, and verified
+  against host-built equivalents where comparison is meaningful.
+
+- **Phase 37** ⬜ make the self-hosting development loop reproducible.
+
+  Record the initial disk image, source inputs, generated objects, external
+  events, instruction budgets, host tool versions, emulator settings, and
+  artifact export paths. The loop should cover disk-image build, emulator boot,
+  guest tests, compiler bootstrap, package-build attempts, artifact export, and
+  host-side verification.
+
+  Done when a failed bootstrap or package build can be replayed exactly, and a
+  successful run produces a manifest that explains every generated artifact.
+
+### v6 — SMP after single-core and toolchain semantics are solid
+
+SMP remains valuable, but it should not be the next destabilizing step after the
+single-core Linux-like surface. The pre-SMP bar is not full self-hosting, but the
+roadmap now makes the compiler path explicit before SMP so ABI and userland bugs
+can be exposed without concurrency in the way.
+
+- **Phase 38** ⬜ add multi-core only after single-core semantics are solid.
 
   SMP requires atomic instructions in the ISA, spinlocks, per-CPU state,
   scheduler changes, timer routing, TLB shootdown semantics, and careful driver
-  locking. Add this after signals, VFS, VMAs, and core device behavior are
-  stable, otherwise concurrency will make basic bugs much harder to isolate.
+  locking. Add this after signals, VFS, VMAs, core device behavior,
+  observability, and the C toolchain are stable, otherwise concurrency will make
+  basic bugs much harder to isolate.
 
   Done when two or more virtual CPUs can run user processes concurrently while
-  filesystem, pipes, signals, and page faults remain correct.
-
-### v5 — self-hosting stretch goal
-
-Self-hosting means the system can rebuild meaningful parts of itself inside the
-guest OS. This is intentionally last: it depends on the compiler, filesystem,
-process model, shell, and enough memory management to run build tools.
-
-- **Phase 29** ⬜ port assembler/linker tools into userland.
-- **Phase 30** ⬜ run the compiler inside the guest, first compiling small
-  programs, then userland utilities.
-- **Phase 31** ⬜ rebuild the guest kernel or a kernel module inside the guest and
-  boot the produced artifact in a new VM run.
-- **Phase 32** ⬜ make the development loop reproducible: disk image build,
-  emulator boot, guest tests, artifact export, and host-side verification.
+  filesystem, pipes, signals, page faults, self-hosted toolchain workloads, and
+  compiled C user programs remain correct.
 
 ## Design decisions
 
