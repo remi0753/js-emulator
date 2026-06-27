@@ -965,7 +965,7 @@ chibicc tokenizer / preprocessor / parser / type checker
   exit status `ret42 exited 42` — exercised both in-process and through the
   `custom32-cc --frontend chibicc` CLI.
 
-- **Phase 32** ⬜ broaden C language support for real programs.
+- **Phase 32** ✅ broaden C language support for real programs.
 
   Bring language support up in dependency order: the real preprocessor;
   typedef/enum/struct/union; linkage and storage classes; complex declarators;
@@ -1057,10 +1057,11 @@ chibicc tokenizer / preprocessor / parser / type checker
   cross-object calls after the ABI migration.
 
   The remaining Phase 32 soft-float slice now accepts `float`/`double`
-  constants, arithmetic, comparison, and int conversion through helper calls.
-  binary32 helpers operate directly on IEEE-754 bits; binary64 currently uses
-  the same two-word ABI and routes through the binary32 core for the initial
-  guest-tested implementation.
+  constants, arithmetic, comparison, int conversion, default argument promotion
+  (`float` to `double`), and variadic `double` traversal through helper calls.
+  binary32 and binary64 helpers operate directly on IEEE-754 bit patterns; the
+  runtime is linked as an archive so only referenced helper members are pulled
+  into guest executables.
 
   Done when the host cross-compiler can build a broad set of small C conformance
   and regression programs for custom32 and run them deterministically inside the

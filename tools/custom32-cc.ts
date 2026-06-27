@@ -36,7 +36,7 @@ import {
   linkExecutableImage,
 } from '../src/toolchain/cc.ts';
 import { compileObject as chibiccCompileObject } from '../src/toolchain/chibicc/index.ts';
-import { floatRuntimeObject } from '../src/toolchain/chibicc/runtimeFloat.ts';
+import { floatRuntimeArchive } from '../src/toolchain/chibicc/runtimeFloat.ts';
 import { i64RuntimeObject } from '../src/toolchain/chibicc/runtime64.ts';
 import { installExecutable, linkGuestExecutable } from '../src/v3/guest-cc.ts';
 
@@ -162,8 +162,8 @@ function main(argv: string[]): void {
   }
 
   // Stage 2: link. crt0 (startup + runtime) is linked first unless suppressed.
-  const chibiccRuntimes =
-    frontend === 'chibicc' && !noStartFiles ? [i64RuntimeObject(), floatRuntimeObject()] : [];
+  const chibiccRuntimes = frontend === 'chibicc' && !noStartFiles ? [i64RuntimeObject()] : [];
+  if (frontend === 'chibicc' && !noStartFiles) archives.push(floatRuntimeArchive());
   const linkInputs = noStartFiles ? objects : [crt0Object(), ...objects, ...chibiccRuntimes];
   if (linkInputs.length === 0) fail('no objects to link');
 

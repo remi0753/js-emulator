@@ -5,7 +5,7 @@ import { Fs } from '../src/storage/fs.ts';
 import { PortBlockDevice } from '../src/storage/port-block-device.ts';
 import { compileObject as bootstrapCompileObject, crt0Object } from '../src/toolchain/cc.ts';
 import { compile, compileObject } from '../src/toolchain/chibicc/index.ts';
-import { floatRuntimeObject } from '../src/toolchain/chibicc/runtimeFloat.ts';
+import { floatRuntimeArchive, floatRuntimeObject } from '../src/toolchain/chibicc/runtimeFloat.ts';
 import { i64RuntimeObject } from '../src/toolchain/chibicc/runtime64.ts';
 import { linkGuestExecutable } from '../src/v3/guest-cc.ts';
 import {
@@ -779,12 +779,10 @@ function linkProgramWith64(src: string, name: string): Uint8Array {
 }
 
 function linkProgramWithFloat(src: string, name: string): Uint8Array {
-  return linkGuestExecutable([
-    crt0Object(),
-    compileObject(src, { name }),
-    floatRuntimeObject(),
-    i64RuntimeObject(),
-  ]);
+  return linkGuestExecutable(
+    [crt0Object(), compileObject(src, { name }), i64RuntimeObject()],
+    [floatRuntimeArchive()],
+  );
 }
 
 function linkProgramWithIncludes(src: string, name: string): Uint8Array {
@@ -960,7 +958,7 @@ test('chibicc Phase 32 long long arithmetic runs in the guest', () => {
 });
 
 test('chibicc Phase 32 float and double soft-float run in the guest', () => {
-  const src = `
+  const io = `
 int slen(char *s) { int n = 0; while (s[n]) n = n + 1; return n; }
 int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
 int putnum(int v) {
@@ -969,16 +967,67 @@ int putnum(int v) {
   while (v > 0) { i = i - 1; buf[i] = 48 + v % 10; v = v / 10; }
   return puts(buf + i);
 }
+`;
+  const floatSrc = `${io}
 int main(void) {
   float a = 1.5f;
   float b = 2.5f;
-  double c = 3.0;
-  double d = 4.0;
   int total = (int)(a + b);
   total = total + (int)(b * 4.0f);
   total = total + (a < b);
-  total = total + (int)(c * d);
   puts("float=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+  const doubleSrc = `${io}
+int main(void) {
+  double big = 9007199254740992.0;
+  int total = (int)((big + 2.0) - big);
+  puts("double=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+  const variadicSrc = `#include <stdarg.h>
+${io}
+int vf(int n, ...) {
+  va_list ap;
+  va_start(ap, n);
+  double d = va_arg(ap, double);
+  return (int)d;
+}
+int main(void) {
+  float b = 2.5f;
+  int total = vf(1, b);
+  puts("varf=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+  const lateSrc = `${io}
+int main(void) {
+  float b = 2.5f;
+  int total = late_float_arg(b);
+  puts("late=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+int late_float_arg(double d) { return (int)d; }
+`;
+  const edgeSrc = `${io}
+int main(void) {
+  double inf = 1.0 / 0.0;
+  double nan = 0.0 / 0.0;
+  int total = 0;
+  if (inf > 1.0) total = total + 1;
+  if (nan != nan) total = total + 2;
+  if (!(nan == nan)) total = total + 4;
+  puts("edge=");
   putnum(total);
   puts("\\n");
   return total;
@@ -986,11 +1035,23 @@ int main(void) {
 `;
   const disk = buildGuestDiskImage();
   const fs = installFs(disk);
-  fs.writeFile('/bin/float', linkProgramWithFloat(src, 'float.o'));
+  fs.writeFile('/bin/float', linkProgramWithFloat(floatSrc, 'float.o'));
   fs.chmod('/bin/float', 0o755);
+  fs.writeFile('/bin/double', linkProgramWithFloat(doubleSrc, 'double.o'));
+  fs.chmod('/bin/double', 0o755);
+  fs.writeFile('/bin/varf', linkProgramWithFloat(variadicSrc, 'varf.o'));
+  fs.chmod('/bin/varf', 0o755);
+  fs.writeFile('/bin/latef', linkProgramWithFloat(lateSrc, 'latef.o'));
+  fs.chmod('/bin/latef', 0o755);
+  fs.writeFile('/bin/fedge', linkProgramWithFloat(edgeSrc, 'fedge.o'));
+  fs.chmod('/bin/fedge', 0o755);
 
   const out = bootAndRun(disk, 'float');
-  assert.ok(out.includes('float=27\n'), `missing float result in:\n${out}`);
+  assert.ok(out.includes('float=15\n'), `missing float result in:\n${out}`);
+  assert.ok(bootAndRun(disk, 'double').includes('double=2\n'));
+  assert.ok(bootAndRun(disk, 'varf').includes('varf=2\n'));
+  assert.ok(bootAndRun(disk, 'latef').includes('late=2\n'));
+  assert.ok(bootAndRun(disk, 'fedge').includes('edge=7\n'));
 });
 
 test('chibicc Phase 32 integer promotions run in the guest', () => {

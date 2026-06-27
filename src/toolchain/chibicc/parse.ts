@@ -1604,15 +1604,22 @@ class Parser {
     return this.funcallNode({ kind: 'funcall', line, funcName: name, args: converted, funcReturn });
   }
 
+  private defaultArgPromotion(arg: Node): Node {
+    addType(arg);
+    if (arg.ty?.kind === 'float') {
+      return { kind: 'cast', line: arg.line, lhs: arg, castType: tyDouble, ty: tyDouble };
+    }
+    return arg;
+  }
+
   // Convert each argument to its parameter type where that changes the ABI slot
-  // count (the 64-bit/non-64-bit boundary), so a `long long` parameter always
-  // receives two words and a narrowing argument one. Other conversions are
-  // handled by the value's own load/cast codegen.
+  // count or representation. Prototype-less calls and variadic excess arguments
+  // use C's default argument promotions, including float -> double.
   private convertArgs(args: Node[], params?: Type[]): Node[] {
-    if (!params) return args;
+    if (!params) return args.map((arg) => this.defaultArgPromotion(arg));
     return args.map((arg, i) => {
       const pty = params[i];
-      if (!pty) return arg; // excess / variadic argument
+      if (!pty) return this.defaultArgPromotion(arg); // excess / variadic argument
       addType(arg);
       if (is64(pty) === is64(arg.ty ?? tyInt) && pty.kind === arg.ty?.kind) return arg;
       return { kind: 'cast', line: arg.line, lhs: arg, castType: pty, ty: pty };
