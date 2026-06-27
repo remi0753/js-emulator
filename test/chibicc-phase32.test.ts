@@ -114,6 +114,48 @@ int main(void) {
 }
 `;
 
+const STATIC_CAST_SRC = `
+int slen(char *s) {
+  int n = 0;
+  while (s[n]) { n = n + 1; }
+  return n;
+}
+
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+
+int putnum(int v) {
+  char buf[12];
+  int i = 11;
+  buf[11] = 0;
+  if (v == 0) { return puts("0"); }
+  while (v > 0) {
+    i = i - 1;
+    buf[i] = 48 + v % 10;
+    v = v / 10;
+  }
+  return puts(buf + i);
+}
+
+int bump(void) {
+  static int counter = 4;
+  counter = counter + 1;
+  return counter;
+}
+
+int main(void) {
+  int total = 0;
+  total = total + bump();
+  total = total + bump();
+  if ((unsigned char)300 == 44) { total = total + 10; }
+  if ((char)255 < 0) { total = total + 20; }
+  if ((unsigned int)-1 > 1u) { total = total + 30; }
+  puts("static-cast=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+
 function linkProgram(src: string, name: string): Uint8Array {
   return linkGuestExecutable([crt0Object(), compileObject(src, { name })]);
 }
@@ -159,6 +201,10 @@ test('chibicc Phase 32 frontend accepts typedef, enum, struct, and initializers'
   assert.match(unsignedAsm, /JB|JBE/);
   assert.match(unsignedAsm, /LB R0, R0/);
   assert.match(unsignedAsm, /LH R0, R0/);
+  const staticCastAsm = compile(STATIC_CAST_SRC);
+  assert.match(staticCastAsm, /\.L\.static\.bump\.counter/);
+  assert.match(staticCastAsm, /MOV R7, 255/);
+  assert.match(staticCastAsm, /MOV R7, 4294967040/);
   assert.match(compile('typedef int T; int main(void) { T T = 4; return T; }'), /MOV R0, 4/);
 });
 
@@ -180,4 +226,14 @@ test('chibicc Phase 32 unsigned arithmetic and zero-extension run in the guest',
 
   const out = bootAndRun(disk, 'unsigned');
   assert.ok(out.includes('unsigned=31\n'), `missing unsigned result in:\n${out}`);
+});
+
+test('chibicc Phase 32 static locals and casts run in the guest', () => {
+  const disk = buildGuestDiskImage();
+  const fs = installFs(disk);
+  fs.writeFile('/bin/static-cast', linkProgram(STATIC_CAST_SRC, 'static-cast.o'));
+  fs.chmod('/bin/static-cast', 0o755);
+
+  const out = bootAndRun(disk, 'static-cast');
+  assert.ok(out.includes('static-cast=71\n'), `missing static/cast result in:\n${out}`);
 });

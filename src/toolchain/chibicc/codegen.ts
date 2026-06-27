@@ -314,6 +314,10 @@ class Generator {
       case 'funcall':
         this.genCall(node);
         return;
+      case 'cast':
+        this.genExpr(node.lhs!);
+        this.castTo(node.castType);
+        return;
       case 'neg':
         this.genExpr(node.lhs!);
         this.emit('  MOV R1, 0');
@@ -341,6 +345,31 @@ class Generator {
       default:
         this.genBinary(node);
     }
+  }
+
+  private castTo(ty: Node['ty']): void {
+    if (!ty) return;
+    if (ty.kind === 'char') {
+      this.emit('  MOV R7, 255');
+      this.emit('  AND R0, R7');
+      if (!isUnsignedInteger(ty)) this.signExtend(0x80, 0xffffff00);
+      return;
+    }
+    if (ty.kind === 'short') {
+      this.emit('  MOV R7, 65535');
+      this.emit('  AND R0, R7');
+      if (!isUnsignedInteger(ty)) this.signExtend(0x8000, 0xffff0000);
+    }
+  }
+
+  private signExtend(signBit: number, highBits: number): void {
+    const done = this.label('sext.done');
+    this.emit(`  MOV R7, ${signBit}`);
+    this.emit('  CMP R0, R7');
+    this.emit(`  JB ${done}`);
+    this.emit(`  MOV R7, ${highBits >>> 0}`);
+    this.emit('  OR R0, R7');
+    this.emit(`${done}:`);
   }
 
   private genBinary(node: Node): void {

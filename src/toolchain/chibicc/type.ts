@@ -165,6 +165,9 @@ export function addType(node: Node | null | undefined): void {
     case 'member':
       node.ty = node.member?.ty ?? tyInt;
       return;
+    case 'cast':
+      node.ty = node.castType ?? tyInt;
+      return;
     case 'addr': {
       // &array yields a pointer to the element type, matching C decay rules.
       const operand = node.lhs?.ty ?? tyInt;

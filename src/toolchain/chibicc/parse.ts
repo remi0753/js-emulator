@@ -75,7 +75,8 @@ export type NodeKind =
   | 'exprstmt'
   | 'break'
   | 'continue'
-  | 'member';
+  | 'member'
+  | 'cast';
 
 export interface Node {
   kind: NodeKind;
@@ -104,6 +105,8 @@ export interface Node {
   funcReturn?: Type;
   // Struct/union member access.
   member?: Member;
+  // Cast target type.
+  castType?: Type;
 }
 
 // An Obj is a named object: a global variable, a string literal, a local
@@ -156,6 +159,7 @@ class Parser {
   private tagScopes: Map<string, Type>[] = [new Map()];
   private currentFn: Obj | null = null;
   private strCount = 0;
+  private staticCount = 0;
   private readonly tokens: Token[];
 
   constructor(tokens: Token[]) {
@@ -786,6 +790,11 @@ class Parser {
         continue;
       }
       if (ty.kind === 'void') this.error(`variable '${name}' declared void`);
+      if (spec.isStatic) {
+        const obj = this.newStaticLocal(name, ty);
+        if (this.consume('=')) obj.initData = this.globalInitializer(ty);
+        continue;
+      }
       const obj = this.newLocal(name, ty);
       if (this.consume('=')) {
         body.push(...this.localInitializer(obj));
@@ -993,6 +1002,14 @@ class Parser {
     if (this.consume('!')) return { kind: 'not', line, lhs: this.unary() };
     if (this.consume('*')) return { kind: 'deref', line, lhs: this.unary() };
     if (this.consume('&')) return { kind: 'addr', line, lhs: this.unary() };
+    if (this.consume('(')) {
+      if (this.isTypeName()) {
+        const ty = this.typeName();
+        this.expect(')');
+        return { kind: 'cast', line, lhs: this.unary(), castType: ty };
+      }
+      this.pos--;
+    }
     if (this.consume('~')) {
       // ~x == x ^ -1, reusing the bitxor path.
       const operand = this.unary();
@@ -1252,6 +1269,20 @@ class Parser {
       isString: true,
     };
     this.objects.push(obj);
+    return obj;
+  }
+
+  private newStaticLocal(sourceName: string, ty: Type): Obj {
+    const fnName = this.currentFn?.name ?? 'file';
+    const obj: Obj = {
+      name: `.L.static.${fnName}.${sourceName}.${this.staticCount++}`,
+      ty,
+      isLocal: false,
+      isFunction: false,
+      isStatic: true,
+    };
+    this.objects.push(obj);
+    this.currentScope().set(sourceName, obj);
     return obj;
   }
 
