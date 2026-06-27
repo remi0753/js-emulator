@@ -21,7 +21,7 @@
 
 import { SYSCALL_INT } from '../../isa.ts';
 import type { GReloc, Node, Obj, Program } from './parse.ts';
-import { isPromotedUnsigned, isUnsignedInteger } from './type.ts';
+import { is64, isPointerLike, isPromotedUnsigned, isUnsignedInteger } from './type.ts';
 
 export class CodegenError extends Error {
   constructor(message: string) {
@@ -82,6 +82,15 @@ class Generator {
   private push(): void {
     this.emit('  LOAD R5, __csp');
     this.emit('  STORER R5, R0');
+    this.emit('  MOV R7, 4');
+    this.emit('  ADD R5, R7');
+    this.emit('  STORE R5, __csp');
+  }
+
+  // Push a specific register onto the software stack; advance __csp by 4.
+  private pushReg(reg: string): void {
+    this.emit('  LOAD R5, __csp');
+    this.emit(`  STORER R5, ${reg}`);
     this.emit('  MOV R7, 4');
     this.emit('  ADD R5, R7');
     this.emit('  STORE R5, __csp');
@@ -189,7 +198,7 @@ class Generator {
       case 'if': {
         const els = this.label('else');
         const end = this.label('endif');
-        this.genExpr(node.cond!);
+        this.genCond(node.cond!);
         this.emit('  MOV R7, 0');
         this.emit('  CMP R0, R7');
         this.emit(`  JZ ${els}`);
@@ -209,7 +218,7 @@ class Generator {
         this.continueStack.push(cont);
         this.emit(`${top}:`);
         if (node.cond) {
-          this.genExpr(node.cond);
+          this.genCond(node.cond);
           this.emit('  MOV R7, 0');
           this.emit('  CMP R0, R7');
           this.emit(`  JZ ${end}`);
@@ -232,7 +241,7 @@ class Generator {
         this.emit(`${top}:`);
         this.genStmt(node.thenStmt!);
         this.emit(`${cont}:`);
-        this.genExpr(node.cond!);
+        this.genCond(node.cond!);
         this.emit('  MOV R7, 0');
         this.emit('  CMP R0, R7');
         this.emit(`  JNZ ${top}`);
@@ -353,6 +362,11 @@ class Generator {
   }
 
   private genExpr(node: Node): void {
+    // 64-bit values live in the R0(low):R1(high) pair and take a separate path.
+    if (is64(node.ty)) {
+      this.gen64Expr(node);
+      return;
+    }
     switch (node.kind) {
       case 'num':
         this.emit(`  MOV R0, ${node.value! >>> 0}`);
@@ -395,7 +409,7 @@ class Generator {
       case 'not': {
         const yes = this.label('not.true');
         const done = this.label('not.done');
-        this.genExpr(node.lhs!);
+        this.genCond(node.lhs!);
         this.emit('  MOV R7, 0');
         this.emit('  CMP R0, R7');
         this.emit(`  JZ ${yes}`);
@@ -441,6 +455,15 @@ class Generator {
   }
 
   private genBinary(node: Node): void {
+    // A comparison whose operands are 64-bit produces a 32-bit 0/1 result but
+    // needs the full 64-bit compare helper.
+    if (
+      (node.kind === 'eq' || node.kind === 'ne' || node.kind === 'lt' || node.kind === 'le') &&
+      (is64(node.lhs?.ty) || is64(node.rhs?.ty))
+    ) {
+      this.gen64Compare(node);
+      return;
+    }
     // Evaluate rhs first and stash it, then lhs, so R0 = lhs and R1 = rhs.
     this.genExpr(node.rhs!);
     this.push();
@@ -515,11 +538,11 @@ class Generator {
     const isAnd = node.kind === 'logand';
     const set = this.label('logic.set');
     const done = this.label('logic.done');
-    this.genExpr(node.lhs!);
+    this.genCond(node.lhs!);
     this.emit('  MOV R7, 0');
     this.emit('  CMP R0, R7');
     this.emit(`  ${isAnd ? 'JZ' : 'JNZ'} ${set}`);
-    this.genExpr(node.rhs!);
+    this.genCond(node.rhs!);
     this.emit('  MOV R7, 0');
     this.emit('  CMP R0, R7');
     this.emit(`  ${isAnd ? 'JZ' : 'JNZ'} ${set}`);
@@ -530,15 +553,233 @@ class Generator {
     this.emit(`${done}:`);
   }
 
+  // Evaluate a condition's truthiness into R0. A 64-bit operand folds both
+  // words so a nonzero high word counts as true.
+  private genCond(node: Node): void {
+    this.genExpr(node);
+    if (is64(node.ty)) this.emit('  OR R0, R1');
+  }
+
+  // --- 64-bit (long long) codegen -----------------------------------------
+  //
+  // A 64-bit value lives in R0 (low word) : R1 (high word). Arithmetic,
+  // shifts, and comparisons go through the `__i64_*`/`__u64_*` runtime helpers
+  // (see runtime64.ts); the helpers write their result through a pointer to an
+  // 8-byte temporary the caller reserves on the software stack, so they need no
+  // 64-bit types themselves.
+
+  // Map a 64-bit binary node to its runtime helper symbol.
+  private helper64(node: Node): string {
+    switch (node.kind) {
+      case 'add':
+        return '__i64_add';
+      case 'sub':
+        return '__i64_sub';
+      case 'mul':
+        return '__i64_mul';
+      case 'div':
+        return isUnsignedInteger(node.ty) ? '__u64_div' : '__i64_div';
+      case 'mod':
+        return isUnsignedInteger(node.ty) ? '__u64_mod' : '__i64_mod';
+      case 'bitand':
+        return '__i64_and';
+      case 'bitor':
+        return '__i64_or';
+      case 'bitxor':
+        return '__i64_xor';
+      default:
+        throw new CodegenError(`no 64-bit helper for ${node.kind}`);
+    }
+  }
+
+  private gen64Expr(node: Node): void {
+    switch (node.kind) {
+      case 'num': {
+        const v = node.value ?? 0;
+        this.emit(`  MOV R0, ${v >>> 0}`);
+        this.emit(`  MOV R1, ${Math.floor(v / 0x1_0000_0000) >>> 0}`);
+        return;
+      }
+      case 'var':
+      case 'member':
+        this.genAddr(node);
+        this.load64();
+        return;
+      case 'deref':
+        this.genExpr(node.lhs!);
+        this.load64();
+        return;
+      case 'assign':
+        this.gen64Assign(node);
+        return;
+      case 'cast':
+        this.genExpr(node.lhs!);
+        if (!is64(node.lhs?.ty)) this.widen64(node.lhs?.ty);
+        return;
+      case 'funcall':
+        this.genCall(node); // result returns in R0:R1
+        return;
+      case 'neg':
+        this.gen64Unary(node.lhs!, '__i64_neg');
+        return;
+      case 'shl':
+        this.gen64Shift(node, '__i64_shl');
+        return;
+      case 'shr':
+        this.gen64Shift(node, isUnsignedInteger(node.ty) ? '__i64_shr' : '__i64_sar');
+        return;
+      default:
+        this.gen64Binary(node, this.helper64(node));
+    }
+  }
+
+  // Produce a 64-bit value in R0:R1 from any operand, widening narrower ones.
+  private gen64Value(node: Node): void {
+    if (is64(node.ty)) {
+      this.genExpr(node);
+      return;
+    }
+    this.genExpr(node);
+    this.widen64(node.ty);
+  }
+
+  // Sign- or zero-extend a 32-bit value in R0 into the high word R1.
+  private widen64(ty: Node['ty']): void {
+    if (isUnsignedInteger(ty) || (ty && isPointerLike(ty))) {
+      this.emit('  MOV R1, 0');
+      return;
+    }
+    this.emit('  MOVR R1, R0');
+    this.emit('  MOV R7, 31');
+    this.emit('  SAR R1, R7');
+  }
+
+  // R0 = address -> load the 64-bit value at [R0] into R0:R1.
+  private load64(): void {
+    this.emit('  MOVR R2, R0');
+    this.emit('  LOADR R0, R2');
+    this.emit('  MOV R7, 4');
+    this.emit('  ADD R2, R7');
+    this.emit('  LOADR R1, R2');
+  }
+
+  private gen64Assign(node: Node): void {
+    this.genAddr(node.lhs!);
+    this.push(); // save destination address
+    this.gen64Value(node.rhs!);
+    this.pop('R2'); // R2 = address
+    this.emit('  STORER R2, R0');
+    this.emit('  MOV R7, 4');
+    this.emit('  ADD R2, R7');
+    this.emit('  STORER R2, R1');
+  }
+
+  // Reserve an 8-byte result temporary at the software-stack top and leave its
+  // address in R0 (the helpers' first argument).
+  private reserve64Temp(): void {
+    this.emit('  LOAD R0, __csp'); // R0 = &temp (current top)
+    this.adjustCsp(8);
+  }
+
+  // After a helper returns, load the 8-byte temp (just below __csp) into R0:R1
+  // and release it.
+  private read64Temp(): void {
+    this.emit('  LOAD R2, __csp');
+    this.emit('  MOV R7, 8');
+    this.emit('  SUB R2, R7'); // R2 = &temp
+    this.emit('  LOADR R0, R2');
+    this.emit('  MOV R7, 4');
+    this.emit('  ADD R2, R7');
+    this.emit('  LOADR R1, R2');
+    this.adjustCsp(-8);
+  }
+
+  // helper(&temp, a_lo, a_hi, b_lo, b_hi)
+  private gen64Binary(node: Node, helper: string): void {
+    this.reserve64Temp();
+    this.push(); // arg0 = &temp
+    this.gen64Value(node.lhs!);
+    this.pushReg('R0');
+    this.pushReg('R1');
+    this.gen64Value(node.rhs!);
+    this.pushReg('R0');
+    this.pushReg('R1');
+    this.emit(`  CALL ${helper}`);
+    this.adjustCsp(-5 * 4);
+    this.read64Temp();
+  }
+
+  // helper(&temp, v_lo, v_hi, amount)
+  private gen64Shift(node: Node, helper: string): void {
+    this.reserve64Temp();
+    this.push(); // arg0 = &temp
+    this.gen64Value(node.lhs!);
+    this.pushReg('R0');
+    this.pushReg('R1');
+    this.genExpr(node.rhs!); // shift amount (32-bit)
+    this.push();
+    this.emit(`  CALL ${helper}`);
+    this.adjustCsp(-4 * 4);
+    this.read64Temp();
+  }
+
+  // helper(&temp, v_lo, v_hi)
+  private gen64Unary(operand: Node, helper: string): void {
+    this.reserve64Temp();
+    this.push(); // arg0 = &temp
+    this.gen64Value(operand);
+    this.pushReg('R0');
+    this.pushReg('R1');
+    this.emit(`  CALL ${helper}`);
+    this.adjustCsp(-3 * 4);
+    this.read64Temp();
+  }
+
+  // helper(a_lo, a_hi, b_lo, b_hi) -> R0 = -1/0/1, turned into a 0/1 boolean.
+  private gen64Compare(node: Node): void {
+    const unsigned = isUnsignedInteger(node.lhs?.ty) || isUnsignedInteger(node.rhs?.ty);
+    this.gen64Value(node.lhs!);
+    this.pushReg('R0');
+    this.pushReg('R1');
+    this.gen64Value(node.rhs!);
+    this.pushReg('R0');
+    this.pushReg('R1');
+    this.emit(`  CALL ${unsigned ? '__u64_cmp' : '__i64_cmp'}`);
+    this.adjustCsp(-4 * 4);
+    // R0 holds the signed comparison result; compare it against 0.
+    const yes = this.label('cmp64.true');
+    const done = this.label('cmp64.done');
+    const jump = { eq: 'JZ', ne: 'JNZ', lt: 'JL', le: 'JLE' }[
+      node.kind as 'eq' | 'ne' | 'lt' | 'le'
+    ];
+    this.emit('  MOV R7, 0');
+    this.emit('  CMP R0, R7');
+    this.emit(`  ${jump} ${yes}`);
+    this.emit('  MOV R0, 0');
+    this.emit(`  JMP ${done}`);
+    this.emit(`${yes}:`);
+    this.emit('  MOV R0, 1');
+    this.emit(`${done}:`);
+  }
+
   private genCall(node: Node): void {
     if (node.builtin) {
       this.genBuiltin(node);
       return;
     }
     const args = node.args ?? [];
+    let words = 0;
     for (const arg of args) {
-      this.genExpr(arg);
-      this.push();
+      if (is64(arg.ty)) {
+        this.gen64Value(arg); // R0=low, R1=high
+        this.pushReg('R0');
+        this.pushReg('R1');
+        words += 2;
+      } else {
+        this.genExpr(arg);
+        this.push();
+        words += 1;
+      }
     }
     if (node.funcExpr) {
       this.genExpr(node.funcExpr);
@@ -546,7 +787,7 @@ class Generator {
     } else {
       this.emit(`  CALL ${node.funcName}`);
     }
-    if (args.length > 0) this.adjustCsp(-args.length * 4);
+    if (words > 0) this.adjustCsp(-words * 4);
   }
 
   // Target intrinsics. The slice supports `__syscall` (the userland trap) plus a

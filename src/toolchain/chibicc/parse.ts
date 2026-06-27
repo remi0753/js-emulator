@@ -19,6 +19,7 @@ import {
   arrayOf,
   elementType,
   funcType,
+  is64,
   isInteger,
   isPointerLike,
   type Member,
@@ -27,10 +28,12 @@ import {
   type Type,
   tyChar,
   tyInt,
+  tyLLong,
   tyLong,
   tyShort,
   tyUChar,
   tyUInt,
+  tyULLong,
   tyULong,
   tyUShort,
   tyVoid,
@@ -175,6 +178,9 @@ function align(n: number, a: number): number {
   return Math.floor((n + a - 1) / a) * a;
 }
 
+// Target intrinsics handled directly by the backend (codegen `genBuiltin`).
+const INTRINSICS = new Set(['__syscall', '__out', '__in', '__halt']);
+
 class Parser {
   private pos = 0;
   private readonly globals = new Map<string, Obj>();
@@ -267,7 +273,7 @@ class Parser {
     let isTypedef = false;
     let hasChar = false;
     let hasShort = false;
-    let hasLong = false;
+    let longCount = 0;
     let hasInt = false;
     let hasVoid = false;
     let isUnsigned = false;
@@ -335,7 +341,7 @@ class Parser {
         continue;
       }
       if (word === 'long') {
-        hasLong = true;
+        longCount++;
         this.pos++;
         count++;
         continue;
@@ -358,7 +364,8 @@ class Parser {
     else if (hasVoid) ty = tyVoid;
     else if (hasChar) ty = isUnsigned ? tyUChar : tyChar;
     else if (hasShort) ty = isUnsigned ? tyUShort : tyShort;
-    else if (hasLong) ty = isUnsigned ? tyULong : tyLong;
+    else if (longCount >= 2) ty = isUnsigned ? tyULLong : tyLLong;
+    else if (longCount === 1) ty = isUnsigned ? tyULong : tyLong;
     else ty = isUnsigned ? tyUInt : tyInt; // plain int, or `unsigned`/`signed` only
     void hasInt;
     return { ty, isStatic, isExtern, isTypedef };
@@ -1351,6 +1358,15 @@ class Parser {
 
     if (t.kind === 'num') {
       this.pos++;
+      // A `long long` literal carries its 64-bit type so addType keeps it 64-bit.
+      if (t.is64Lit) {
+        return {
+          kind: 'num',
+          line: t.line,
+          value: t.value,
+          ty: t.isUnsignedLit ? tyULLong : tyLLong,
+        };
+      }
       return { kind: 'num', line: t.line, value: t.value };
     }
 
@@ -1388,9 +1404,10 @@ class Parser {
   private funcall(name: string, line: number): Node {
     const args = this.callArgs();
 
-    // `__`-prefixed names are target intrinsics handled by the backend, not real
-    // calls. They need no declaration.
-    if (name.startsWith('__')) {
+    // Known target intrinsics are handled by the backend, not real calls, and
+    // need no declaration. Other `__`-prefixed names (e.g. the `__i64_*` runtime
+    // helpers) are ordinary functions.
+    if (INTRINSICS.has(name)) {
       return { kind: 'funcall', line, builtin: name, args, funcReturn: tyInt };
     }
 
@@ -1407,7 +1424,23 @@ class Parser {
       return this.indirectCall(target, args, line);
     }
     const funcReturn = fn?.isFunction ? (fn.ty.returnType ?? tyInt) : tyInt;
-    return { kind: 'funcall', line, funcName: name, args, funcReturn };
+    const converted = this.convertArgs(args, fn?.isFunction ? fn.ty.params : undefined);
+    return { kind: 'funcall', line, funcName: name, args: converted, funcReturn };
+  }
+
+  // Convert each argument to its parameter type where that changes the ABI slot
+  // count (the 64-bit/non-64-bit boundary), so a `long long` parameter always
+  // receives two words and a narrowing argument one. Other conversions are
+  // handled by the value's own load/cast codegen.
+  private convertArgs(args: Node[], params?: Type[]): Node[] {
+    if (!params) return args;
+    return args.map((arg, i) => {
+      const pty = params[i];
+      if (!pty) return arg; // excess / variadic argument
+      addType(arg);
+      if (is64(pty) === is64(arg.ty ?? tyInt)) return arg;
+      return { kind: 'cast', line: arg.line, lhs: arg, castType: pty, ty: pty };
+    });
   }
 
   private callExpr(target: Node, line: number): Node {
@@ -1439,7 +1472,7 @@ class Parser {
       kind: 'funcall',
       line,
       funcExpr: target,
-      args,
+      args: this.convertArgs(args, fnTy?.params),
       funcReturn: fnTy?.returnType ?? tyInt,
     };
   }
@@ -1649,10 +1682,15 @@ class Parser {
   // positive offsets growing upward.
   private assignOffsets(fn: Obj): void {
     const params = fn.params ?? [];
-    const nparams = params.length;
-    params.forEach((p, i) => {
-      p.offset = -((nparams - i) * 4);
-    });
+    // Parameters sit at negative offsets from R6, low word first. Each occupies
+    // a 4-byte-rounded slot, so a `long long` parameter spans two slots.
+    const slot = (ty: Type): number => align(Math.max(1, ty.size), 4);
+    const paramBytes = params.reduce((sum, p) => sum + slot(p.ty), 0);
+    let acc = 0;
+    for (const p of params) {
+      p.offset = -(paramBytes - acc);
+      acc += slot(p.ty);
+    }
     let cursor = 0;
     for (const local of fn.locals ?? []) {
       const a = Math.min(4, local.ty.align);

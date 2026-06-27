@@ -19,6 +19,10 @@ export interface Token {
   value: number;
   // Decoded bytes for `str` tokens, including the trailing NUL terminator.
   str: Uint8Array;
+  // Numeric-literal suffix info: a `u`/`U` suffix, and an `ll`/`LL` suffix or a
+  // value that does not fit in 32 bits (a `long long` constant).
+  isUnsignedLit?: boolean;
+  is64Lit?: boolean;
 }
 
 export class TokenizeError extends Error {
@@ -191,18 +195,27 @@ export function tokenize(source: string): Token[] {
     // Numeric literals (decimal and hex).
     if (isDigit(c)) {
       let j = i;
-      let value: number;
+      let full: number; // the literal's full numeric value (may exceed 32 bits)
       if (c === '0' && (source[i + 1] === 'x' || source[i + 1] === 'X')) {
         j = i + 2;
         while (j < source.length && /[0-9a-fA-F]/.test(source[j]!)) j++;
-        value = Number.parseInt(source.slice(i + 2, j), 16) >>> 0;
+        full = Number.parseInt(source.slice(i + 2, j), 16);
       } else {
         while (j < source.length && isDigit(source[j]!)) j++;
-        value = Number.parseInt(source.slice(i, j), 10) >>> 0;
+        full = Number.parseInt(source.slice(i, j), 10);
       }
-      // Skip integer suffixes (u/l) without interpreting them in the slice.
-      while (j < source.length && /[uUlL]/.test(source[j]!)) j++;
-      push('num', source.slice(i, j), { value });
+      // Capture integer suffixes: `u`/`U` (unsigned), `l`/`ll` (long/long long).
+      let isUnsignedLit = false;
+      let longCount = 0;
+      while (j < source.length && /[uUlL]/.test(source[j]!)) {
+        if (source[j] === 'u' || source[j] === 'U') isUnsignedLit = true;
+        else longCount++;
+        j++;
+      }
+      // A value beyond 32 bits, or an explicit `ll`/`LL` suffix, is long long.
+      const is64Lit = longCount >= 2 || full > 0xffffffff;
+      const value = is64Lit ? full : full >>> 0;
+      push('num', source.slice(i, j), { value, isUnsignedLit, is64Lit });
       i = j;
       continue;
     }

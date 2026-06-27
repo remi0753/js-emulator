@@ -16,6 +16,7 @@ export type TypeKind =
   | 'short'
   | 'int'
   | 'long'
+  | 'llong'
   | 'ptr'
   | 'func'
   | 'array'
@@ -54,6 +55,9 @@ export const tyUChar: Type = { kind: 'char', size: 1, align: 1, isUnsigned: true
 export const tyUShort: Type = { kind: 'short', size: 2, align: 2, isUnsigned: true };
 export const tyUInt: Type = { kind: 'int', size: 4, align: 4, isUnsigned: true };
 export const tyULong: Type = { kind: 'long', size: 4, align: 4, isUnsigned: true };
+// `long long` is 8 bytes but only 4-byte aligned in the custom32 ILP32 ABI.
+export const tyLLong: Type = { kind: 'llong', size: 8, align: 4 };
+export const tyULLong: Type = { kind: 'llong', size: 8, align: 4, isUnsigned: true };
 
 export function pointerTo(base: Type): Type {
   return { kind: 'ptr', size: 4, align: 4, base };
@@ -76,7 +80,18 @@ export function unionType(members: Member[], size: number, align: number, tag?: 
 }
 
 export function isInteger(ty: Type): boolean {
-  return ty.kind === 'char' || ty.kind === 'short' || ty.kind === 'int' || ty.kind === 'long';
+  return (
+    ty.kind === 'char' ||
+    ty.kind === 'short' ||
+    ty.kind === 'int' ||
+    ty.kind === 'long' ||
+    ty.kind === 'llong'
+  );
+}
+
+// A 64-bit integer (`long long`), held as a low/high 32-bit word pair.
+export function is64(ty: Type | undefined): boolean {
+  return !!ty && ty.kind === 'llong';
 }
 
 export function isUnsignedInteger(ty: Type | undefined): boolean {
@@ -93,6 +108,10 @@ export function isPromotedUnsigned(ty: Type | undefined): boolean {
 }
 
 export function usualArithmeticType(lhs: Type | undefined, rhs: Type | undefined): Type {
+  // If either operand is 64-bit, the result is 64-bit (unsigned if either is).
+  if (is64(lhs) || is64(rhs)) {
+    return isUnsignedInteger(lhs) || isUnsignedInteger(rhs) ? tyULLong : tyLLong;
+  }
   return isPromotedUnsigned(lhs) || isPromotedUnsigned(rhs) ? tyUInt : tyInt;
 }
 
@@ -151,12 +170,19 @@ export function addType(node: Node | null | undefined): void {
       return;
     case 'shl':
     case 'shr':
+      if (is64(node.lhs?.ty)) {
+        node.ty = isUnsignedInteger(node.lhs?.ty) ? tyULLong : tyLLong;
+        return;
+      }
       node.ty = isPromotedUnsigned(node.lhs?.ty) ? tyUInt : tyInt;
       return;
     case 'assign':
       node.ty = node.lhs?.ty ?? tyInt;
       return;
     case 'neg':
+      // Negation keeps a 64-bit operand 64-bit; otherwise it promotes to int.
+      node.ty = is64(node.lhs?.ty) ? (node.lhs?.ty ?? tyInt) : tyInt;
+      return;
     case 'not':
     case 'eq':
     case 'ne':

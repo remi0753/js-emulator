@@ -5,6 +5,7 @@ import { Fs } from '../src/storage/fs.ts';
 import { PortBlockDevice } from '../src/storage/port-block-device.ts';
 import { crt0Object } from '../src/toolchain/cc.ts';
 import { compile, compileObject } from '../src/toolchain/chibicc/index.ts';
+import { i64RuntimeObject } from '../src/toolchain/chibicc/runtime64.ts';
 import { linkGuestExecutable } from '../src/v3/guest-cc.ts';
 import {
   buildGuestDiskImage,
@@ -470,8 +471,61 @@ int main(void) {
 }
 `;
 
+const LONGLONG_SRC = `
+int slen(char *s) {
+  int n = 0;
+  while (s[n]) { n = n + 1; }
+  return n;
+}
+
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+
+int putnum(int v) {
+  char buf[12];
+  int i = 11;
+  buf[11] = 0;
+  if (v == 0) { return puts("0"); }
+  while (v > 0) {
+    i = i - 1;
+    buf[i] = 48 + v % 10;
+    v = v / 10;
+  }
+  return puts(buf + i);
+}
+
+long long mulwide(long long a, long long b) { return a * b; }
+
+int main(void) {
+  long long a = 1000000000;      /* 1e9 */
+  long long c = a * 5;           /* 5e9, exceeds 32 bits */
+  long long d = c / 7;           /* 714285714 */
+  long long e = c % 7;           /* 2 */
+  int total = 0;
+  if (c == 5000000000LL) { total = total + 1; }
+  if (c > a) { total = total + 2; }
+  if (d == 714285714LL) { total = total + 4; }
+  if (e == 2) { total = total + 8; }
+  long long neg = 0 - c;
+  if (neg < 0) { total = total + 16; }
+  long long sh = c >> 1;         /* 2500000000 */
+  if (sh == 2500000000LL) { total = total + 32; }
+  long long f = mulwide(a, 6);   /* 6e9, passed/returned as two words */
+  if (f == 6000000000LL) { total = total + 64; }
+  int lo = (int)c;               /* low 32 bits of 5e9 = 705032704 */
+  if (lo == 705032704) { total = total + 128; }
+  puts("ll=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+
 function linkProgram(src: string, name: string): Uint8Array {
   return linkGuestExecutable([crt0Object(), compileObject(src, { name })]);
+}
+
+function linkProgramWith64(src: string, name: string): Uint8Array {
+  return linkGuestExecutable([crt0Object(), compileObject(src, { name }), i64RuntimeObject()]);
 }
 
 function linkProgramWithIncludes(src: string, name: string): Uint8Array {
@@ -570,6 +624,16 @@ test('chibicc Phase 32 frontend accepts typedef, enum, struct, and initializers'
   );
   // ...but unsigned int stays unsigned.
   assert.match(compile('unsigned int u; int main(void){ return u / 3; }'), /\bDIV R0/);
+  // long long: 8-byte type, helper-based arithmetic, two-word ABI.
+  const llAsm = compile('long long f(long long a, long long b){ return a * b; }');
+  assert.match(llAsm, /CALL __i64_mul/);
+  assert.match(compile('long long f(long long a){ return a / 3; }'), /CALL __i64_div/);
+  assert.match(
+    compile('unsigned long long f(unsigned long long a){ return a / 3; }'),
+    /CALL __u64_div/,
+  );
+  assert.equal(compile('int f(void){ return sizeof(long long); }').match(/MOV R0, 8/)?.length, 1);
+  assert.doesNotThrow(() => i64RuntimeObject());
 });
 
 test('chibicc Phase 32 aggregate program runs deterministically in the guest', () => {
@@ -610,6 +674,16 @@ test('chibicc Phase 32 conditional preprocessing runs in the guest', () => {
 
   const out = bootAndRun(disk, 'preproc');
   assert.ok(out.includes('preproc=42\n'), `missing preprocessor result in:\n${out}`);
+});
+
+test('chibicc Phase 32 long long arithmetic runs in the guest', () => {
+  const disk = buildGuestDiskImage();
+  const fs = installFs(disk);
+  fs.writeFile('/bin/ll', linkProgramWith64(LONGLONG_SRC, 'll.o'));
+  fs.chmod('/bin/ll', 0o755);
+
+  const out = bootAndRun(disk, 'll');
+  assert.ok(out.includes('ll=255\n'), `missing long long result in:\n${out}`);
 });
 
 test('chibicc Phase 32 integer promotions run in the guest', () => {
