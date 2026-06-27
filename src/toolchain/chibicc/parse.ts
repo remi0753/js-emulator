@@ -21,6 +21,7 @@ import {
   funcType,
   is64,
   isAggregate,
+  isFloating,
   isInteger,
   isPointerLike,
   type Member,
@@ -109,6 +110,7 @@ export interface Node {
   body?: Node[];
   // Leaves.
   value?: number; // num
+  valueHi?: number; // high word for 64-bit numeric literals
   variable?: Obj; // var
   // Calls.
   funcName?: string;
@@ -1008,13 +1010,14 @@ class Parser {
     if (!init.expr) return; // zero-filled
     const c = this.evalConstReloc(init.expr);
     if (c.label) relocs.push({ offset: off, symbol: c.label, addend: c.value });
-    else this.writeScalar(bytes, off, ty, c.value);
+    else this.writeScalar(bytes, off, ty, c.value, c.valueHi);
   }
 
-  private writeScalar(bytes: Uint8Array, off: number, ty: Type, value: number): void {
-    const n = Math.min(Math.max(1, ty.size), 4);
+  private writeScalar(bytes: Uint8Array, off: number, ty: Type, value: number, valueHi = 0): void {
+    const n = Math.min(Math.max(1, ty.size), 8);
     let v = value >>> 0;
     for (let i = 0; i < n; i++) {
+      if (i === 4) v = valueHi >>> 0;
       bytes[off + i] = v & 0xff;
       v >>>= 8;
     }
@@ -1022,8 +1025,10 @@ class Parser {
 
   // Evaluate a relocatable constant: a plain integer, or a label (symbol
   // address) plus an integer addend, for pointer/address initializers.
-  private evalConstReloc(node: Node): { label?: string; value: number } {
+  private evalConstReloc(node: Node): { label?: string; value: number; valueHi?: number } {
     switch (node.kind) {
+      case 'num':
+        return { value: node.value ?? 0, valueHi: node.valueHi };
       case 'addr':
         return this.evalConstAddr(node.lhs!);
       case 'var': {
@@ -1473,6 +1478,12 @@ class Parser {
 
     if (t.kind === 'num') {
       this.pos++;
+      if (t.isFloatLit) {
+        return { kind: 'num', line: t.line, value: t.value, ty: tyFloat };
+      }
+      if (t.isDoubleLit) {
+        return { kind: 'num', line: t.line, value: t.value, valueHi: t.valueHi, ty: tyDouble };
+      }
       // A `long long` literal carries its 64-bit type so addType keeps it 64-bit.
       if (t.is64Lit) {
         return {
@@ -1603,7 +1614,7 @@ class Parser {
       const pty = params[i];
       if (!pty) return arg; // excess / variadic argument
       addType(arg);
-      if (is64(pty) === is64(arg.ty ?? tyInt)) return arg;
+      if (is64(pty) === is64(arg.ty ?? tyInt) && pty.kind === arg.ty?.kind) return arg;
       return { kind: 'cast', line: arg.line, lhs: arg, castType: pty, ty: pty };
     });
   }
@@ -1656,6 +1667,10 @@ class Parser {
     addType(rhs);
     const lt = lhs.ty!;
     const rt = rhs.ty!;
+    if (isFloating(lt) || isFloating(rt)) {
+      if (isPointerLike(lt) || isPointerLike(rt)) this.error('invalid operands to +');
+      return { kind: 'add', line, lhs, rhs };
+    }
     if (isInteger(lt) && isInteger(rt)) return { kind: 'add', line, lhs, rhs };
     if (isPointerLike(lt) && isPointerLike(rt)) this.error('invalid pointer + pointer');
     if (!isPointerLike(lt) && !isPointerLike(rt)) this.error('invalid operands to +');
@@ -1679,6 +1694,10 @@ class Parser {
     addType(rhs);
     const lt = lhs.ty!;
     const rt = rhs.ty!;
+    if (isFloating(lt) || isFloating(rt)) {
+      if (isPointerLike(lt) || isPointerLike(rt)) this.error('invalid operands to -');
+      return { kind: 'sub', line, lhs, rhs };
+    }
     if (isInteger(lt) && isInteger(rt)) return { kind: 'sub', line, lhs, rhs };
     if (isPointerLike(lt) && isInteger(rt)) {
       // ptr - integer: scale the integer side by the element size.

@@ -41,10 +41,10 @@ This first slice deliberately covers only what Phase 31 requires:
 - function definitions, prototypes, and direct calls;
 - the `__syscall` (and a few raw device/CPU) intrinsics for libc-free programs.
 
-Not yet supported (Phase 32 and later): `float`/`double` soft-float arithmetic
-and conversions. Later local slices added macro stringize/token-paste/includes,
-`long long`, variadic functions, aggregate calls/returns, bit-fields, compound
-literals, and VLAs.
+Later local slices added macro stringize/token-paste/includes, `long long`,
+variadic functions, aggregate calls/returns, bit-fields, compound literals,
+VLAs, and soft-float helper lowering for `float`/`double` constants,
+arithmetic, comparisons, and int conversions.
 
 ## ABI
 

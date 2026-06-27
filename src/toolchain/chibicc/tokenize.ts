@@ -23,6 +23,9 @@ export interface Token {
   // value that does not fit in 32 bits (a `long long` constant).
   isUnsignedLit?: boolean;
   is64Lit?: boolean;
+  isFloatLit?: boolean;
+  isDoubleLit?: boolean;
+  valueHi?: number;
 }
 
 export class TokenizeError extends Error {
@@ -116,6 +119,20 @@ function isDigit(c: string): boolean {
   return c >= '0' && c <= '9';
 }
 
+function float32Bits(value: number): number {
+  const buf = new ArrayBuffer(4);
+  const view = new DataView(buf);
+  view.setFloat32(0, value, true);
+  return view.getUint32(0, true);
+}
+
+function float64Bits(value: number): { lo: number; hi: number } {
+  const buf = new ArrayBuffer(8);
+  const view = new DataView(buf);
+  view.setFloat64(0, value, true);
+  return { lo: view.getUint32(0, true), hi: view.getUint32(4, true) };
+}
+
 // Decode a single backslash escape starting at `src[i]` (with `src[i] === '\\'`).
 // Returns the byte value and the index just past the escape.
 function readEscape(src: string, i: number, line: number): { value: number; next: number } {
@@ -195,16 +212,53 @@ export function tokenize(source: string): Token[] {
       continue;
     }
 
-    // Numeric literals (decimal and hex).
-    if (isDigit(c)) {
+    // Numeric literals (decimal/hex integers, plus decimal floating literals).
+    if (isDigit(c) || (c === '.' && isDigit(source[i + 1] ?? ''))) {
       let j = i;
       let full: number; // the literal's full numeric value (may exceed 32 bits)
-      if (c === '0' && (source[i + 1] === 'x' || source[i + 1] === 'X')) {
+      if (c !== '.' && c === '0' && (source[i + 1] === 'x' || source[i + 1] === 'X')) {
         j = i + 2;
         while (j < source.length && /[0-9a-fA-F]/.test(source[j]!)) j++;
         full = Number.parseInt(source.slice(i + 2, j), 16);
       } else {
         while (j < source.length && isDigit(source[j]!)) j++;
+        let isFloating = false;
+        if (source[j] === '.') {
+          isFloating = true;
+          j++;
+          while (j < source.length && isDigit(source[j]!)) j++;
+        }
+        if (source[j] === 'e' || source[j] === 'E') {
+          isFloating = true;
+          j++;
+          if (source[j] === '+' || source[j] === '-') j++;
+          while (j < source.length && isDigit(source[j]!)) j++;
+        }
+        if (isFloating) {
+          let isFloatLit = false;
+          if (source[j] === 'f' || source[j] === 'F') {
+            isFloatLit = true;
+            j++;
+          } else if (source[j] === 'l' || source[j] === 'L') {
+            j++;
+          }
+          const parsed = Number.parseFloat(source.slice(i, j));
+          if (isFloatLit) {
+            push('num', source.slice(i, j), {
+              value: float32Bits(parsed),
+              isFloatLit: true,
+            });
+          } else {
+            const bits = float64Bits(parsed);
+            push('num', source.slice(i, j), {
+              value: bits.lo,
+              valueHi: bits.hi,
+              isDoubleLit: true,
+            });
+          }
+          i = j;
+          continue;
+        }
         full = Number.parseInt(source.slice(i, j), 10);
       }
       // Capture integer suffixes: `u`/`U` (unsigned), `l`/`ll` (long/long long).

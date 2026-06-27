@@ -5,6 +5,7 @@ import { Fs } from '../src/storage/fs.ts';
 import { PortBlockDevice } from '../src/storage/port-block-device.ts';
 import { compileObject as bootstrapCompileObject, crt0Object } from '../src/toolchain/cc.ts';
 import { compile, compileObject } from '../src/toolchain/chibicc/index.ts';
+import { floatRuntimeObject } from '../src/toolchain/chibicc/runtimeFloat.ts';
 import { i64RuntimeObject } from '../src/toolchain/chibicc/runtime64.ts';
 import { linkGuestExecutable } from '../src/v3/guest-cc.ts';
 import {
@@ -777,6 +778,15 @@ function linkProgramWith64(src: string, name: string): Uint8Array {
   return linkGuestExecutable([crt0Object(), compileObject(src, { name }), i64RuntimeObject()]);
 }
 
+function linkProgramWithFloat(src: string, name: string): Uint8Array {
+  return linkGuestExecutable([
+    crt0Object(),
+    compileObject(src, { name }),
+    floatRuntimeObject(),
+    i64RuntimeObject(),
+  ]);
+}
+
 function linkProgramWithIncludes(src: string, name: string): Uint8Array {
   return linkGuestExecutable([
     crt0Object(),
@@ -892,10 +902,11 @@ test('chibicc Phase 32 frontend accepts typedef, enum, struct, and initializers'
   assert.match(compoundVlaAsm, /STORE R5, __csp/);
   assert.doesNotThrow(() => compile('int f(int a, ...){ return a; }'));
   assert.match(compile(VARIADIC_SRC), /LOADR R0, R0/);
-  assert.throws(
-    () => compile('float f(float a, float b){ return a + b; }'),
-    /invalid operands to \+/,
-  );
+  const floatAsm = compile('float f(float a, float b){ return a + b; }');
+  assert.match(floatAsm, /CALL __addsf3/);
+  const doubleAsm = compile('double f(double a, double b){ return a * b; }');
+  assert.match(doubleAsm, /CALL __muldf3/);
+  assert.doesNotThrow(() => floatRuntimeObject());
 });
 
 test('chibicc Phase 32 aggregate program runs deterministically in the guest', () => {
@@ -946,6 +957,40 @@ test('chibicc Phase 32 long long arithmetic runs in the guest', () => {
 
   const out = bootAndRun(disk, 'll');
   assert.ok(out.includes('ll=255\n'), `missing long long result in:\n${out}`);
+});
+
+test('chibicc Phase 32 float and double soft-float run in the guest', () => {
+  const src = `
+int slen(char *s) { int n = 0; while (s[n]) n = n + 1; return n; }
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+int putnum(int v) {
+  char buf[12]; int i = 11; buf[11] = 0;
+  if (v == 0) return puts("0");
+  while (v > 0) { i = i - 1; buf[i] = 48 + v % 10; v = v / 10; }
+  return puts(buf + i);
+}
+int main(void) {
+  float a = 1.5f;
+  float b = 2.5f;
+  double c = 3.0;
+  double d = 4.0;
+  int total = (int)(a + b);
+  total = total + (int)(b * 4.0f);
+  total = total + (a < b);
+  total = total + (int)(c * d);
+  puts("float=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+  const disk = buildGuestDiskImage();
+  const fs = installFs(disk);
+  fs.writeFile('/bin/float', linkProgramWithFloat(src, 'float.o'));
+  fs.chmod('/bin/float', 0o755);
+
+  const out = bootAndRun(disk, 'float');
+  assert.ok(out.includes('float=27\n'), `missing float result in:\n${out}`);
 });
 
 test('chibicc Phase 32 integer promotions run in the guest', () => {

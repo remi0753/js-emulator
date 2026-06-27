@@ -102,6 +102,10 @@ export function isInteger(ty: Type): boolean {
   );
 }
 
+export function isFloating(ty: Type | undefined): boolean {
+  return !!ty && (ty.kind === 'float' || ty.kind === 'double');
+}
+
 export function isAggregate(ty: Type | undefined): boolean {
   return !!ty && (ty.kind === 'struct' || ty.kind === 'union');
 }
@@ -125,6 +129,8 @@ export function isPromotedUnsigned(ty: Type | undefined): boolean {
 }
 
 export function usualArithmeticType(lhs: Type | undefined, rhs: Type | undefined): Type {
+  if (lhs?.kind === 'double' || rhs?.kind === 'double') return tyDouble;
+  if (lhs?.kind === 'float' || rhs?.kind === 'float') return tyFloat;
   // If either operand is 64-bit, the result is 64-bit (unsigned if either is).
   if (is64(lhs) || is64(rhs)) {
     return isUnsignedInteger(lhs) || isUnsignedInteger(rhs) ? tyULLong : tyLLong;
@@ -200,6 +206,10 @@ export function addType(node: Node | null | undefined): void {
       node.ty = node.lhs?.ty ?? tyInt;
       return;
     case 'neg':
+      if (isFloating(node.lhs?.ty)) {
+        node.ty = node.lhs?.ty ?? tyInt;
+        return;
+      }
       // Negation keeps a 64-bit operand 64-bit; otherwise it promotes to int.
       node.ty = is64(node.lhs?.ty) ? (node.lhs?.ty ?? tyInt) : tyInt;
       return;

@@ -25,6 +25,7 @@ import {
   elementType,
   is64,
   isAggregate,
+  isFloating,
   isPointerLike,
   isPromotedUnsigned,
   isUnsignedInteger,
@@ -207,7 +208,7 @@ class Generator {
       case 'return':
         if (node.lhs && isAggregate(this.currentFn?.ty.returnType)) {
           this.returnAggregate(node.lhs);
-        } else if (node.lhs) this.genExpr(node.lhs);
+        } else if (node.lhs) this.genValueAs(node.lhs, this.currentFn?.ty.returnType);
         else this.emit('  MOV R0, 0');
         this.emit(`  JMP ${this.returnLabel}`);
         return;
@@ -573,6 +574,10 @@ class Generator {
       this.load64();
       return;
     }
+    if (node.castType?.kind === 'double') {
+      this.load64();
+      return;
+    }
     this.load({ kind: 'deref', line: node.line, lhs: node.vaList, ty: node.castType });
   }
 
@@ -580,6 +585,14 @@ class Generator {
     // 64-bit values live in the R0(low):R1(high) pair and take a separate path.
     if (is64(node.ty)) {
       this.gen64Expr(node);
+      return;
+    }
+    if (node.ty?.kind === 'float') {
+      this.genFloatExpr(node);
+      return;
+    }
+    if (node.ty?.kind === 'double') {
+      this.genDoubleExpr(node);
       return;
     }
     switch (node.kind) {
@@ -630,8 +643,7 @@ class Generator {
         this.genCall(node);
         return;
       case 'cast':
-        this.genExpr(node.lhs!);
-        this.castTo(node.castType);
+        this.genValueAs(node.lhs!, node.castType);
         return;
       case 'neg':
         this.genExpr(node.lhs!);
@@ -658,11 +670,44 @@ class Generator {
         this.genLogical(node);
         return;
       default:
-        if (node.ty?.kind === 'float' || node.ty?.kind === 'double') {
-          throw new CodegenError('float/double soft-float codegen is not implemented yet');
-        }
         this.genBinary(node);
     }
+  }
+
+  private genValueAs(node: Node, ty: Node['ty']): void {
+    if (!ty) {
+      this.genExpr(node);
+      return;
+    }
+    if (ty.kind === 'float') {
+      this.genFloatValue(node);
+      return;
+    }
+    if (ty.kind === 'double') {
+      this.genDoubleValue(node);
+      return;
+    }
+    if (is64(ty)) {
+      this.gen64Value(node);
+      return;
+    }
+    if (node.ty?.kind === 'float') {
+      this.genFloatValue(node);
+      this.push();
+      this.emit('  CALL __fixsfsi');
+      this.adjustCsp(-1 * 4);
+      return;
+    }
+    if (node.ty?.kind === 'double') {
+      this.genDoubleValue(node);
+      this.pushReg('R1');
+      this.pushReg('R0');
+      this.emit('  CALL __fixdfsi');
+      this.adjustCsp(-2 * 4);
+      return;
+    }
+    this.genExpr(node);
+    this.castTo(ty);
   }
 
   private castTo(ty: Node['ty']): void {
@@ -691,6 +736,13 @@ class Generator {
   }
 
   private genBinary(node: Node): void {
+    if (
+      (node.kind === 'eq' || node.kind === 'ne' || node.kind === 'lt' || node.kind === 'le') &&
+      (isFloating(node.lhs?.ty) || isFloating(node.rhs?.ty))
+    ) {
+      this.genFloatCompare(node);
+      return;
+    }
     // A comparison whose operands are 64-bit produces a 32-bit 0/1 result but
     // needs the full 64-bit compare helper.
     if (
@@ -794,6 +846,211 @@ class Generator {
   private genCond(node: Node): void {
     this.genExpr(node);
     if (is64(node.ty)) this.emit('  OR R0, R1');
+    else if (node.ty?.kind === 'float') {
+      this.emit('  MOV R7, 2147483647');
+      this.emit('  AND R0, R7');
+    } else if (node.ty?.kind === 'double') {
+      this.emit('  MOV R7, 2147483647');
+      this.emit('  AND R1, R7');
+      this.emit('  OR R0, R1');
+    }
+  }
+
+  // --- soft-float codegen --------------------------------------------------
+
+  private floatBinaryHelper(node: Node, prefix: 'sf' | 'df'): string {
+    const suffix = prefix === 'sf' ? 'sf3' : 'df3';
+    switch (node.kind) {
+      case 'add':
+        return `__add${suffix}`;
+      case 'sub':
+        return `__sub${suffix}`;
+      case 'mul':
+        return `__mul${suffix}`;
+      case 'div':
+        return `__div${suffix}`;
+      default:
+        throw new CodegenError(`no soft-float helper for ${node.kind}`);
+    }
+  }
+
+  private genFloatExpr(node: Node): void {
+    switch (node.kind) {
+      case 'num':
+        this.emit(`  MOV R0, ${node.value! >>> 0}`);
+        return;
+      case 'var':
+      case 'member':
+        this.genAddr(node);
+        this.load(node);
+        return;
+      case 'deref':
+        this.genExpr(node.lhs!);
+        this.load(node);
+        return;
+      case 'assign':
+        this.genAddr(node.lhs!);
+        this.push();
+        this.genFloatValue(node.rhs!);
+        this.pop('R1');
+        this.store(node.lhs!);
+        return;
+      case 'cast':
+        this.genFloatValue(node.lhs!);
+        return;
+      case 'funcall':
+        this.genCall(node);
+        return;
+      case 'vaarg':
+        this.genVaArg(node);
+        return;
+      case 'neg':
+        this.genFloatValue(node.lhs!);
+        this.emit('  MOV R7, 2147483648');
+        this.emit('  XOR R0, R7');
+        return;
+      default:
+        this.genFloatBinary(node);
+    }
+  }
+
+  private genDoubleExpr(node: Node): void {
+    switch (node.kind) {
+      case 'num':
+        this.emit(`  MOV R0, ${node.value! >>> 0}`);
+        this.emit(`  MOV R1, ${node.valueHi! >>> 0}`);
+        return;
+      case 'var':
+      case 'member':
+        this.genAddr(node);
+        this.load64();
+        return;
+      case 'deref':
+        this.genExpr(node.lhs!);
+        this.load64();
+        return;
+      case 'assign':
+        this.genAddr(node.lhs!);
+        this.push();
+        this.genDoubleValue(node.rhs!);
+        this.pop('R2');
+        this.emit('  STORER R2, R0');
+        this.emit('  MOV R7, 4');
+        this.emit('  ADD R2, R7');
+        this.emit('  STORER R2, R1');
+        return;
+      case 'cast':
+        this.genDoubleValue(node.lhs!);
+        return;
+      case 'funcall':
+        this.genCall(node);
+        return;
+      case 'vaarg':
+        this.genVaArg(node);
+        return;
+      case 'neg':
+        this.genDoubleValue(node.lhs!);
+        this.emit('  MOV R7, 2147483648');
+        this.emit('  XOR R1, R7');
+        return;
+      default:
+        this.genDoubleBinary(node);
+    }
+  }
+
+  private genFloatValue(node: Node): void {
+    if (node.ty?.kind === 'float') {
+      this.genExpr(node);
+      return;
+    }
+    if (node.ty?.kind === 'double') {
+      this.genDoubleValue(node);
+      this.pushReg('R1');
+      this.pushReg('R0');
+      this.emit('  CALL __truncdfsf2');
+      this.adjustCsp(-2 * 4);
+      return;
+    }
+    this.genExpr(node);
+    this.push();
+    this.emit(
+      `  CALL ${isUnsignedInteger(node.ty) || (node.ty && isPointerLike(node.ty)) ? '__floatunsisf' : '__floatsisf'}`,
+    );
+    this.adjustCsp(-1 * 4);
+  }
+
+  private genDoubleValue(node: Node): void {
+    if (node.ty?.kind === 'double') {
+      this.genExpr(node);
+      return;
+    }
+    if (node.ty?.kind === 'float') {
+      this.genFloatValue(node);
+      this.push();
+      this.emit('  CALL __extendsfdf2');
+      this.adjustCsp(-1 * 4);
+      return;
+    }
+    this.genExpr(node);
+    this.push();
+    this.emit(
+      `  CALL ${isUnsignedInteger(node.ty) || (node.ty && isPointerLike(node.ty)) ? '__floatunsidf' : '__floatsidf'}`,
+    );
+    this.adjustCsp(-1 * 4);
+  }
+
+  private genFloatBinary(node: Node): void {
+    this.genFloatValue(node.rhs!);
+    this.push();
+    this.genFloatValue(node.lhs!);
+    this.push();
+    this.emit(`  CALL ${this.floatBinaryHelper(node, 'sf')}`);
+    this.adjustCsp(-2 * 4);
+  }
+
+  private genDoubleBinary(node: Node): void {
+    this.genDoubleValue(node.rhs!);
+    this.pushReg('R1');
+    this.pushReg('R0');
+    this.genDoubleValue(node.lhs!);
+    this.pushReg('R1');
+    this.pushReg('R0');
+    this.emit(`  CALL ${this.floatBinaryHelper(node, 'df')}`);
+    this.adjustCsp(-4 * 4);
+  }
+
+  private genFloatCompare(node: Node): void {
+    const useDouble = node.lhs?.ty?.kind === 'double' || node.rhs?.ty?.kind === 'double';
+    if (useDouble) {
+      this.genDoubleValue(node.rhs!);
+      this.pushReg('R1');
+      this.pushReg('R0');
+      this.genDoubleValue(node.lhs!);
+      this.pushReg('R1');
+      this.pushReg('R0');
+      this.emit('  CALL __cmpdf2');
+      this.adjustCsp(-4 * 4);
+    } else {
+      this.genFloatValue(node.rhs!);
+      this.push();
+      this.genFloatValue(node.lhs!);
+      this.push();
+      this.emit('  CALL __cmpsf2');
+      this.adjustCsp(-2 * 4);
+    }
+    const yes = this.label('cmpf.true');
+    const done = this.label('cmpf.done');
+    const jump = { eq: 'JZ', ne: 'JNZ', lt: 'JL', le: 'JLE' }[
+      node.kind as 'eq' | 'ne' | 'lt' | 'le'
+    ];
+    this.emit('  MOV R7, 0');
+    this.emit('  CMP R0, R7');
+    this.emit(`  ${jump} ${yes}`);
+    this.emit('  MOV R0, 0');
+    this.emit(`  JMP ${done}`);
+    this.emit(`${yes}:`);
+    this.emit('  MOV R0, 1');
+    this.emit(`${done}:`);
   }
 
   // --- 64-bit (long long) codegen -----------------------------------------
@@ -1004,6 +1261,12 @@ class Generator {
   }
 
   private pushCallArg(arg: Node): number {
+    if (arg.ty?.kind === 'double') {
+      this.genDoubleValue(arg); // R0=low, R1=high
+      this.pushReg('R0'); // low word (lower address)
+      this.pushReg('R1'); // high word (higher address)
+      return 2;
+    }
     if (is64(arg.ty)) {
       this.gen64Value(arg); // R0=low, R1=high
       this.pushReg('R0'); // low word (lower address)

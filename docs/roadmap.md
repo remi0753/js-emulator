@@ -1056,10 +1056,11 @@ chibicc tokenizer / preprocessor / parser / type checker
   arguments (`int`, `long long`, pointer, and aggregate) plus bootstrap↔chibicc
   cross-object calls after the ABI migration.
 
-  Remaining Phase 32 work (not yet implemented): `float`/`double` arithmetic,
-  comparison, conversion, and constants through soft-float helpers. The parser
-  recognizes `float` and `double` type names, but arithmetic is rejected until
-  the helper runtime is added.
+  The remaining Phase 32 soft-float slice now accepts `float`/`double`
+  constants, arithmetic, comparison, and int conversion through helper calls.
+  binary32 helpers operate directly on IEEE-754 bits; binary64 currently uses
+  the same two-word ABI and routes through the binary32 core for the initial
+  guest-tested implementation.
 
   Done when the host cross-compiler can build a broad set of small C conformance
   and regression programs for custom32 and run them deterministically inside the
