@@ -1020,13 +1020,17 @@ chibicc tokenizer / preprocessor / parser / type checker
   Integer promotions were fixed so `unsigned char`/`unsigned short` promote to
   signed `int` (only int/long-ranked unsigned types stay unsigned), correcting
   the signedness of division, shifts, and comparisons in the usual arithmetic
-  conversions. These slices add guest-executed coverage for preprocessor
-  includes/stringize/paste, complex declarators, designated/address/zero-fill
-  initializers, and integer-promotion arithmetic in
-  `test/chibicc-phase32.test.ts`.
+  conversions. `long long`/`unsigned long long` are supported end to end: an
+  8-byte type held as a low/high word pair, `ll`/`LL` and >32-bit literals, the
+  64-bit argument/return ABI (two words, low first; returns in R0:R1), and the
+  `__i64_*`/`__u64_*` runtime helpers (add/sub/mul, signed/unsigned div/mod,
+  bitwise, negation, logical/arithmetic shifts, signed/unsigned compare) written
+  as pure 32-bit C in `src/toolchain/chibicc/runtime64.ts`. These slices add
+  guest-executed coverage for preprocessor includes/stringize/paste, complex
+  declarators, designated/address/zero-fill initializers, integer-promotion
+  arithmetic, and 64-bit arithmetic in `test/chibicc-phase32.test.ts`.
 
-  Remaining Phase 32 work (not yet implemented): `long long` type/constants/
-  helpers and the 64-bit argument/return ABI; variadic functions
+  Remaining Phase 32 work (not yet implemented): variadic functions
   (`va_list`/`va_start`/`va_arg`); aggregate call/return (struct/union
   arguments, small aggregate returns, hidden-pointer returns); bit-fields;
   compound literals; VLAs; and `float`/`double` through soft-float helpers.
