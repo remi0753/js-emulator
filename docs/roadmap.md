@@ -877,7 +877,7 @@ chibicc tokenizer / preprocessor / parser / type checker
   forks/execs `child` and reports its decoded exit status (`child exited 7`) —
   exercised both in-process and through the four CLIs.
 
-- **Phase 30** ⬜ add a host `custom32-cc` driver and ABI smoke suite.
+- **Phase 30** ✅ add a host `custom32-cc` driver and ABI smoke suite.
 
   Add a `custom32-cc` host driver that can compile, assemble, link, search
   libraries, and optionally install a guest executable into a disk image. Use the
@@ -889,9 +889,31 @@ chibicc tokenizer / preprocessor / parser / type checker
   calls, multiple translation units, archives, startup code, argv/envp where
   relevant, and exit status reporting.
 
-  Done when a host-side build can compile and link a non-trivial multi-file
-  program with a static library, install it into a disk image, execute it inside
-  the guest, and assert its stdout and exit status.
+  Added the `custom32-cc` driver (`tools/custom32-cc.ts`, `npm run cc`, `bin`
+  entry) over a reusable core (`src/toolchain/cc.ts`) plus a guest-target glue
+  module (`src/v3/guest-cc.ts`). The driver compiles `.c`, assembles `.s`,
+  accepts `.o`/`.a` inputs, searches libraries with `-L`/`-l`, links through the
+  Phase 29 object pipeline, and optionally installs the executable into a disk
+  image (`--install`/`--install-as`). A C translation unit is lowered to a
+  relocatable object by re-emitting the bootstrap compiler's assembly through the
+  same `as.ts` assembler the `.s` path uses, so cross-object calls/globals/pointer
+  initializers resolve as ordinary `abs32` relocations. To avoid duplicate
+  startup/runtime symbols, units are compiled with no startup and no runtime and
+  reference `__csp`/`memcpy`/… as undefined symbols; a single shared
+  `crt0Object()` defines `_start`, the software stack, `environ`, and the runtime
+  helpers, and is linked first unless `-nostartfiles` is given. The toolchain core
+  stays OS-generation independent (the layering test forbids `toolchain/` →
+  `v3`); the guest load base, executable magic, and disk install live in
+  `src/v3/guest-cc.ts`. Documented in `docs/custom32-cc.md`.
+
+  Done: `test/cc-abi-phase30.test.ts` is the ABI smoke suite — it covers calls,
+  globals, pointers, a struct-pointer argument, arrays, archived libc calls,
+  multiple translation units, startup code, argv/envp delivery, and exit status.
+  Its end-to-end case host-compiles and links a multi-file program against a
+  static archive, installs it into a disk image, boots the guest, runs it from the
+  shell, and asserts both the program's stdout (`compute=117`, the child's
+  `argv[0]`/`environ[0]`) and the decoded child exit status (`child exited 7`) —
+  exercised both in-process and through the `custom32-cc` CLI.
 
 - **Phase 31** ⬜ import a real C frontend and land the first custom32 backend
   slice.
