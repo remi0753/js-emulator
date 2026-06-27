@@ -47,6 +47,10 @@ const KEYWORDS = new Set([
   'signed',
   'static',
   'extern',
+  'typedef',
+  'enum',
+  'struct',
+  'union',
 ]);
 
 // Punctuators, longest first so the scanner takes the maximal munch.

@@ -10,7 +10,23 @@
 
 import type { Node } from './parse.ts';
 
-export type TypeKind = 'void' | 'char' | 'short' | 'int' | 'long' | 'ptr' | 'func' | 'array';
+export type TypeKind =
+  | 'void'
+  | 'char'
+  | 'short'
+  | 'int'
+  | 'long'
+  | 'ptr'
+  | 'func'
+  | 'array'
+  | 'struct'
+  | 'union';
+
+export interface Member {
+  name: string;
+  ty: Type;
+  offset: number;
+}
 
 export interface Type {
   kind: TypeKind;
@@ -23,6 +39,9 @@ export interface Type {
   // Return and parameter types for `func`.
   returnType?: Type;
   params?: Type[];
+  // Members for `struct` / `union`.
+  members?: Member[];
+  tag?: string;
 }
 
 export const tyVoid: Type = { kind: 'void', size: 1, align: 1 };
@@ -41,6 +60,14 @@ export function arrayOf(base: Type, len: number): Type {
 
 export function funcType(returnType: Type, params: Type[]): Type {
   return { kind: 'func', size: 1, align: 1, returnType, params };
+}
+
+export function structType(members: Member[], size: number, align: number, tag?: string): Type {
+  return { kind: 'struct', size, align, members, tag };
+}
+
+export function unionType(members: Member[], size: number, align: number, tag?: string): Type {
+  return { kind: 'union', size, align, members, tag };
 }
 
 export function isInteger(ty: Type): boolean {
@@ -104,6 +131,9 @@ export function addType(node: Node | null | undefined): void {
       return;
     case 'funcall':
       node.ty = node.funcReturn ?? tyInt;
+      return;
+    case 'member':
+      node.ty = node.member?.ty ?? tyInt;
       return;
     case 'addr': {
       // &array yields a pointer to the element type, matching C decay rules.

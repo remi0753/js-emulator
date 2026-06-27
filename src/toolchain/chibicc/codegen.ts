@@ -248,6 +248,13 @@ class Generator {
       case 'deref':
         this.genExpr(node.lhs!);
         return;
+      case 'member':
+        this.genAddr(node.lhs!);
+        if ((node.member?.offset ?? 0) > 0) {
+          this.emit(`  MOV R7, ${node.member!.offset}`);
+          this.emit('  ADD R0, R7');
+        }
+        return;
       default:
         throw new CodegenError(`not an lvalue (${node.kind})`);
     }
@@ -256,13 +263,21 @@ class Generator {
   private load(node: Node): void {
     // Arrays decay to their address; everything else loads a value from [R0].
     if (node.ty?.kind === 'array') return;
+    if (node.ty?.kind === 'struct' || node.ty?.kind === 'union') {
+      throw new CodegenError('cannot load an aggregate value directly');
+    }
     if (node.ty?.kind === 'char') this.emit('  LB R0, R0');
+    else if (node.ty?.kind === 'short') this.emit('  LHS R0, R0');
     else this.emit('  LOADR R0, R0');
   }
 
   private store(node: Node): void {
     // Address in R1, value in R0.
     if (node.ty?.kind === 'char') this.emit('  SB R1, R0');
+    else if (node.ty?.kind === 'short') this.emit('  SH R1, R0');
+    else if (node.ty?.kind === 'struct' || node.ty?.kind === 'union') {
+      throw new CodegenError('cannot assign an aggregate value directly');
+    }
     else this.emit('  STORER R1, R0');
   }
 
@@ -272,6 +287,10 @@ class Generator {
         this.emit(`  MOV R0, ${node.value! >>> 0}`);
         return;
       case 'var':
+        this.genAddr(node);
+        this.load(node);
+        return;
+      case 'member':
         this.genAddr(node);
         this.load(node);
         return;

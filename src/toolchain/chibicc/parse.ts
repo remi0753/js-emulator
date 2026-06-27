@@ -21,13 +21,16 @@ import {
   funcType,
   isInteger,
   isPointerLike,
+  type Member,
   pointerTo,
+  structType,
   type Type,
   tyChar,
   tyInt,
   tyLong,
   tyShort,
   tyVoid,
+  unionType,
 } from './type.ts';
 
 export class ParseError extends Error {
@@ -67,7 +70,8 @@ export type NodeKind =
   | 'block'
   | 'exprstmt'
   | 'break'
-  | 'continue';
+  | 'continue'
+  | 'member';
 
 export interface Node {
   kind: NodeKind;
@@ -93,6 +97,8 @@ export interface Node {
   builtin?: string; // intrinsic name (e.g. __syscall) when set
   args?: Node[];
   funcReturn?: Type;
+  // Struct/union member access.
+  member?: Member;
 }
 
 // An Obj is a named object: a global variable, a string literal, a local
@@ -128,6 +134,7 @@ interface DeclSpec {
   ty: Type;
   isStatic: boolean;
   isExtern: boolean;
+  isTypedef: boolean;
 }
 
 function align(n: number, a: number): number {
@@ -138,7 +145,10 @@ class Parser {
   private pos = 0;
   private readonly globals = new Map<string, Obj>();
   private readonly objects: Obj[] = [];
-  private scopes: Map<string, Obj>[] = [];
+  private scopes: Map<string, Obj>[] = [new Map()];
+  private typedefScopes: Map<string, Type>[] = [new Map()];
+  private enumScopes: Map<string, number>[] = [new Map()];
+  private tagScopes: Map<string, Type>[] = [new Map()];
   private currentFn: Obj | null = null;
   private strCount = 0;
   private readonly tokens: Token[];
@@ -196,6 +206,7 @@ class Parser {
 
   private isTypeName(): boolean {
     const t = this.peek();
+    if (t.kind === 'ident') return this.findTypedef(t.text) !== undefined;
     if (t.kind !== 'keyword') return false;
     return [
       'void',
@@ -207,6 +218,10 @@ class Parser {
       'signed',
       'static',
       'extern',
+      'typedef',
+      'enum',
+      'struct',
+      'union',
     ].includes(t.text);
   }
 
@@ -214,14 +229,25 @@ class Parser {
   private declspec(): DeclSpec {
     let isStatic = false;
     let isExtern = false;
+    let isTypedef = false;
     let hasChar = false;
     let hasShort = false;
     let hasLong = false;
     let hasInt = false;
     let hasVoid = false;
     let count = 0;
+    let userType: Type | undefined;
 
-    while (this.peek().kind === 'keyword') {
+    while (this.peek().kind === 'keyword' || this.peek().kind === 'ident') {
+      if (this.peek().kind === 'ident') {
+        const found = this.findTypedef(this.peek().text);
+        if (!found || count > 0) break;
+        userType = found;
+        this.pos++;
+        count++;
+        continue;
+      }
+
       const word = this.peek().text;
       if (word === 'static') {
         isStatic = true;
@@ -231,6 +257,21 @@ class Parser {
       if (word === 'extern') {
         isExtern = true;
         this.pos++;
+        continue;
+      }
+      if (word === 'typedef') {
+        isTypedef = true;
+        this.pos++;
+        continue;
+      }
+      if (word === 'enum') {
+        userType = this.enumSpecifier();
+        count++;
+        continue;
+      }
+      if (word === 'struct' || word === 'union') {
+        userType = this.structUnionDecl(word);
+        count++;
         continue;
       }
       if (word === 'unsigned' || word === 'signed') {
@@ -272,16 +313,109 @@ class Parser {
       break;
     }
 
-    if (count === 0 && !isStatic && !isExtern) this.error('expected a type specifier');
+    if (count === 0 && !isStatic && !isExtern && !isTypedef) {
+      this.error('expected a type specifier');
+    }
 
     let ty: Type;
-    if (hasVoid) ty = tyVoid;
+    if (userType) ty = userType;
+    else if (hasVoid) ty = tyVoid;
     else if (hasChar) ty = tyChar;
     else if (hasShort) ty = tyShort;
     else if (hasLong) ty = tyLong;
     else ty = tyInt; // plain int, or `unsigned`/`signed` with no other keyword
     void hasInt;
-    return { ty, isStatic, isExtern };
+    return { ty, isStatic, isExtern, isTypedef };
+  }
+
+  private enumSpecifier(): Type {
+    this.expect('enum');
+    let tag: string | undefined;
+    if (this.peek().kind === 'ident') {
+      tag = this.peek().text;
+      this.pos++;
+    }
+
+    if (!this.consume('{')) {
+      if (!tag) this.error('expected an enum tag');
+      const found = this.findTag(tag);
+      if (!found) this.error(`unknown enum tag '${tag}'`);
+      return found;
+    }
+
+    let value = 0;
+    for (;;) {
+      if (this.consume('}')) break;
+      const name = this.expectIdent();
+      if (this.consume('=')) value = this.evalConst(this.assign());
+      this.currentEnumScope().set(name, value | 0);
+      value++;
+      if (this.consume(',')) {
+        if (this.consume('}')) break;
+        continue;
+      }
+      this.expect('}');
+      break;
+    }
+
+    if (tag) this.currentTagScope().set(tag, tyInt);
+    return tyInt;
+  }
+
+  private structUnionDecl(kind: 'struct' | 'union'): Type {
+    this.expect(kind);
+    let tag: string | undefined;
+    if (this.peek().kind === 'ident') {
+      tag = this.peek().text;
+      this.pos++;
+    }
+
+    if (!this.consume('{')) {
+      if (!tag) this.error(`expected a ${kind} tag`);
+      const found = this.findTag(tag);
+      if (found) return found;
+      const incomplete =
+        kind === 'struct' ? structType([], 0, 1, tag) : unionType([], 0, 1, tag);
+      this.currentTagScope().set(tag, incomplete);
+      return incomplete;
+    }
+
+    const members: Member[] = [];
+    let offset = 0;
+    let maxAlign = 1;
+    let maxSize = 0;
+    while (!this.consume('}')) {
+      const spec = this.declspec();
+      do {
+        const { ty, name } = this.declarator(spec.ty);
+        const alignTo = Math.min(4, ty.align);
+        maxAlign = Math.max(maxAlign, alignTo);
+        if (kind === 'struct') {
+          offset = align(offset, alignTo);
+          members.push({ name, ty, offset });
+          offset += Math.max(1, ty.size);
+        } else {
+          members.push({ name, ty, offset: 0 });
+          maxSize = Math.max(maxSize, Math.max(1, ty.size));
+        }
+      } while (this.consume(','));
+      this.expect(';');
+    }
+
+    const size = kind === 'struct' ? align(offset, maxAlign) : align(maxSize, maxAlign);
+    const ty =
+      kind === 'struct'
+        ? structType(members, size, maxAlign, tag)
+        : unionType(members, size, maxAlign, tag);
+    if (tag) {
+      const existing = this.findTag(tag);
+      if (existing && existing.size === 0 && existing.members?.length === 0) {
+        Object.assign(existing, ty);
+        return existing;
+      }
+      this.currentTagScope().set(tag, ty);
+    }
+    return ty;
   }
 
   // declarator = "*"* ident type-suffix
@@ -291,6 +425,29 @@ class Parser {
     const name = this.expectIdent();
     ty = this.typeSuffix(ty);
     return { ty, name };
+  }
+
+  // type-name = declspec abstract-declarator
+  private typeName(): Type {
+    const spec = this.declspec();
+    return this.abstractDeclarator(spec.ty);
+  }
+
+  private abstractDeclarator(base: Type): Type {
+    let ty = base;
+    while (this.consume('*')) ty = pointerTo(ty);
+    return this.abstractTypeSuffix(ty);
+  }
+
+  private abstractTypeSuffix(base: Type): Type {
+    if (this.consume('[')) {
+      const len = this.peek().value;
+      if (this.peek().kind !== 'num') this.error('expected an array length');
+      this.pos++;
+      this.expect(']');
+      return arrayOf(this.abstractTypeSuffix(base), len);
+    }
+    return base;
   }
 
   // type-suffix = "(" func-params ")" | "[" num "]" type-suffix | ε
@@ -333,7 +490,18 @@ class Parser {
   // top-level = function-definition | global-declaration
   private topLevel(): void {
     const spec = this.declspec();
+    if (this.consume(';')) return;
     const { ty, name } = this.declarator(spec.ty);
+
+    if (spec.isTypedef) {
+      this.currentTypedefScope().set(name, ty);
+      while (this.consume(',')) {
+        const next = this.declarator(spec.ty);
+        this.currentTypedefScope().set(next.name, next.ty);
+      }
+      this.expect(';');
+      return;
+    }
 
     if (ty.kind === 'func') {
       this.functionOrPrototype(name, ty, spec, [...this.pendingParams]);
@@ -377,7 +545,10 @@ class Parser {
     fn.hasBody = true;
     fn.params = [];
     fn.locals = [];
-    this.scopes = [new Map()];
+    this.scopes = [new Map(), new Map()];
+    this.typedefScopes = [this.typedefScopes[0]!, new Map()];
+    this.enumScopes = [this.enumScopes[0]!, new Map()];
+    this.tagScopes = [this.tagScopes[0]!, new Map()];
     for (const p of params) {
       const obj: Obj = {
         name: p.name,
@@ -394,6 +565,10 @@ class Parser {
     fn.bodyNode = this.compoundStmt();
     this.assignOffsets(fn);
     this.currentFn = null;
+    this.scopes = [new Map()];
+    this.typedefScopes = [this.typedefScopes[0]!];
+    this.enumScopes = [this.enumScopes[0]!];
+    this.tagScopes = [this.tagScopes[0]!];
   }
 
   private globalVariable(name: string, ty: Type, spec: DeclSpec): void {
@@ -418,32 +593,158 @@ class Parser {
   // Constant initializer for a scalar global (the slice supports integer
   // constants; richer initializers arrive with Phase 32).
   private globalInitializer(ty: Type): Uint8Array {
-    const t = this.peek();
-    if (t.kind !== 'num') {
-      this.error('global initializers must be integer constants in this slice');
-    }
-    this.pos++;
     const size = Math.max(1, ty.size);
     const bytes = new Uint8Array(size);
-    let v = t.value >>> 0;
-    for (let i = 0; i < Math.min(4, size); i++) {
-      bytes[i] = v & 0xff;
+    this.writeInitializer(bytes, 0, ty);
+    return bytes;
+  }
+
+  private localInitializer(obj: Obj): Node[] {
+    const base: Node = { kind: 'var', line: this.peek().line, variable: obj };
+    const out: Node[] = [];
+    this.localInitializerInto(base, obj.ty, out);
+    return out.map((lhs) => ({ kind: 'exprstmt', line: lhs.line, lhs }));
+  }
+
+  private localInitializerInto(lhs: Node, ty: Type, out: Node[]): void {
+    if (this.consume('{')) {
+      if (ty.kind === 'array') {
+        const len = ty.arrayLen ?? 0;
+        for (let i = 0; i < len && !this.equal('}'); i++) {
+          const elem = this.arrayElement(lhs, i);
+          this.localInitializerInto(elem, elementType(ty), out);
+          this.consume(',');
+        }
+        while (!this.equal('}')) {
+          this.assign();
+          this.consume(',');
+        }
+      } else if (ty.kind === 'struct') {
+        for (const member of ty.members ?? []) {
+          if (this.equal('}')) break;
+          const elem: Node = { kind: 'member', line: lhs.line, lhs, member };
+          this.localInitializerInto(elem, member.ty, out);
+          this.consume(',');
+        }
+        while (!this.equal('}')) {
+          this.assign();
+          this.consume(',');
+        }
+      } else if (ty.kind === 'union') {
+        const member = ty.members?.[0];
+        if (member && !this.equal('}')) {
+          this.localInitializerInto({ kind: 'member', line: lhs.line, lhs, member }, member.ty, out);
+          this.consume(',');
+        }
+        while (!this.equal('}')) {
+          this.assign();
+          this.consume(',');
+        }
+      } else if (!this.equal('}')) {
+        out.push({ kind: 'assign', line: lhs.line, lhs, rhs: this.assign() });
+        this.consume(',');
+      }
+      this.expect('}');
+      return;
+    }
+
+    if (ty.kind === 'array' && elementType(ty).kind === 'char' && this.peek().kind === 'str') {
+      const str = this.peek().str;
+      this.pos++;
+      const n = Math.min(str.length, ty.arrayLen ?? 0);
+      for (let i = 0; i < n; i++) {
+        out.push({
+          kind: 'assign',
+          line: lhs.line,
+          lhs: this.arrayElement(lhs, i),
+          rhs: { kind: 'num', line: lhs.line, value: str[i]! },
+        });
+      }
+      return;
+    }
+
+    out.push({ kind: 'assign', line: lhs.line, lhs, rhs: this.assign() });
+  }
+
+  private writeInitializer(bytes: Uint8Array, off: number, ty: Type): void {
+    if (this.consume('{')) {
+      if (ty.kind === 'array') {
+        const len = ty.arrayLen ?? 0;
+        const elem = elementType(ty);
+        for (let i = 0; i < len && !this.equal('}'); i++) {
+          this.writeInitializer(bytes, off + i * elem.size, elem);
+          this.consume(',');
+        }
+        while (!this.equal('}')) {
+          this.assign();
+          this.consume(',');
+        }
+      } else if (ty.kind === 'struct') {
+        for (const member of ty.members ?? []) {
+          if (this.equal('}')) break;
+          this.writeInitializer(bytes, off + member.offset, member.ty);
+          this.consume(',');
+        }
+        while (!this.equal('}')) {
+          this.assign();
+          this.consume(',');
+        }
+      } else if (ty.kind === 'union') {
+        const member = ty.members?.[0];
+        if (member && !this.equal('}')) {
+          this.writeInitializer(bytes, off + member.offset, member.ty);
+          this.consume(',');
+        }
+        while (!this.equal('}')) {
+          this.assign();
+          this.consume(',');
+        }
+      } else if (!this.equal('}')) {
+        this.writeScalar(bytes, off, ty, this.evalConst(this.assign()));
+        this.consume(',');
+      }
+      this.expect('}');
+      return;
+    }
+
+    if (ty.kind === 'array' && elementType(ty).kind === 'char' && this.peek().kind === 'str') {
+      const str = this.peek().str;
+      this.pos++;
+      bytes.set(str.slice(0, Math.min(str.length, ty.size)), off);
+      return;
+    }
+
+    this.writeScalar(bytes, off, ty, this.evalConst(this.assign()));
+  }
+
+  private writeScalar(bytes: Uint8Array, off: number, ty: Type, value: number): void {
+    const n = Math.min(Math.max(1, ty.size), 4);
+    let v = value >>> 0;
+    for (let i = 0; i < n; i++) {
+      bytes[off + i] = v & 0xff;
       v >>>= 8;
     }
-    return bytes;
+  }
+
+  private arrayElement(base: Node, index: number): Node {
+    return {
+      kind: 'deref',
+      line: base.line,
+      lhs: this.newAdd(base, { kind: 'num', line: base.line, value: index }, base.line),
+    };
   }
 
   // --- statements ----------------------------------------------------------
 
   private compoundStmt(): Node {
     const body: Node[] = [];
-    this.scopes.push(new Map());
+    this.enterScope();
     while (!this.consume('}')) {
       if (this.isEof()) this.error("expected '}'");
       if (this.isTypeName()) body.push(this.declaration());
       else body.push(this.stmt());
     }
-    this.scopes.pop();
+    this.leaveScope();
     return { kind: 'block', line: this.peek().line, body };
   }
 
@@ -456,13 +757,14 @@ class Parser {
       if (!first) this.expect(',');
       first = false;
       const { ty, name } = this.declarator(spec.ty);
+      if (spec.isTypedef) {
+        this.currentTypedefScope().set(name, ty);
+        continue;
+      }
       if (ty.kind === 'void') this.error(`variable '${name}' declared void`);
       const obj = this.newLocal(name, ty);
       if (this.consume('=')) {
-        const lhs: Node = { kind: 'var', line: this.peek().line, variable: obj };
-        const rhs = this.assign();
-        const assignNode: Node = { kind: 'assign', line: lhs.line, lhs, rhs };
-        body.push({ kind: 'exprstmt', line: lhs.line, lhs: assignNode });
+        body.push(...this.localInitializer(obj));
       }
     }
     return { kind: 'block', line: this.peek().line, body };
@@ -498,7 +800,7 @@ class Parser {
 
     if (this.consume('for')) {
       this.expect('(');
-      this.scopes.push(new Map());
+      this.enterScope();
       let init: Node | undefined;
       if (!this.consume(';')) {
         if (this.isTypeName()) init = this.declaration();
@@ -515,7 +817,7 @@ class Parser {
       if (!this.equal(')')) inc = this.expr();
       this.expect(')');
       const bodyStmt = this.stmt();
-      this.scopes.pop();
+      this.leaveScope();
       return { kind: 'for', line, init, cond, thenStmt: bodyStmt, inc };
     }
 
@@ -686,6 +988,14 @@ class Parser {
         node = { kind: 'deref', line, lhs: this.newAdd(node, index, line) };
         continue;
       }
+      if (this.consume('.')) {
+        node = this.structRef(node, this.expectIdent(), line);
+        continue;
+      }
+      if (this.consume('->')) {
+        node = this.structRef({ kind: 'deref', line, lhs: node }, this.expectIdent(), line);
+        continue;
+      }
       return node;
     }
   }
@@ -701,6 +1011,17 @@ class Parser {
 
     if (this.equal('sizeof')) {
       this.pos++;
+      if (this.consume('(')) {
+        if (this.isTypeName()) {
+          const ty = this.typeName();
+          this.expect(')');
+          return { kind: 'num', line: t.line, value: ty.size };
+        }
+        const operand = this.expr();
+        this.expect(')');
+        addType(operand);
+        return { kind: 'num', line: t.line, value: operand.ty?.size ?? 4 };
+      }
       const operand = this.unary();
       addType(operand);
       return { kind: 'num', line: t.line, value: operand.ty?.size ?? 4 };
@@ -720,11 +1041,26 @@ class Parser {
     if (t.kind === 'ident') {
       this.pos++;
       if (this.equal('(')) return this.funcall(t.text, t.line);
+      const enumValue = this.findEnum(t.text);
+      if (enumValue !== undefined && !this.findLocal(t.text) && !this.globals.has(t.text)) {
+        return { kind: 'num', line: t.line, value: enumValue };
+      }
       const obj = this.resolve(t.text);
       return { kind: 'var', line: t.line, variable: obj };
     }
 
     this.error(`unexpected token '${t.text}'`);
+  }
+
+  private structRef(lhs: Node, name: string, line: number): Node {
+    addType(lhs);
+    const ty = lhs.ty;
+    if (!ty || (ty.kind !== 'struct' && ty.kind !== 'union')) {
+      this.error(`member access on a non-aggregate`);
+    }
+    const member = ty.members?.find((m) => m.name === name);
+    if (!member) this.error(`no member named '${name}'`);
+    return { kind: 'member', line, lhs, member };
   }
 
   private funcall(name: string, line: number): Node {
@@ -802,8 +1138,34 @@ class Parser {
 
   // --- scope / symbol management -------------------------------------------
 
+  private enterScope(): void {
+    this.scopes.push(new Map());
+    this.typedefScopes.push(new Map());
+    this.enumScopes.push(new Map());
+    this.tagScopes.push(new Map());
+  }
+
+  private leaveScope(): void {
+    this.scopes.pop();
+    this.typedefScopes.pop();
+    this.enumScopes.pop();
+    this.tagScopes.pop();
+  }
+
   private currentScope(): Map<string, Obj> {
     return this.scopes[this.scopes.length - 1]!;
+  }
+
+  private currentTypedefScope(): Map<string, Type> {
+    return this.typedefScopes[this.typedefScopes.length - 1]!;
+  }
+
+  private currentEnumScope(): Map<string, number> {
+    return this.enumScopes[this.enumScopes.length - 1]!;
+  }
+
+  private currentTagScope(): Map<string, Type> {
+    return this.tagScopes[this.tagScopes.length - 1]!;
   }
 
   private newLocal(name: string, ty: Type): Obj {
@@ -828,13 +1190,84 @@ class Parser {
   }
 
   private resolve(name: string): Obj {
+    const local = this.findLocal(name);
+    if (local) return local;
+    const global = this.globals.get(name);
+    if (global) return global;
+    this.error(`undefined variable '${name}'`);
+  }
+
+  private findLocal(name: string): Obj | undefined {
     for (let i = this.scopes.length - 1; i >= 0; i--) {
       const found = this.scopes[i]!.get(name);
       if (found) return found;
     }
-    const global = this.globals.get(name);
-    if (global) return global;
-    this.error(`undefined variable '${name}'`);
+    return undefined;
+  }
+
+  private findTypedef(name: string): Type | undefined {
+    for (let i = this.typedefScopes.length - 1; i >= 0; i--) {
+      const found = this.typedefScopes[i]!.get(name);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  private findEnum(name: string): number | undefined {
+    for (let i = this.enumScopes.length - 1; i >= 0; i--) {
+      const found = this.enumScopes[i]!.get(name);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+
+  private findTag(name: string): Type | undefined {
+    for (let i = this.tagScopes.length - 1; i >= 0; i--) {
+      const found = this.tagScopes[i]!.get(name);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  private evalConst(node: Node): number {
+    switch (node.kind) {
+      case 'num':
+        return node.value ?? 0;
+      case 'neg':
+        return -this.evalConst(node.lhs!) | 0;
+      case 'not':
+        return this.evalConst(node.lhs!) === 0 ? 1 : 0;
+      case 'add':
+        return (this.evalConst(node.lhs!) + this.evalConst(node.rhs!)) | 0;
+      case 'sub':
+        return (this.evalConst(node.lhs!) - this.evalConst(node.rhs!)) | 0;
+      case 'mul':
+        return Math.imul(this.evalConst(node.lhs!), this.evalConst(node.rhs!));
+      case 'div':
+        return (this.evalConst(node.lhs!) / this.evalConst(node.rhs!)) | 0;
+      case 'mod':
+        return this.evalConst(node.lhs!) % this.evalConst(node.rhs!);
+      case 'shl':
+        return this.evalConst(node.lhs!) << this.evalConst(node.rhs!);
+      case 'shr':
+        return this.evalConst(node.lhs!) >> this.evalConst(node.rhs!);
+      case 'bitand':
+        return this.evalConst(node.lhs!) & this.evalConst(node.rhs!);
+      case 'bitor':
+        return this.evalConst(node.lhs!) | this.evalConst(node.rhs!);
+      case 'bitxor':
+        return this.evalConst(node.lhs!) ^ this.evalConst(node.rhs!);
+      case 'eq':
+        return this.evalConst(node.lhs!) === this.evalConst(node.rhs!) ? 1 : 0;
+      case 'ne':
+        return this.evalConst(node.lhs!) !== this.evalConst(node.rhs!) ? 1 : 0;
+      case 'lt':
+        return this.evalConst(node.lhs!) < this.evalConst(node.rhs!) ? 1 : 0;
+      case 'le':
+        return this.evalConst(node.lhs!) <= this.evalConst(node.rhs!) ? 1 : 0;
+      default:
+        this.error('initializer is not a constant expression');
+    }
   }
 
   // Assign frame offsets once the whole function is parsed: parameters at

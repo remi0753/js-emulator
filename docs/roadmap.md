@@ -980,6 +980,16 @@ chibicc tokenizer / preprocessor / parser / type checker
   aggregate padding, bit-field boundaries, variadic arguments, relocations, and
   soft-float edge cases.
 
+  First maintained slice implemented in this branch: the chibicc-derived frontend
+  now accepts `typedef`, enum constants and constant expressions, `struct`/
+  `union` definitions (including forward `typedef struct T T;` style tags),
+  aggregate member layout, `sizeof(type-name)` and `sizeof(expression)`,
+  `.`/`->` member access, scalar/aggregate/string initializers, and short
+  load/store codegen. Coverage is in `test/chibicc-phase32.test.ts`, including a
+  guest-executed program that exercises typedefs, enums, struct padding,
+  aggregate globals/locals, char-array string initialization, member access, and
+  16-bit fields through the VM.
+
   Done when the host cross-compiler can build a broad set of small C conformance
   and regression programs for custom32 and run them deterministically inside the
   guest.

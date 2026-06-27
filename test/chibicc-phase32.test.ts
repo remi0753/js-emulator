@@ -1,0 +1,117 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import { Fs } from '../src/storage/fs.ts';
+import { PortBlockDevice } from '../src/storage/port-block-device.ts';
+import { crt0Object } from '../src/toolchain/cc.ts';
+import { compile, compileObject } from '../src/toolchain/chibicc/index.ts';
+import { linkGuestExecutable } from '../src/v3/guest-cc.ts';
+import {
+  buildGuestDiskImage,
+  buildGuestKernelImage,
+  GUEST_KERNEL_LAYOUT,
+} from '../src/v3/guest-kernel.ts';
+import { BlockDisk } from '../src/vm/custom32/devices/disk.ts';
+import { Machine } from '../src/vm/custom32/machine.ts';
+import { PORT } from '../src/vm/custom32/platform.ts';
+import { PortBus } from '../src/vm/custom32/ports.ts';
+
+const PHASE32_SRC = `
+typedef struct Pair Pair;
+
+struct Pair {
+  char tag;
+  int a;
+  short b;
+};
+
+enum {
+  BASE = 3,
+  STEP = BASE + 4,
+};
+
+Pair global = { 1, 40, 2 };
+char word[4] = "abc";
+
+int slen(char *s) {
+  int n = 0;
+  while (s[n]) { n = n + 1; }
+  return n;
+}
+
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+
+int putnum(int v) {
+  char buf[12];
+  int i = 11;
+  buf[11] = 0;
+  if (v == 0) { return puts("0"); }
+  while (v > 0) {
+    i = i - 1;
+    buf[i] = 48 + v % 10;
+    v = v / 10;
+  }
+  return puts(buf + i);
+}
+
+int main(void) {
+  Pair p = { 2, 5, 6 };
+  Pair *pp = &p;
+  int total = sizeof(Pair) + sizeof(p.tag) + pp->a + p.b + global.a + global.b + word[1] + STEP;
+  puts("phase32=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+
+function linkProgram(src: string, name: string): Uint8Array {
+  return linkGuestExecutable([crt0Object(), compileObject(src, { name })]);
+}
+
+function installFs(image: Uint8Array): Fs {
+  const ports = new PortBus();
+  const blk = new BlockDisk(image);
+  ports.register(PORT.DISK_DATA, 1, blk);
+  ports.register(PORT.DISK_POS, 1, blk);
+  ports.register(PORT.DISK_SECTORS, 1, blk);
+  const fs = new Fs(new PortBlockDevice(ports));
+  fs.mount();
+  return fs;
+}
+
+function bootAndRun(disk: Uint8Array, command: string): string {
+  const image = buildGuestKernelImage();
+  let out = '';
+  const machine = new Machine({
+    physSize: GUEST_KERNEL_LAYOUT.physSize,
+    diskImage: disk,
+    consoleSink: (s) => (out += s),
+  });
+  machine.keyboard.feed(`${command}\n`);
+  machine.keyboard.close();
+  machine.load(0, image.flat);
+  machine.reset({ pc: image.entry, sp: GUEST_KERNEL_LAYOUT.kstackTop });
+  const result = machine.run(60_000_000);
+  assert.equal(result.reason, 'halt');
+  return out;
+}
+
+test('chibicc Phase 32 frontend accepts typedef, enum, struct, and initializers', () => {
+  const asm = compile(PHASE32_SRC);
+  assert.match(asm, /\.global main/);
+  assert.match(asm, /\.global global/);
+  assert.match(asm, /LHS R0, R0/);
+  assert.match(asm, /SH R1, R0/);
+  assert.match(compile('typedef int T; int main(void) { T T = 4; return T; }'), /MOV R0, 4/);
+});
+
+test('chibicc Phase 32 aggregate program runs deterministically in the guest', () => {
+  const disk = buildGuestDiskImage();
+  const fs = installFs(disk);
+  fs.writeFile('/bin/phase32', linkProgram(PHASE32_SRC, 'phase32.o'));
+  fs.chmod('/bin/phase32', 0o755);
+
+  const out = bootAndRun(disk, 'phase32');
+  assert.ok(out.includes('phase32=171\n'), `missing phase32 result in:\n${out}`);
+});
