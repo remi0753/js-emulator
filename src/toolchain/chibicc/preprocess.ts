@@ -1,10 +1,10 @@
 // Minimal C preprocessor for the chibicc-derived custom32 frontend.
 //
 // chibicc's `preprocess.c` is a full macro/conditional engine. This Phase 32
-// slice supports object-like `#define`/`#undef` plus conditional compilation
-// (`#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif`) for single translation
-// units. Directive lines are stripped but replaced by blank lines so token line
-// numbers still match the source.
+// slice supports object-like and simple function-like `#define`/`#undef` plus
+// conditional compilation (`#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif`)
+// for single translation units. Directive lines are stripped but replaced by
+// blank lines so token line numbers still match the source.
 
 import { type Token, tokenize } from './tokenize.ts';
 
@@ -14,7 +14,12 @@ export class PreprocessError extends Error {
   }
 }
 
-type MacroTable = Map<string, Token[]>;
+interface Macro {
+  params?: string[];
+  body: Token[];
+}
+
+type MacroTable = Map<string, Macro>;
 
 interface ScanResult {
   text: string;
@@ -206,11 +211,30 @@ function scanDirectives(source: string): ScanResult {
       if (!m) throw new PreprocessError('malformed #define', i + 1);
       const name = m[1]!;
       if (rest[m[0].length] === '(') {
-        throw new PreprocessError('function-like macros are not supported yet', i + 1);
+        const close = rest.indexOf(')', m[0].length + 1);
+        if (close === -1) throw new PreprocessError('malformed function-like macro', i + 1);
+        const paramText = rest.slice(m[0].length + 1, close).trim();
+        const params =
+          paramText === ''
+            ? []
+            : paramText.split(',').map((p) => {
+                const name = p.trim();
+                if (!/^[A-Za-z_]\w*$/.test(name)) {
+                  throw new PreprocessError('malformed function-like macro parameter', i + 1);
+                }
+                return name;
+              });
+        const replacement = rest.slice(close + 1).trim();
+        macros.set(name, {
+          params,
+          body: tokenize(replacement).filter((t) => t.kind !== 'eof'),
+        });
+        continue;
       }
       const replacement = rest.slice(m[0].length).trim();
-      const toks = tokenize(replacement).filter((t) => t.kind !== 'eof');
-      macros.set(name, toks);
+      macros.set(name, {
+        body: tokenize(replacement).filter((t) => t.kind !== 'eof'),
+      });
     } else if (directive === 'undef') {
       const m = /^([A-Za-z_]\w*)/.exec(rest);
       if (m) macros.delete(m[1]!);
@@ -223,18 +247,85 @@ function scanDirectives(source: string): ScanResult {
   return { text: out.join('\n'), macros };
 }
 
-// Substitute object-like macros in the token stream. A bounded expansion depth
-// guards against self-referential macros without a full hide-set.
+function parseMacroArgs(
+  tokens: Token[],
+  start: number,
+  macro: Macro,
+): { args: Token[][]; next: number } {
+  const open = tokens[start];
+  if (open?.text !== '(') throw new PreprocessError('expected macro argument list', open?.line ?? 0);
+  const args: Token[][] = [];
+  let current: Token[] = [];
+  let depth = 0;
+  for (let i = start + 1; i < tokens.length; i++) {
+    const tok = tokens[i]!;
+    if (tok.kind === 'eof') throw new PreprocessError('unterminated macro argument list', tok.line);
+    if (tok.text === '(') {
+      depth++;
+      current.push(tok);
+      continue;
+    }
+    if (tok.text === ')') {
+      if (depth === 0) {
+        if (current.length > 0 || (macro.params?.length ?? 0) > 0) args.push(current);
+        return { args, next: i + 1 };
+      }
+      depth--;
+      current.push(tok);
+      continue;
+    }
+    if (tok.text === ',' && depth === 0) {
+      args.push(current);
+      current = [];
+      continue;
+    }
+    current.push(tok);
+  }
+  throw new PreprocessError('unterminated macro argument list', open.line);
+}
+
+function substituteMacro(macro: Macro, args: Token[][], line: number): Token[] {
+  const params = macro.params ?? [];
+  if (args.length !== params.length) {
+    throw new PreprocessError(`macro expects ${params.length} arguments but got ${args.length}`, line);
+  }
+  const byName = new Map(params.map((name, i) => [name, args[i]!] as const));
+  const out: Token[] = [];
+  for (const tok of macro.body) {
+    const arg = tok.kind === 'ident' ? byName.get(tok.text) : undefined;
+    if (arg) {
+      out.push(...arg);
+    } else {
+      out.push({ ...tok, line });
+    }
+  }
+  return out;
+}
+
+// Substitute object-like and simple function-like macros in the token stream. A
+// bounded expansion depth guards against self-referential macros without a full
+// hide-set.
 function expand(tokens: Token[], macros: MacroTable): Token[] {
   if (macros.size === 0) return tokens;
   let work = tokens;
   for (let pass = 0; pass < 16; pass++) {
     let changed = false;
     const next: Token[] = [];
-    for (const tok of work) {
-      const replacement = tok.kind === 'ident' ? macros.get(tok.text) : undefined;
-      if (replacement) {
-        for (const r of replacement) next.push({ ...r, line: tok.line });
+    for (let i = 0; i < work.length; i++) {
+      const tok = work[i]!;
+      const macro = tok.kind === 'ident' ? macros.get(tok.text) : undefined;
+      if (macro) {
+        if (macro.params) {
+          if (work[i + 1]?.text !== '(') {
+            next.push(tok);
+            continue;
+          }
+          const parsed = parseMacroArgs(work, i + 1, macro);
+          next.push(...substituteMacro(macro, parsed.args, tok.line));
+          i = parsed.next - 1;
+        } else {
+          for (const r of macro.body) next.push({ ...r, line: tok.line });
+        }
         changed = true;
       } else {
         next.push(tok);

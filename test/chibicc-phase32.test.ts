@@ -159,6 +159,9 @@ int main(void) {
 const PREPROCESSOR_SRC = `
 #define ENABLED 1
 #define WIDTH 4
+#define ADD(a, b) ((a) + (b))
+#define SQUARE(x) ((x) * (x))
+#define VALUE() 6
 
 int slen(char *s) {
   int n = 0;
@@ -201,6 +204,9 @@ int main(void) {
 #else
   total = total + missing_symbol;
 #endif
+  total = total + ADD(2, 3);
+  total = total + SQUARE(WIDTH);
+  total = total + VALUE();
   puts("preproc=");
   putnum(total);
   puts("\\n");
@@ -259,6 +265,7 @@ test('chibicc Phase 32 frontend accepts typedef, enum, struct, and initializers'
   assert.match(staticCastAsm, /MOV R7, 4294967040/);
   assert.doesNotMatch(compile(PREPROCESSOR_SRC), /missing_symbol/);
   assert.throws(() => compile('#if 1\nint main(void) { return 0; }\n'), /unterminated conditional/);
+  assert.throws(() => compile('#define ADD(a,b) (a+b)\nint main(void) { return ADD(1); }\n'), /expects 2 arguments/);
   assert.match(compile('typedef int T; int main(void) { T T = 4; return T; }'), /MOV R0, 4/);
 });
 
@@ -299,5 +306,5 @@ test('chibicc Phase 32 conditional preprocessing runs in the guest', () => {
   fs.chmod('/bin/preproc', 0o755);
 
   const out = bootAndRun(disk, 'preproc');
-  assert.ok(out.includes('preproc=15\n'), `missing preprocessor result in:\n${out}`);
+  assert.ok(out.includes('preproc=42\n'), `missing preprocessor result in:\n${out}`);
 });
