@@ -21,6 +21,7 @@
 
 import { SYSCALL_INT } from '../../isa.ts';
 import type { Node, Obj, Program } from './parse.ts';
+import { isUnsignedInteger } from './type.ts';
 
 export class CodegenError extends Error {
   constructor(message: string) {
@@ -267,8 +268,9 @@ class Generator {
     if (node.ty?.kind === 'struct' || node.ty?.kind === 'union') {
       throw new CodegenError('cannot load an aggregate value directly');
     }
-    if (node.ty?.kind === 'char') this.emit('  LB R0, R0');
-    else if (node.ty?.kind === 'short') this.emit('  LHS R0, R0');
+    if (node.ty?.kind === 'char') this.emit(`  ${isUnsignedInteger(node.ty) ? 'LB' : 'LBS'} R0, R0`);
+    else if (node.ty?.kind === 'short')
+      this.emit(`  ${isUnsignedInteger(node.ty) ? 'LH' : 'LHS'} R0, R0`);
     else this.emit('  LOADR R0, R0');
   }
 
@@ -359,10 +361,10 @@ class Generator {
         this.emit('  MUL R0, R1');
         return;
       case 'div':
-        this.emit('  IDIV R0, R1');
+        this.emit(`  ${isUnsignedInteger(node.ty) ? 'DIV' : 'IDIV'} R0, R1`);
         return;
       case 'mod':
-        this.emit('  IMOD R0, R1');
+        this.emit(`  ${isUnsignedInteger(node.ty) ? 'MOD' : 'IMOD'} R0, R1`);
         return;
       case 'bitand':
         this.emit('  AND R0, R1');
@@ -377,23 +379,29 @@ class Generator {
         this.emit('  SHL R0, R1');
         return;
       case 'shr':
-        this.emit('  SAR R0, R1');
+        this.emit(`  ${isUnsignedInteger(node.lhs?.ty) ? 'SHR' : 'SAR'} R0, R1`);
         return;
       case 'eq':
       case 'ne':
       case 'lt':
       case 'le':
-        this.genCompare(node.kind);
+        this.genCompare(node);
         return;
       default:
         throw new CodegenError(`unsupported operator ${node.kind}`);
     }
   }
 
-  private genCompare(kind: 'eq' | 'ne' | 'lt' | 'le'): void {
+  private genCompare(node: Node): void {
     const yes = this.label('cmp.true');
     const done = this.label('cmp.done');
-    const jump = { eq: 'JZ', ne: 'JNZ', lt: 'JL', le: 'JLE' }[kind];
+    const unsigned = isUnsignedInteger(node.lhs?.ty) || isUnsignedInteger(node.rhs?.ty);
+    const jump = {
+      eq: 'JZ',
+      ne: 'JNZ',
+      lt: unsigned ? 'JB' : 'JL',
+      le: unsigned ? 'JBE' : 'JLE',
+    }[node.kind as 'eq' | 'ne' | 'lt' | 'le'];
     this.emit('  CMP R0, R1');
     this.emit(`  ${jump} ${yes}`);
     this.emit('  MOV R0, 0');

@@ -29,6 +29,10 @@ import {
   tyInt,
   tyLong,
   tyShort,
+  tyUChar,
+  tyUInt,
+  tyULong,
+  tyUShort,
   tyVoid,
   unionType,
 } from './type.ts';
@@ -236,6 +240,7 @@ class Parser {
     let hasLong = false;
     let hasInt = false;
     let hasVoid = false;
+    let isUnsigned = false;
     let count = 0;
     let userType: Type | undefined;
 
@@ -276,7 +281,7 @@ class Parser {
         continue;
       }
       if (word === 'unsigned' || word === 'signed') {
-        // Sign is accepted but not yet distinguished in the slice.
+        if (word === 'unsigned') isUnsigned = true;
         this.pos++;
         count++;
         continue;
@@ -321,10 +326,10 @@ class Parser {
     let ty: Type;
     if (userType) ty = userType;
     else if (hasVoid) ty = tyVoid;
-    else if (hasChar) ty = tyChar;
-    else if (hasShort) ty = tyShort;
-    else if (hasLong) ty = tyLong;
-    else ty = tyInt; // plain int, or `unsigned`/`signed` with no other keyword
+    else if (hasChar) ty = isUnsigned ? tyUChar : tyChar;
+    else if (hasShort) ty = isUnsigned ? tyUShort : tyShort;
+    else if (hasLong) ty = isUnsigned ? tyULong : tyLong;
+    else ty = isUnsigned ? tyUInt : tyInt; // plain int, or `unsigned`/`signed` only
     void hasInt;
     return { ty, isStatic, isExtern, isTypedef };
   }

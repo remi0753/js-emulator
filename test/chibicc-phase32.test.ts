@@ -74,6 +74,46 @@ int main(void) {
 }
 `;
 
+const UNSIGNED_SRC = `
+int slen(char *s) {
+  int n = 0;
+  while (s[n]) { n = n + 1; }
+  return n;
+}
+
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+
+int putnum(int v) {
+  char buf[12];
+  int i = 11;
+  buf[11] = 0;
+  if (v == 0) { return puts("0"); }
+  while (v > 0) {
+    i = i - 1;
+    buf[i] = 48 + v % 10;
+    v = v / 10;
+  }
+  return puts(buf + i);
+}
+
+int main(void) {
+  unsigned int big = 4000000000u;
+  unsigned int small = 3u;
+  unsigned char byte = 255;
+  unsigned short half = 65535;
+  int total = 0;
+  if (big > small) { total = total + 1; }
+  if (big / 2u == 2000000000u) { total = total + 2; }
+  if (big >> 1 == 2000000000u) { total = total + 4; }
+  if (byte == 255) { total = total + 8; }
+  if (half == 65535) { total = total + 16; }
+  puts("unsigned=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+
 function linkProgram(src: string, name: string): Uint8Array {
   return linkGuestExecutable([crt0Object(), compileObject(src, { name })]);
 }
@@ -113,6 +153,12 @@ test('chibicc Phase 32 frontend accepts typedef, enum, struct, and initializers'
   assert.match(asm, /LHS R0, R0/);
   assert.match(asm, /SH R1, R0/);
   assert.match(asm, /CALLR R0/);
+  const unsignedAsm = compile(UNSIGNED_SRC);
+  assert.match(unsignedAsm, /DIV R0, R1/);
+  assert.match(unsignedAsm, /SHR R0, R1/);
+  assert.match(unsignedAsm, /JB|JBE/);
+  assert.match(unsignedAsm, /LB R0, R0/);
+  assert.match(unsignedAsm, /LH R0, R0/);
   assert.match(compile('typedef int T; int main(void) { T T = 4; return T; }'), /MOV R0, 4/);
 });
 
@@ -124,4 +170,14 @@ test('chibicc Phase 32 aggregate program runs deterministically in the guest', (
 
   const out = bootAndRun(disk, 'phase32');
   assert.ok(out.includes('phase32=237\n'), `missing phase32 result in:\n${out}`);
+});
+
+test('chibicc Phase 32 unsigned arithmetic and zero-extension run in the guest', () => {
+  const disk = buildGuestDiskImage();
+  const fs = installFs(disk);
+  fs.writeFile('/bin/unsigned', linkProgram(UNSIGNED_SRC, 'unsigned.o'));
+  fs.chmod('/bin/unsigned', 0o755);
+
+  const out = bootAndRun(disk, 'unsigned');
+  assert.ok(out.includes('unsigned=31\n'), `missing unsigned result in:\n${out}`);
 });

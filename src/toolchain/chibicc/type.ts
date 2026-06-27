@@ -32,6 +32,7 @@ export interface Type {
   kind: TypeKind;
   size: number;
   align: number;
+  isUnsigned?: boolean;
   // Element type for `ptr` and `array`.
   base?: Type;
   // Number of elements for `array`.
@@ -49,6 +50,10 @@ export const tyChar: Type = { kind: 'char', size: 1, align: 1 };
 export const tyShort: Type = { kind: 'short', size: 2, align: 2 };
 export const tyInt: Type = { kind: 'int', size: 4, align: 4 };
 export const tyLong: Type = { kind: 'long', size: 4, align: 4 };
+export const tyUChar: Type = { kind: 'char', size: 1, align: 1, isUnsigned: true };
+export const tyUShort: Type = { kind: 'short', size: 2, align: 2, isUnsigned: true };
+export const tyUInt: Type = { kind: 'int', size: 4, align: 4, isUnsigned: true };
+export const tyULong: Type = { kind: 'long', size: 4, align: 4, isUnsigned: true };
 
 export function pointerTo(base: Type): Type {
   return { kind: 'ptr', size: 4, align: 4, base };
@@ -72,6 +77,14 @@ export function unionType(members: Member[], size: number, align: number, tag?: 
 
 export function isInteger(ty: Type): boolean {
   return ty.kind === 'char' || ty.kind === 'short' || ty.kind === 'int' || ty.kind === 'long';
+}
+
+export function isUnsignedInteger(ty: Type | undefined): boolean {
+  return !!ty && isInteger(ty) && ty.isUnsigned === true;
+}
+
+export function usualArithmeticType(lhs: Type | undefined, rhs: Type | undefined): Type {
+  return isUnsignedInteger(lhs) || isUnsignedInteger(rhs) ? tyUInt : tyInt;
 }
 
 export function isPointerLike(ty: Type): boolean {
@@ -102,16 +115,32 @@ export function addType(node: Node | null | undefined): void {
 
   switch (node.kind) {
     case 'add':
+      if (isPointerLike(node.lhs?.ty ?? tyInt)) {
+        node.ty = node.lhs?.ty ?? tyInt;
+        return;
+      }
+      if (isPointerLike(node.rhs?.ty ?? tyInt)) {
+        node.ty = node.rhs?.ty ?? tyInt;
+        return;
+      }
+      node.ty = usualArithmeticType(node.lhs?.ty, node.rhs?.ty);
+      return;
     case 'sub':
+      node.ty = isPointerLike(node.lhs?.ty ?? tyInt)
+        ? node.lhs?.ty ?? tyInt
+        : usualArithmeticType(node.lhs?.ty, node.rhs?.ty);
+      return;
     case 'mul':
     case 'div':
     case 'mod':
     case 'bitand':
     case 'bitor':
     case 'bitxor':
+      node.ty = usualArithmeticType(node.lhs?.ty, node.rhs?.ty);
+      return;
     case 'shl':
     case 'shr':
-      node.ty = node.lhs?.ty ?? tyInt;
+      node.ty = isUnsignedInteger(node.lhs?.ty) ? tyUInt : tyInt;
       return;
     case 'assign':
       node.ty = node.lhs?.ty ?? tyInt;
