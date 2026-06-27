@@ -114,14 +114,14 @@ export class CPU {
   private setAddFlags(a: number, b: number, result: number): number {
     const r = this.setZS(result);
     this.setFlag(FLAG.CF, (a >>> 0) + (b >>> 0) > 0xffffffff);
-    this.setFlag(FLAG.OF, ((~(a ^ b) & (a ^ r)) & 0x80000000) !== 0);
+    this.setFlag(FLAG.OF, (~(a ^ b) & (a ^ r) & 0x80000000) !== 0);
     return r;
   }
 
   private setSubFlags(a: number, b: number, result: number): number {
     const r = this.setZS(result);
-    this.setFlag(FLAG.CF, (a >>> 0) < (b >>> 0));
-    this.setFlag(FLAG.OF, (((a ^ b) & (a ^ r)) & 0x80000000) !== 0);
+    this.setFlag(FLAG.CF, a >>> 0 < b >>> 0);
+    this.setFlag(FLAG.OF, ((a ^ b) & (a ^ r) & 0x80000000) !== 0);
     return r;
   }
 

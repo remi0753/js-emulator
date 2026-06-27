@@ -17,9 +17,7 @@ function runAsm(source: string): Machine {
 }
 
 function runCExit(body: string): number {
-  const linked = linkExecutable([
-    compileC(`int main(int argc, char **argv) { ${body} }`),
-  ]);
+  const linked = linkExecutable([compileC(`int main(int argc, char **argv) { ${body} }`)]);
   const kernel = new Kernel({ consoleSink: () => {}, log: () => {} });
   kernel.spawn('phase28', linked.executable, ['phase28']);
   kernel.run();
