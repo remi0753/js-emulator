@@ -94,6 +94,7 @@ export interface Node {
   variable?: Obj; // var
   // Calls.
   funcName?: string;
+  funcExpr?: Node;
   builtin?: string; // intrinsic name (e.g. __syscall) when set
   args?: Node[];
   funcReturn?: Type;
@@ -422,6 +423,18 @@ class Parser {
   private declarator(base: Type): { ty: Type; name: string } {
     let ty = base;
     while (this.consume('*')) ty = pointerTo(ty);
+    if (this.consume('(')) {
+      if (this.consume('*')) {
+        const name = this.expectIdent();
+        this.expect(')');
+        if (this.equal('(')) {
+          const fn = this.funcParams(base);
+          return { ty: pointerTo(fn), name };
+        }
+        return { ty: this.typeSuffix(pointerTo(base)), name };
+      }
+      this.error('unsupported parenthesized declarator');
+    }
     const name = this.expectIdent();
     ty = this.typeSuffix(ty);
     return { ty, name };
@@ -474,7 +487,7 @@ class Parser {
     } else if (!this.equal(')')) {
       do {
         const spec = this.declspec();
-        const { ty, name } = this.declarator(spec.ty);
+        const { ty, name } = this.paramDeclarator(spec.ty);
         // Arrays and functions decay to pointers in a parameter list.
         const pty = ty.kind === 'array' ? pointerTo(elementType(ty)) : ty;
         params.push(pty);
@@ -485,7 +498,12 @@ class Parser {
     return funcType(returnType, params);
   }
 
-  private pendingParams: { ty: Type; name: string }[] = [];
+  private paramDeclarator(base: Type): { ty: Type; name?: string } {
+    if (this.equal(',') || this.equal(')')) return { ty: base };
+    return this.declarator(base);
+  }
+
+  private pendingParams: { ty: Type; name?: string }[] = [];
 
   // top-level = function-definition | global-declaration
   private topLevel(): void {
@@ -521,7 +539,7 @@ class Parser {
     name: string,
     ty: Type,
     spec: DeclSpec,
-    params: { ty: Type; name: string }[],
+    params: { ty: Type; name?: string }[],
   ): void {
     const existing = this.globals.get(name);
     const fn: Obj = existing ?? {
@@ -550,6 +568,7 @@ class Parser {
     this.enumScopes = [this.enumScopes[0]!, new Map()];
     this.tagScopes = [this.tagScopes[0]!, new Map()];
     for (const p of params) {
+      if (!p.name) this.error(`function parameter name omitted in definition of '${name}'`);
       const obj: Obj = {
         name: p.name,
         ty: p.ty,
@@ -996,6 +1015,10 @@ class Parser {
         node = this.structRef({ kind: 'deref', line, lhs: node }, this.expectIdent(), line);
         continue;
       }
+      if (this.equal('(')) {
+        node = this.callExpr(node, line);
+        continue;
+      }
       return node;
     }
   }
@@ -1064,14 +1087,7 @@ class Parser {
   }
 
   private funcall(name: string, line: number): Node {
-    this.expect('(');
-    const args: Node[] = [];
-    if (!this.equal(')')) {
-      do {
-        args.push(this.assign());
-      } while (this.consume(','));
-    }
-    this.expect(')');
+    const args = this.callArgs();
 
     // `__`-prefixed names are target intrinsics handled by the backend, not real
     // calls. They need no declaration.
@@ -1080,8 +1096,53 @@ class Parser {
     }
 
     const fn = this.globals.get(name);
+    if (fn && !fn.isFunction) {
+      const target: Node = { kind: 'var', line, variable: fn };
+      addType(target);
+      return this.indirectCall(target, args, line);
+    }
+    const local = this.findLocal(name);
+    if (local) {
+      const target: Node = { kind: 'var', line, variable: local };
+      addType(target);
+      return this.indirectCall(target, args, line);
+    }
     const funcReturn = fn?.isFunction ? (fn.ty.returnType ?? tyInt) : tyInt;
     return { kind: 'funcall', line, funcName: name, args, funcReturn };
+  }
+
+  private callExpr(target: Node, line: number): Node {
+    return this.indirectCall(target, this.callArgs(), line);
+  }
+
+  private callArgs(): Node[] {
+    this.expect('(');
+    const args: Node[] = [];
+    if (!this.equal(')')) {
+      do {
+        args.push(this.assign());
+      } while (this.consume(','));
+    }
+    this.expect(')');
+    return args;
+  }
+
+  private indirectCall(target: Node, args: Node[], line: number): Node {
+    addType(target);
+    const targetTy = target.ty;
+    const fnTy =
+      targetTy?.kind === 'ptr' && targetTy.base?.kind === 'func'
+        ? targetTy.base
+        : targetTy?.kind === 'func'
+          ? targetTy
+          : undefined;
+    return {
+      kind: 'funcall',
+      line,
+      funcExpr: target,
+      args,
+      funcReturn: fnTy?.returnType ?? tyInt,
+    };
   }
 
   // --- pointer-aware add/sub (chibicc new_add / new_sub) --------------------

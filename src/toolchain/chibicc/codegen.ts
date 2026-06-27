@@ -263,6 +263,7 @@ class Generator {
   private load(node: Node): void {
     // Arrays decay to their address; everything else loads a value from [R0].
     if (node.ty?.kind === 'array') return;
+    if (node.ty?.kind === 'func') return;
     if (node.ty?.kind === 'struct' || node.ty?.kind === 'union') {
       throw new CodegenError('cannot load an aggregate value directly');
     }
@@ -432,7 +433,12 @@ class Generator {
       this.genExpr(arg);
       this.push();
     }
-    this.emit(`  CALL ${node.funcName}`);
+    if (node.funcExpr) {
+      this.genExpr(node.funcExpr);
+      this.emit('  CALLR R0');
+    } else {
+      this.emit(`  CALL ${node.funcName}`);
+    }
     if (args.length > 0) this.adjustCsp(-args.length * 4);
   }
 

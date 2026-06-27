@@ -98,6 +98,7 @@ export function addType(node: Node | null | undefined): void {
   addType(node.inc);
   for (const stmt of node.body ?? []) addType(stmt);
   for (const arg of node.args ?? []) addType(arg);
+  addType(node.funcExpr);
 
   switch (node.kind) {
     case 'add':

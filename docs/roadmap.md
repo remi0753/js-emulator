@@ -985,10 +985,13 @@ chibicc tokenizer / preprocessor / parser / type checker
   `union` definitions (including forward `typedef struct T T;` style tags),
   aggregate member layout, `sizeof(type-name)` and `sizeof(expression)`,
   `.`/`->` member access, scalar/aggregate/string initializers, and short
-  load/store codegen. Coverage is in `test/chibicc-phase32.test.ts`, including a
-  guest-executed program that exercises typedefs, enums, struct padding,
-  aggregate globals/locals, char-array string initialization, member access, and
-  16-bit fields through the VM.
+  load/store codegen. It also supports function-pointer typedef declarators
+  such as `typedef int (*op)(int, int)`, function-name decay to code addresses,
+  and indirect calls through variables or array elements using `CALLR`. Coverage
+  is in `test/chibicc-phase32.test.ts`, including a guest-executed program that
+  exercises typedefs, enums, struct padding, aggregate globals/locals,
+  char-array string initialization, member access, 16-bit fields, and
+  function-pointer dispatch through the VM.
 
   Done when the host cross-compiler can build a broad set of small C conformance
   and regression programs for custom32 and run them deterministically inside the

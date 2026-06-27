@@ -18,6 +18,7 @@ import { PortBus } from '../src/vm/custom32/ports.ts';
 
 const PHASE32_SRC = `
 typedef struct Pair Pair;
+typedef int (*op)(int, int);
 
 struct Pair {
   char tag;
@@ -32,6 +33,10 @@ enum {
 
 Pair global = { 1, 40, 2 };
 char word[4] = "abc";
+op ops[2];
+
+int add(int a, int b) { return a + b; }
+int mul(int a, int b) { return a * b; }
 
 int slen(char *s) {
   int n = 0;
@@ -57,7 +62,11 @@ int putnum(int v) {
 int main(void) {
   Pair p = { 2, 5, 6 };
   Pair *pp = &p;
+  op fp = add;
+  ops[0] = add;
+  ops[1] = mul;
   int total = sizeof(Pair) + sizeof(p.tag) + pp->a + p.b + global.a + global.b + word[1] + STEP;
+  total = total + ops[0](4, 5) + ops[1](6, 7) + fp(10, 5);
   puts("phase32=");
   putnum(total);
   puts("\\n");
@@ -103,6 +112,7 @@ test('chibicc Phase 32 frontend accepts typedef, enum, struct, and initializers'
   assert.match(asm, /\.global global/);
   assert.match(asm, /LHS R0, R0/);
   assert.match(asm, /SH R1, R0/);
+  assert.match(asm, /CALLR R0/);
   assert.match(compile('typedef int T; int main(void) { T T = 4; return T; }'), /MOV R0, 4/);
 });
 
@@ -113,5 +123,5 @@ test('chibicc Phase 32 aggregate program runs deterministically in the guest', (
   fs.chmod('/bin/phase32', 0o755);
 
   const out = bootAndRun(disk, 'phase32');
-  assert.ok(out.includes('phase32=171\n'), `missing phase32 result in:\n${out}`);
+  assert.ok(out.includes('phase32=237\n'), `missing phase32 result in:\n${out}`);
 });
