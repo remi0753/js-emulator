@@ -17,6 +17,8 @@ export type TypeKind =
   | 'int'
   | 'long'
   | 'llong'
+  | 'float'
+  | 'double'
   | 'ptr'
   | 'func'
   | 'array'
@@ -27,6 +29,8 @@ export interface Member {
   name: string;
   ty: Type;
   offset: number;
+  bitOffset?: number;
+  bitWidth?: number;
 }
 
 export interface Type {
@@ -38,6 +42,8 @@ export interface Type {
   base?: Type;
   // Number of elements for `array`.
   arrayLen?: number;
+  isVLA?: boolean;
+  vlaLen?: Node;
   // Return and parameter types for `func`.
   returnType?: Type;
   params?: Type[];
@@ -58,6 +64,8 @@ export const tyULong: Type = { kind: 'long', size: 4, align: 4, isUnsigned: true
 // `long long` is 8 bytes but only 4-byte aligned in the custom32 ILP32 ABI.
 export const tyLLong: Type = { kind: 'llong', size: 8, align: 4 };
 export const tyULLong: Type = { kind: 'llong', size: 8, align: 4, isUnsigned: true };
+export const tyFloat: Type = { kind: 'float', size: 4, align: 4 };
+export const tyDouble: Type = { kind: 'double', size: 8, align: 4 };
 
 export function pointerTo(base: Type): Type {
   return { kind: 'ptr', size: 4, align: 4, base };
@@ -65,6 +73,10 @@ export function pointerTo(base: Type): Type {
 
 export function arrayOf(base: Type, len: number): Type {
   return { kind: 'array', size: base.size * len, align: base.align, base, arrayLen: len };
+}
+
+export function vlaOf(base: Type, len: Node): Type {
+  return { kind: 'array', size: 4, align: 4, base, isVLA: true, vlaLen: len };
 }
 
 export function funcType(returnType: Type, params: Type[]): Type {
@@ -87,6 +99,10 @@ export function isInteger(ty: Type): boolean {
     ty.kind === 'long' ||
     ty.kind === 'llong'
   );
+}
+
+export function isAggregate(ty: Type | undefined): boolean {
+  return !!ty && (ty.kind === 'struct' || ty.kind === 'union');
 }
 
 // A 64-bit integer (`long long`), held as a low/high 32-bit word pair.
@@ -142,6 +158,8 @@ export function addType(node: Node | null | undefined): void {
   for (const stmt of node.body ?? []) addType(stmt);
   for (const arg of node.args ?? []) addType(arg);
   addType(node.funcExpr);
+  for (const stmt of node.initStmts ?? []) addType(stmt);
+  addType(node.vlaLen);
 
   switch (node.kind) {
     case 'add':
@@ -201,6 +219,12 @@ export function addType(node: Node | null | undefined): void {
       return;
     case 'member':
       node.ty = node.member?.ty ?? tyInt;
+      return;
+    case 'compoundlit':
+      node.ty = node.variable?.ty ?? tyInt;
+      return;
+    case 'vlaalloc':
+      node.ty = tyVoid;
       return;
     case 'cast':
       node.ty = node.castType ?? tyInt;

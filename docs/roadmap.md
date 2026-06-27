@@ -1030,16 +1030,32 @@ chibicc tokenizer / preprocessor / parser / type checker
   declarators, designated/address/zero-fill initializers, integer-promotion
   arithmetic, and 64-bit arithmetic in `test/chibicc-phase32.test.ts`.
 
-  Remaining Phase 32 work (not yet implemented): aggregate call/return
-  (struct/union arguments, small aggregate returns, hidden-pointer returns);
-  bit-fields; compound literals; VLAs; and `float`/`double` through soft-float
-  helpers. Variadic functions (`va_list`/`va_start`/`va_arg`) are deferred: they
-  require the first parameter to sit at a fixed frame offset independent of
-  trailing arguments, which needs the documented right-to-left push order in
-  both the chibicc backend and the bootstrap compiler (`src/toolchain/c.ts`)
-  that builds crt0/libc/kernel — a cross-compiler ABI change out of scope for
-  the current slice. The chibicc backend therefore stays on the bootstrap
-  compiler's left-to-right convention.
+  This slice also adds aggregate-by-value calls and aggregate returns within
+  the current bootstrap-compatible software-stack ABI. Struct/union arguments
+  are copied into the argument area, and aggregate returns use a hidden caller
+  buffer pointer so nested member access, assignment, and return chains work
+  across chibicc-compiled functions. Bit-fields now follow the documented
+  custom32 layout rule (32-bit `int` allocation units, least-significant bit
+  first, zero-width fields starting a new unit) with masked load/store and
+  signed extraction. Compound literals lower to automatic storage inside
+  functions and static storage at file scope. Local VLAs allocate from `__csp`
+  at runtime, decay through a stored base pointer, and preserve runtime
+  `sizeof(vla)` through a hidden size slot. Coverage in
+  `test/chibicc-phase32.test.ts` includes guest-executed ABI boundary programs
+  for aggregate calls/returns, bit-field layout/signedness/boundaries,
+  compound literal lifetime, and VLA stack allocation/runtime sizeof.
+
+  Remaining Phase 32 work (not yet implemented): `float`/`double` arithmetic,
+  comparison, conversion, and constants through soft-float helpers. The parser
+  recognizes `float` and `double` type names, but arithmetic is rejected until
+  the helper runtime is added. Variadic functions
+  (`va_list`/`va_start`/`va_arg`) are deferred: they require the first parameter
+  to sit at a fixed frame offset independent of trailing arguments, which needs
+  the documented right-to-left push order in both the chibicc backend and the
+  bootstrap compiler (`src/toolchain/c.ts`) that builds crt0/libc/kernel — a
+  cross-compiler ABI change out of scope for the current slice. The chibicc
+  backend therefore stays on the bootstrap compiler's left-to-right convention
+  and emits a targeted diagnostic for `...` parameter lists.
 
   Done when the host cross-compiler can build a broad set of small C conformance
   and regression programs for custom32 and run them deterministically inside the

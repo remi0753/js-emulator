@@ -520,6 +520,144 @@ int main(void) {
 }
 `;
 
+const AGGREGATE_CALL_RETURN_SRC = `
+struct Pair { int a; char b; };
+struct Big { int a; int b; int c; };
+
+int slen(char *s) {
+  int n = 0;
+  while (s[n]) { n = n + 1; }
+  return n;
+}
+
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+
+int putnum(int v) {
+  char buf[12];
+  int i = 11;
+  buf[11] = 0;
+  if (v == 0) { return puts("0"); }
+  while (v > 0) {
+    i = i - 1;
+    buf[i] = 48 + v % 10;
+    v = v / 10;
+  }
+  return puts(buf + i);
+}
+
+int sum_pair(struct Pair p) { return p.a + p.b + sizeof(struct Pair); }
+
+struct Pair make_pair(int a, int b) {
+  struct Pair p = { a, b };
+  return p;
+}
+
+struct Big make_big(int x) {
+  return (struct Big){ x, x + 1, x + 2 };
+}
+
+int main(void) {
+  struct Pair p = { 10, 3 };
+  struct Pair q = make_pair(20, 4);
+  struct Big b = make_big(5);
+  int total = sum_pair(p) + sum_pair(q) + q.b + b.a + b.b + b.c;
+  puts("aggregate-call=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+
+const BITFIELD_SRC = `
+struct Flags {
+  unsigned int a:3;
+  signed int b:5;
+  unsigned int :0;
+  unsigned int c:6;
+  int d;
+};
+
+int slen(char *s) {
+  int n = 0;
+  while (s[n]) { n = n + 1; }
+  return n;
+}
+
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+
+int putnum(int v) {
+  char buf[12];
+  int i = 11;
+  buf[11] = 0;
+  if (v == 0) { return puts("0"); }
+  while (v > 0) {
+    i = i - 1;
+    buf[i] = 48 + v % 10;
+    v = v / 10;
+  }
+  return puts(buf + i);
+}
+
+int main(void) {
+  struct Flags f;
+  f.a = 15;
+  f.b = -3;
+  f.c = 63;
+  f.d = 5;
+  int total = f.a + f.c + f.d + sizeof(struct Flags);
+  if (f.b < 0) { total = total + 10; }
+  f.b = 31;
+  if (f.b == -1) { total = total + 20; }
+  puts("bitfield=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+
+const COMPOUND_VLA_SRC = `
+struct Point { int x; int y; };
+struct Point *gp = &(struct Point){ .x = 2, .y = 3 };
+
+int slen(char *s) {
+  int n = 0;
+  while (s[n]) { n = n + 1; }
+  return n;
+}
+
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+
+int putnum(int v) {
+  char buf[12];
+  int i = 11;
+  buf[11] = 0;
+  if (v == 0) { return puts("0"); }
+  while (v > 0) {
+    i = i - 1;
+    buf[i] = 48 + v % 10;
+    v = v / 10;
+  }
+  return puts(buf + i);
+}
+
+int main(void) {
+  int n = 5;
+  int a[n];
+  int i = 0;
+  while (i < n) {
+    a[i] = i * 2;
+    i = i + 1;
+  }
+  struct Point p = (struct Point){ .y = 7, .x = 4 };
+  struct Point *lp = &(struct Point){ 8, 9 };
+  int total = sizeof(a) + a[3] + p.x + p.y + gp->x + gp->y + lp->x + lp->y;
+  puts("compound-vla=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+
 function linkProgram(src: string, name: string): Uint8Array {
   return linkGuestExecutable([crt0Object(), compileObject(src, { name })]);
 }
@@ -634,6 +772,19 @@ test('chibicc Phase 32 frontend accepts typedef, enum, struct, and initializers'
   );
   assert.equal(compile('int f(void){ return sizeof(long long); }').match(/MOV R0, 8/)?.length, 1);
   assert.doesNotThrow(() => i64RuntimeObject());
+  // Remaining Phase 32 language slices: aggregate calls/returns, bit-fields,
+  // compound literals, and VLA runtime sizing.
+  assert.match(compile(AGGREGATE_CALL_RETURN_SRC), /CALL make_big/);
+  assert.match(compile(BITFIELD_SRC), /SHL R5, R7/);
+  const compoundVlaAsm = compile(COMPOUND_VLA_SRC);
+  assert.match(compoundVlaAsm, /\.L\.compound\./);
+  assert.match(compoundVlaAsm, /STORE R5, __csp/);
+  // Variadics still require the cross-compiler ABI migration documented in the roadmap.
+  assert.throws(() => compile('int f(int a, ...){ return a; }'), /ABI migration/);
+  assert.throws(
+    () => compile('float f(float a, float b){ return a + b; }'),
+    /invalid operands to \+/,
+  );
 });
 
 test('chibicc Phase 32 aggregate program runs deterministically in the guest', () => {
@@ -734,4 +885,34 @@ test('chibicc Phase 32 do-while and switch run in the guest', () => {
 
   const out = bootAndRun(disk, 'control');
   assert.ok(out.includes('control=19\n'), `missing control result in:\n${out}`);
+});
+
+test('chibicc Phase 32 aggregate call and return ABI runs in the guest', () => {
+  const disk = buildGuestDiskImage();
+  const fs = installFs(disk);
+  fs.writeFile('/bin/aggregate-call', linkProgram(AGGREGATE_CALL_RETURN_SRC, 'aggregate-call.o'));
+  fs.chmod('/bin/aggregate-call', 0o755);
+
+  const out = bootAndRun(disk, 'aggregate-call');
+  assert.ok(out.includes('aggregate-call=75\n'), `missing aggregate result in:\n${out}`);
+});
+
+test('chibicc Phase 32 bit-fields run in the guest', () => {
+  const disk = buildGuestDiskImage();
+  const fs = installFs(disk);
+  fs.writeFile('/bin/bitfield', linkProgram(BITFIELD_SRC, 'bitfield.o'));
+  fs.chmod('/bin/bitfield', 0o755);
+
+  const out = bootAndRun(disk, 'bitfield');
+  assert.ok(out.includes('bitfield=117\n'), `missing bitfield result in:\n${out}`);
+});
+
+test('chibicc Phase 32 compound literals and VLAs run in the guest', () => {
+  const disk = buildGuestDiskImage();
+  const fs = installFs(disk);
+  fs.writeFile('/bin/compound-vla', linkProgram(COMPOUND_VLA_SRC, 'compound-vla.o'));
+  fs.chmod('/bin/compound-vla', 0o755);
+
+  const out = bootAndRun(disk, 'compound-vla');
+  assert.ok(out.includes('compound-vla=59\n'), `missing compound/VLA result in:\n${out}`);
 });

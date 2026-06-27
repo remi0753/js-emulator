@@ -21,7 +21,14 @@
 
 import { SYSCALL_INT } from '../../isa.ts';
 import type { GReloc, Node, Obj, Program } from './parse.ts';
-import { is64, isPointerLike, isPromotedUnsigned, isUnsignedInteger } from './type.ts';
+import {
+  elementType,
+  is64,
+  isAggregate,
+  isPointerLike,
+  isPromotedUnsigned,
+  isUnsignedInteger,
+} from './type.ts';
 
 export class CodegenError extends Error {
   constructor(message: string) {
@@ -36,6 +43,7 @@ class Generator {
   private readonly globalDecls: string[] = [];
   private labelId = 0;
   private returnLabel = '';
+  private currentFn: Obj | null = null;
   private readonly breakStack: string[] = [];
   private readonly continueStack: string[] = [];
   private readonly program: Program;
@@ -155,6 +163,7 @@ class Generator {
   // --- functions -----------------------------------------------------------
 
   private genFunction(fn: Obj): void {
+    this.currentFn = fn;
     if (!fn.isStatic) this.globalDecls.push(fn.name);
     this.returnLabel = this.label(`${fn.name}.return`);
 
@@ -178,6 +187,7 @@ class Generator {
     this.emit('  STORE R6, __csp');
     this.emit('  POP R6');
     this.emit('  RET');
+    this.currentFn = null;
   }
 
   // --- statements ----------------------------------------------------------
@@ -191,7 +201,9 @@ class Generator {
         if (node.lhs) this.genExpr(node.lhs);
         return;
       case 'return':
-        if (node.lhs) this.genExpr(node.lhs);
+        if (node.lhs && isAggregate(this.currentFn?.ty.returnType)) {
+          this.returnAggregate(node.lhs);
+        } else if (node.lhs) this.genExpr(node.lhs);
         else this.emit('  MOV R0, 0');
         this.emit(`  JMP ${this.returnLabel}`);
         return;
@@ -333,15 +345,33 @@ class Generator {
           this.emit('  ADD R0, R7');
         }
         return;
+      case 'compoundlit':
+        this.genCompoundLiteral(node);
+        this.genAddr({ kind: 'var', line: node.line, variable: node.variable, ty: node.ty });
+        return;
+      case 'funcall':
+        if (isAggregate(node.ty)) {
+          this.genCall(node);
+          return;
+        }
+        break;
       default:
-        throw new CodegenError(`not an lvalue (${node.kind})`);
+        break;
     }
+    throw new CodegenError(`not an lvalue (${node.kind})`);
   }
 
   private load(node: Node): void {
     // Arrays decay to their address; everything else loads a value from [R0].
-    if (node.ty?.kind === 'array') return;
+    if (node.ty?.kind === 'array') {
+      if (node.ty.isVLA) this.emit('  LOADR R0, R0');
+      return;
+    }
     if (node.ty?.kind === 'func') return;
+    if (node.kind === 'member' && node.member?.bitWidth !== undefined) {
+      this.loadBitField(node.member);
+      return;
+    }
     if (node.ty?.kind === 'struct' || node.ty?.kind === 'union') {
       throw new CodegenError('cannot load an aggregate value directly');
     }
@@ -354,11 +384,137 @@ class Generator {
 
   private store(node: Node): void {
     // Address in R1, value in R0.
+    if (node.kind === 'member' && node.member?.bitWidth !== undefined) {
+      this.storeBitField(node.member);
+      return;
+    }
     if (node.ty?.kind === 'char') this.emit('  SB R1, R0');
     else if (node.ty?.kind === 'short') this.emit('  SH R1, R0');
     else if (node.ty?.kind === 'struct' || node.ty?.kind === 'union') {
       throw new CodegenError('cannot assign an aggregate value directly');
     } else this.emit('  STORER R1, R0');
+  }
+
+  private bitMask(width: number): number {
+    return width >= 32 ? 0xffffffff : (2 ** width - 1) >>> 0;
+  }
+
+  private loadBitField(member: NonNullable<Node['member']>): void {
+    const width = member.bitWidth ?? 0;
+    const bit = member.bitOffset ?? 0;
+    const mask = this.bitMask(width);
+    this.emit('  LOADR R0, R0');
+    if (bit > 0) {
+      this.emit(`  MOV R7, ${bit}`);
+      this.emit('  SHR R0, R7');
+    }
+    this.emit(`  MOV R7, ${mask >>> 0}`);
+    this.emit('  AND R0, R7');
+    if (!isUnsignedInteger(member.ty) && width > 0 && width < 32) {
+      this.signExtend(1 << (width - 1), ~mask >>> 0);
+    }
+  }
+
+  private storeBitField(member: NonNullable<Node['member']>): void {
+    const width = member.bitWidth ?? 0;
+    const bit = member.bitOffset ?? 0;
+    const mask = this.bitMask(width);
+    const shiftedMask = bit === 0 ? mask : (mask << bit) >>> 0;
+    const clearMask = ~shiftedMask >>> 0;
+    this.emit('  MOVR R2, R0');
+    this.emit('  LOADR R0, R1');
+    this.emit(`  MOV R7, ${clearMask}`);
+    this.emit('  AND R0, R7');
+    this.emit('  MOVR R5, R2');
+    this.emit(`  MOV R7, ${mask >>> 0}`);
+    this.emit('  AND R5, R7');
+    if (bit > 0) {
+      this.emit(`  MOV R7, ${bit}`);
+      this.emit('  SHL R5, R7');
+    }
+    this.emit('  OR R0, R5');
+    this.emit('  STORER R1, R0');
+    this.emit('  MOVR R0, R2');
+  }
+
+  // Copy exactly `size` bytes from R0 (source address) to R1 (destination
+  // address). R0/R1 are not preserved; callers decide the expression result.
+  private copyBytes(size: number): void {
+    this.emit('  MOVR R2, R0');
+    this.emit('  MOVR R5, R1');
+    let remaining = size;
+    while (remaining >= 4) {
+      this.emit('  LOADR R7, R2');
+      this.emit('  STORER R5, R7');
+      this.emit('  MOV R7, 4');
+      this.emit('  ADD R2, R7');
+      this.emit('  ADD R5, R7');
+      remaining -= 4;
+    }
+    while (remaining > 0) {
+      this.emit('  LB R7, R2');
+      this.emit('  SB R5, R7');
+      this.emit('  MOV R7, 1');
+      this.emit('  ADD R2, R7');
+      this.emit('  ADD R5, R7');
+      remaining--;
+    }
+  }
+
+  private genAggregateAssign(node: Node): void {
+    const size = Math.max(1, node.lhs?.ty?.size ?? 1);
+    this.genAddr(node.lhs!);
+    this.push();
+    this.genAddr(node.rhs!);
+    this.pop('R1');
+    this.copyBytes(size);
+    this.emit('  MOVR R0, R1');
+  }
+
+  private returnAggregate(expr: Node): void {
+    const fn = this.currentFn;
+    const size = Math.max(1, fn?.ty.returnType?.size ?? expr.ty?.size ?? 1);
+    const offset = fn?.returnBufferOffset;
+    if (offset === undefined) throw new CodegenError('aggregate return without a return buffer');
+    this.emit('  MOVR R1, R6');
+    this.emit(`  MOV R7, ${-offset}`);
+    this.emit('  SUB R1, R7');
+    this.emit('  LOADR R1, R1');
+    this.pushReg('R1');
+    this.genAddr(expr);
+    this.pop('R1');
+    this.copyBytes(size);
+    this.emit('  MOVR R0, R1');
+  }
+
+  private genCompoundLiteral(node: Node): void {
+    for (const stmt of node.initStmts ?? []) this.genStmt(stmt);
+  }
+
+  private genVlaAlloc(node: Node): void {
+    const elemSize = Math.max(1, elementType(node.variable!.ty).size);
+    this.genExpr(node.vlaLen!);
+    if (elemSize !== 1) {
+      this.emit(`  MOV R7, ${elemSize}`);
+      this.emit('  MUL R0, R7');
+    }
+    this.push();
+    this.genAddr({ kind: 'var', line: node.line, variable: node.vlaSizeObj });
+    this.pop('R7');
+    this.emit('  STORER R0, R7');
+    this.emit('  LOAD R7, __csp');
+    this.pushReg('R7');
+    this.genAddr({ kind: 'var', line: node.line, variable: node.variable });
+    this.pop('R7');
+    this.emit('  STORER R0, R7');
+    this.genExpr({ kind: 'var', line: node.line, variable: node.vlaSizeObj });
+    this.emit('  MOV R7, 3');
+    this.emit('  ADD R0, R7');
+    this.emit('  MOV R7, 4294967292');
+    this.emit('  AND R0, R7');
+    this.emit('  LOAD R5, __csp');
+    this.emit('  ADD R5, R0');
+    this.emit('  STORE R5, __csp');
   }
 
   private genExpr(node: Node): void {
@@ -379,6 +535,11 @@ class Generator {
         this.genAddr(node);
         this.load(node);
         return;
+      case 'compoundlit':
+        this.genCompoundLiteral(node);
+        this.genAddr({ kind: 'var', line: node.line, variable: node.variable, ty: node.ty });
+        this.load(node);
+        return;
       case 'addr':
         this.genAddr(node.lhs!);
         return;
@@ -387,11 +548,18 @@ class Generator {
         this.load(node);
         return;
       case 'assign':
+        if (isAggregate(node.lhs?.ty)) {
+          this.genAggregateAssign(node);
+          return;
+        }
         this.genAddr(node.lhs!);
         this.push();
         this.genExpr(node.rhs!);
         this.pop('R1');
         this.store(node.lhs!);
+        return;
+      case 'vlaalloc':
+        this.genVlaAlloc(node);
         return;
       case 'funcall':
         this.genCall(node);
@@ -425,6 +593,9 @@ class Generator {
         this.genLogical(node);
         return;
       default:
+        if (node.ty?.kind === 'float' || node.ty?.kind === 'double') {
+          throw new CodegenError('float/double soft-float codegen is not implemented yet');
+        }
         this.genBinary(node);
     }
   }
@@ -744,12 +915,25 @@ class Generator {
     // must agree). A `long long` argument occupies two slots, low word first.
     const args = node.args ?? [];
     let words = 0;
+    if (isAggregate(node.funcReturn)) {
+      if (!node.variable) throw new CodegenError('aggregate call without a return buffer');
+      this.genAddr({ kind: 'var', line: node.line, variable: node.variable, ty: node.variable.ty });
+      this.push();
+      words += 1;
+    }
     for (const arg of args) {
       if (is64(arg.ty)) {
         this.gen64Value(arg); // R0=low, R1=high
         this.pushReg('R0'); // low word (lower address)
         this.pushReg('R1'); // high word (higher address)
         words += 2;
+      } else if (isAggregate(arg.ty)) {
+        this.genAddr(arg);
+        this.emit('  LOAD R1, __csp');
+        this.copyBytes(Math.max(1, arg.ty?.size ?? 1));
+        const bytes = Math.floor((Math.max(1, arg.ty?.size ?? 1) + 3) / 4) * 4;
+        this.adjustCsp(bytes);
+        words += bytes / 4;
       } else {
         this.genExpr(arg);
         this.push();
@@ -763,6 +947,9 @@ class Generator {
       this.emit(`  CALL ${node.funcName}`);
     }
     if (words > 0) this.adjustCsp(-words * 4);
+    if (isAggregate(node.funcReturn) && node.variable) {
+      this.genAddr({ kind: 'var', line: node.line, variable: node.variable, ty: node.variable.ty });
+    }
   }
 
   // Target intrinsics. The slice supports `__syscall` (the userland trap) plus a

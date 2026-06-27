@@ -20,6 +20,7 @@ import {
   elementType,
   funcType,
   is64,
+  isAggregate,
   isInteger,
   isPointerLike,
   type Member,
@@ -27,6 +28,8 @@ import {
   structType,
   type Type,
   tyChar,
+  tyDouble,
+  tyFloat,
   tyInt,
   tyLLong,
   tyLong,
@@ -38,6 +41,7 @@ import {
   tyUShort,
   tyVoid,
   unionType,
+  vlaOf,
 } from './type.ts';
 
 export class ParseError extends Error {
@@ -81,7 +85,9 @@ export type NodeKind =
   | 'break'
   | 'continue'
   | 'member'
-  | 'cast';
+  | 'cast'
+  | 'compoundlit'
+  | 'vlaalloc';
 
 export interface Node {
   kind: NodeKind;
@@ -112,6 +118,9 @@ export interface Node {
   member?: Member;
   // Cast target type.
   castType?: Type;
+  initStmts?: Node[];
+  vlaLen?: Node;
+  vlaSizeObj?: Obj;
   // Switch cases.
   cases?: { value: number; body: Node }[];
   defaultCase?: Node;
@@ -142,6 +151,8 @@ export interface Obj {
   locals?: Obj[];
   bodyNode?: Node;
   stackSize?: number;
+  returnBufferOffset?: number;
+  vlaSizeObj?: Obj;
 }
 
 export interface Program {
@@ -192,6 +203,7 @@ class Parser {
   private currentFn: Obj | null = null;
   private strCount = 0;
   private staticCount = 0;
+  private anonCount = 0;
   private readonly tokens: Token[];
 
   constructor(tokens: Token[]) {
@@ -255,6 +267,8 @@ class Parser {
       'short',
       'int',
       'long',
+      'float',
+      'double',
       'unsigned',
       'signed',
       'static',
@@ -276,6 +290,8 @@ class Parser {
     let longCount = 0;
     let hasInt = false;
     let hasVoid = false;
+    let hasFloat = false;
+    let hasDouble = false;
     let isUnsigned = false;
     let count = 0;
     let userType: Type | undefined;
@@ -346,6 +362,18 @@ class Parser {
         count++;
         continue;
       }
+      if (word === 'float') {
+        hasFloat = true;
+        this.pos++;
+        count++;
+        continue;
+      }
+      if (word === 'double') {
+        hasDouble = true;
+        this.pos++;
+        count++;
+        continue;
+      }
       if (word === 'int') {
         hasInt = true;
         this.pos++;
@@ -362,6 +390,8 @@ class Parser {
     let ty: Type;
     if (userType) ty = userType;
     else if (hasVoid) ty = tyVoid;
+    else if (hasFloat) ty = tyFloat;
+    else if (hasDouble) ty = tyDouble;
     else if (hasChar) ty = isUnsigned ? tyUChar : tyChar;
     else if (hasShort) ty = isUnsigned ? tyUShort : tyShort;
     else if (longCount >= 2) ty = isUnsigned ? tyULLong : tyLLong;
@@ -426,10 +456,47 @@ class Parser {
     let offset = 0;
     let maxAlign = 1;
     let maxSize = 0;
+    let bitUnit = 0;
+    let bitCursor = 0;
     while (!this.consume('}')) {
       const spec = this.declspec();
       do {
         const { ty, name } = this.declarator(spec.ty);
+        if (this.consume(':')) {
+          const width = this.evalConst(this.assign());
+          if (width < 0 || width > 32) this.error('invalid bit-field width');
+          maxAlign = Math.max(maxAlign, 4);
+          if (kind === 'union') {
+            if (width > 0 && name)
+              members.push({ name, ty, offset: 0, bitOffset: 0, bitWidth: width });
+            maxSize = Math.max(maxSize, 4);
+            continue;
+          }
+          if (width === 0) {
+            offset = align(offset, 4);
+            if (bitCursor > 0) offset = bitUnit + 4;
+            bitCursor = 0;
+            continue;
+          }
+          if (bitCursor === 0) {
+            offset = align(offset, 4);
+            bitUnit = offset;
+          } else if (bitCursor + width > 32) {
+            offset = bitUnit + 4;
+            offset = align(offset, 4);
+            bitUnit = offset;
+            bitCursor = 0;
+          }
+          if (name)
+            members.push({ name, ty, offset: bitUnit, bitOffset: bitCursor, bitWidth: width });
+          bitCursor += width;
+          offset = Math.max(offset, bitUnit + 4);
+          continue;
+        }
+        if (kind === 'struct' && bitCursor > 0) {
+          offset = bitUnit + 4;
+          bitCursor = 0;
+        }
         const alignTo = Math.min(4, ty.align);
         maxAlign = Math.max(maxAlign, alignTo);
         if (kind === 'struct') {
@@ -519,11 +586,18 @@ class Parser {
   private typeSuffix(base: Type): Type {
     if (this.equal('(')) return this.funcParams(base);
     if (this.consume('[')) {
-      const len = this.peek().value;
-      if (this.peek().kind !== 'num') this.error('expected an array length');
-      this.pos++;
+      let len: number | undefined;
+      let vlaLen: Node | undefined;
+      if (this.peek().kind === 'num') {
+        len = this.peek().value;
+        this.pos++;
+      } else {
+        if (!this.currentFn) this.error('variably modified file-scope array');
+        vlaLen = this.assign();
+      }
       this.expect(']');
-      return arrayOf(this.typeSuffix(base), len);
+      const elem = this.typeSuffix(base);
+      return vlaLen ? vlaOf(elem, vlaLen) : arrayOf(elem, len ?? 0);
     }
     return base;
   }
@@ -538,6 +612,9 @@ class Parser {
       this.pos++;
     } else if (!this.equal(')')) {
       do {
+        if (this.consume('...')) {
+          this.error('variadic functions require the pending custom32 ABI migration');
+        }
         const spec = this.declspec();
         const { ty, name } = this.paramDeclarator(spec.ty);
         // Arrays and functions decay to pointers in a parameter list.
@@ -710,9 +787,18 @@ class Parser {
       return;
     }
     if (this.equal('{')) {
-      if (ty.kind === 'array') return this.arrayInit(init);
-      if (ty.kind === 'struct') return this.structInit(init);
-      if (ty.kind === 'union') return this.unionInit(init);
+      if (ty.kind === 'array') {
+        this.arrayInit(init);
+        return;
+      }
+      if (ty.kind === 'struct') {
+        this.structInit(init);
+        return;
+      }
+      if (ty.kind === 'union') {
+        this.unionInit(init);
+        return;
+      }
       // A scalar wrapped in braces: `int x = { 5 };`.
       this.expect('{');
       if (!this.equal('}')) init.expr = this.assign();
@@ -853,6 +939,10 @@ class Parser {
   // every leaf that has no initializing expression.
   private lowerLocalInit(lhs: Node, init: Init, out: Node[]): void {
     const ty = init.ty;
+    if ((ty.kind === 'struct' || ty.kind === 'union') && init.expr) {
+      out.push({ kind: 'assign', line: lhs.line, lhs, rhs: init.expr });
+      return;
+    }
     if (ty.kind === 'array') {
       const children = init.children ?? [];
       for (let i = 0; i < children.length; i++) {
@@ -1027,6 +1117,18 @@ class Parser {
         continue;
       }
       const obj = this.newLocal(name, ty);
+      if (ty.kind === 'array' && ty.isVLA) {
+        const sizeObj = this.newLocal(`${name}.sizeof`, tyInt);
+        obj.vlaSizeObj = sizeObj;
+        body.push({
+          kind: 'vlaalloc',
+          line: this.peek().line,
+          variable: obj,
+          vlaLen: ty.vlaLen,
+          vlaSizeObj: sizeObj,
+        });
+        continue;
+      }
       if (this.consume('=')) {
         body.push(...this.localInitializer(obj));
       }
@@ -1290,6 +1392,7 @@ class Parser {
       if (this.isTypeName()) {
         const ty = this.typeName();
         this.expect(')');
+        if (this.equal('{')) return this.compoundLiteral(ty, line);
         return { kind: 'cast', line, lhs: this.unary(), castType: ty };
       }
       this.pos--;
@@ -1349,10 +1452,16 @@ class Parser {
         const operand = this.expr();
         this.expect(')');
         addType(operand);
+        if (operand.kind === 'var' && operand.variable?.vlaSizeObj) {
+          return { kind: 'var', line: t.line, variable: operand.variable.vlaSizeObj };
+        }
         return { kind: 'num', line: t.line, value: operand.ty?.size ?? 4 };
       }
       const operand = this.unary();
       addType(operand);
+      if (operand.kind === 'var' && operand.variable?.vlaSizeObj) {
+        return { kind: 'var', line: t.line, variable: operand.variable.vlaSizeObj };
+      }
       return { kind: 'num', line: t.line, value: operand.ty?.size ?? 4 };
     }
 
@@ -1390,6 +1499,30 @@ class Parser {
     this.error(`unexpected token '${t.text}'`);
   }
 
+  private compoundLiteral(ty: Type, line: number): Node {
+    if (this.currentFn) {
+      const obj = this.newLocal(`.compound.${this.anonCount++}`, ty);
+      return {
+        kind: 'compoundlit',
+        line,
+        variable: obj,
+        initStmts: this.localInitializer(obj),
+      };
+    }
+    const obj: Obj = {
+      name: `.L.compound.${this.anonCount++}`,
+      ty,
+      isLocal: false,
+      isFunction: false,
+      isStatic: true,
+    };
+    const init = this.globalInitializer(ty);
+    obj.initData = init.data;
+    if (init.relocs.length > 0) obj.initRelocs = init.relocs;
+    this.objects.push(obj);
+    return { kind: 'var', line, variable: obj };
+  }
+
   private structRef(lhs: Node, name: string, line: number): Node {
     addType(lhs);
     const ty = lhs.ty;
@@ -1425,7 +1558,7 @@ class Parser {
     }
     const funcReturn = fn?.isFunction ? (fn.ty.returnType ?? tyInt) : tyInt;
     const converted = this.convertArgs(args, fn?.isFunction ? fn.ty.params : undefined);
-    return { kind: 'funcall', line, funcName: name, args: converted, funcReturn };
+    return this.funcallNode({ kind: 'funcall', line, funcName: name, args: converted, funcReturn });
   }
 
   // Convert each argument to its parameter type where that changes the ABI slot
@@ -1468,13 +1601,20 @@ class Parser {
         : targetTy?.kind === 'func'
           ? targetTy
           : undefined;
-    return {
+    return this.funcallNode({
       kind: 'funcall',
       line,
       funcExpr: target,
       args: this.convertArgs(args, fnTy?.params),
       funcReturn: fnTy?.returnType ?? tyInt,
-    };
+    });
+  }
+
+  private funcallNode(node: Node): Node {
+    if (isAggregate(node.funcReturn) && this.currentFn) {
+      node.variable = this.newLocal(`.retbuf.${this.anonCount++}`, node.funcReturn!);
+    }
+    return node;
   }
 
   // --- pointer-aware add/sub (chibicc new_add / new_sub) --------------------
@@ -1486,6 +1626,7 @@ class Parser {
     const rt = rhs.ty!;
     if (isInteger(lt) && isInteger(rt)) return { kind: 'add', line, lhs, rhs };
     if (isPointerLike(lt) && isPointerLike(rt)) this.error('invalid pointer + pointer');
+    if (!isPointerLike(lt) && !isPointerLike(rt)) this.error('invalid operands to +');
     // Canonicalize to `pointer + integer`.
     let p = lhs;
     let n = rhs;
@@ -1687,8 +1828,10 @@ class Parser {
     // a 4-byte-rounded slot, low word first, so a `long long` parameter spans
     // two slots.
     const slot = (ty: Type): number => align(Math.max(1, ty.size), 4);
-    const paramBytes = params.reduce((sum, p) => sum + slot(p.ty), 0);
-    let acc = 0;
+    const hiddenReturnBytes = isAggregate(fn.ty.returnType) ? 4 : 0;
+    const paramBytes = hiddenReturnBytes + params.reduce((sum, p) => sum + slot(p.ty), 0);
+    fn.returnBufferOffset = hiddenReturnBytes > 0 ? -paramBytes : undefined;
+    let acc = hiddenReturnBytes;
     for (const p of params) {
       p.offset = -(paramBytes - acc);
       acc += slot(p.ty);

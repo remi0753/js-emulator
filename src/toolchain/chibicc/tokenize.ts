@@ -51,6 +51,8 @@ const KEYWORDS = new Set([
   'short',
   'int',
   'long',
+  'float',
+  'double',
   'unsigned',
   'signed',
   'static',
@@ -65,6 +67,7 @@ const KEYWORDS = new Set([
 // only appear inside macro replacement lists (directive lines are stripped
 // textually before the body is tokenized), where they drive stringize/paste.
 const PUNCTUATORS = [
+  '...',
   '##',
   '<<',
   '>>',
