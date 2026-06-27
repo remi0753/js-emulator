@@ -2,39 +2,40 @@
 //
 // A 64-bit value is two 32-bit words (low, high). The backend (codegen.ts)
 // lowers `long long` arithmetic, shifts, comparisons, and negation to calls to
-// these helpers. Each arithmetic/shift/unary helper writes its 8-byte result
-// through a pointer into a caller-reserved temporary, so the helpers themselves
-// use only 32-bit operations and need no `long long` support to compile — they
-// are ordinary C compiled by the same chibicc frontend and linked in.
-//
-// The compare helpers return a signed -1/0/1 in the normal 32-bit return
-// register. Names follow the reserved `__i64_*` / `__u64_*` families in
+// these helpers. Each helper returns its 64-bit result the normal way — low
+// word in R0, high word in R1 — by building it in a local `long long` through a
+// pointer to its two words, so the helpers use only 32-bit operations and need
+// no `long long` arithmetic to compile (they are ordinary C compiled by the
+// same chibicc frontend and linked in). The compare helpers return a signed
+// -1/0/1 int. Names follow the reserved `__i64_*` / `__u64_*` families in
 // docs/custom32-c-abi.md.
 
 import type { ObjectFile } from '../../formats/object.ts';
 import { compileObject } from './index.ts';
 
 export const I64_RUNTIME_SOURCE = `
-/* res = a + b (carry-propagating) */
-void __i64_add(unsigned *r, unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
+long long __i64_add(unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
   unsigned lo = alo + blo;
   unsigned carry = 0;
   if (lo < alo) carry = 1;
-  r[0] = lo;
-  r[1] = ahi + bhi + carry;
+  long long r;
+  unsigned *p = (unsigned *)&r;
+  p[0] = lo;
+  p[1] = ahi + bhi + carry;
+  return r;
 }
 
-/* res = a - b (borrow-propagating) */
-void __i64_sub(unsigned *r, unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
+long long __i64_sub(unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
   unsigned borrow = 0;
   if (alo < blo) borrow = 1;
-  r[0] = alo - blo;
-  r[1] = ahi - bhi - borrow;
+  long long r;
+  unsigned *p = (unsigned *)&r;
+  p[0] = alo - blo;
+  p[1] = ahi - bhi - borrow;
+  return r;
 }
 
-/* res = a * b (low 64 bits), via 16x16 partial products for the low word's
-   carry into the high word */
-void __i64_mul(unsigned *r, unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
+long long __i64_mul(unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
   unsigned a0 = alo & 65535;
   unsigned a1 = alo >> 16;
   unsigned b0 = blo & 65535;
@@ -44,64 +45,85 @@ void __i64_mul(unsigned *r, unsigned alo, unsigned ahi, unsigned blo, unsigned b
   unsigned t10 = a1 * b0;
   unsigned t11 = a1 * b1;
   unsigned mid = (t00 >> 16) + (t01 & 65535) + (t10 & 65535);
-  r[0] = (t00 & 65535) | (mid << 16);
-  r[1] = t11 + (t01 >> 16) + (t10 >> 16) + (mid >> 16) + alo * bhi + ahi * blo;
+  long long r;
+  unsigned *p = (unsigned *)&r;
+  p[0] = (t00 & 65535) | (mid << 16);
+  p[1] = t11 + (t01 >> 16) + (t10 >> 16) + (mid >> 16) + alo * bhi + ahi * blo;
+  return r;
 }
 
-void __i64_and(unsigned *r, unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
-  r[0] = alo & blo;
-  r[1] = ahi & bhi;
+long long __i64_and(unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
+  long long r;
+  unsigned *p = (unsigned *)&r;
+  p[0] = alo & blo;
+  p[1] = ahi & bhi;
+  return r;
 }
 
-void __i64_or(unsigned *r, unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
-  r[0] = alo | blo;
-  r[1] = ahi | bhi;
+long long __i64_or(unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
+  long long r;
+  unsigned *p = (unsigned *)&r;
+  p[0] = alo | blo;
+  p[1] = ahi | bhi;
+  return r;
 }
 
-void __i64_xor(unsigned *r, unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
-  r[0] = alo ^ blo;
-  r[1] = ahi ^ bhi;
+long long __i64_xor(unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
+  long long r;
+  unsigned *p = (unsigned *)&r;
+  p[0] = alo ^ blo;
+  p[1] = ahi ^ bhi;
+  return r;
 }
 
-/* res = -v (two's complement) */
-void __i64_neg(unsigned *r, unsigned lo, unsigned hi) {
+long long __i64_neg(unsigned lo, unsigned hi) {
   unsigned nlo = ~lo + 1;
   unsigned carry = 0;
   if (nlo == 0) carry = 1;
-  r[0] = nlo;
-  r[1] = ~hi + carry;
+  long long r;
+  unsigned *p = (unsigned *)&r;
+  p[0] = nlo;
+  p[1] = ~hi + carry;
+  return r;
 }
 
-void __i64_shl(unsigned *r, unsigned lo, unsigned hi, int amt) {
+long long __i64_shl(unsigned lo, unsigned hi, int amt) {
+  long long r;
+  unsigned *p = (unsigned *)&r;
   amt = amt & 63;
-  if (amt == 0) { r[0] = lo; r[1] = hi; return; }
-  if (amt >= 32) { r[0] = 0; r[1] = lo << (amt - 32); return; }
-  r[0] = lo << amt;
-  r[1] = (hi << amt) | (lo >> (32 - amt));
+  if (amt == 0) { p[0] = lo; p[1] = hi; return r; }
+  if (amt >= 32) { p[0] = 0; p[1] = lo << (amt - 32); return r; }
+  p[0] = lo << amt;
+  p[1] = (hi << amt) | (lo >> (32 - amt));
+  return r;
 }
 
-/* logical (unsigned) right shift */
-void __i64_shr(unsigned *r, unsigned lo, unsigned hi, int amt) {
+long long __i64_shr(unsigned lo, unsigned hi, int amt) {
+  long long r;
+  unsigned *p = (unsigned *)&r;
   amt = amt & 63;
-  if (amt == 0) { r[0] = lo; r[1] = hi; return; }
-  if (amt >= 32) { r[0] = hi >> (amt - 32); r[1] = 0; return; }
-  r[0] = (lo >> amt) | (hi << (32 - amt));
-  r[1] = hi >> amt;
+  if (amt == 0) { p[0] = lo; p[1] = hi; return r; }
+  if (amt >= 32) { p[0] = hi >> (amt - 32); p[1] = 0; return r; }
+  p[0] = (lo >> amt) | (hi << (32 - amt));
+  p[1] = hi >> amt;
+  return r;
 }
 
-/* arithmetic (signed) right shift */
-void __i64_sar(unsigned *r, unsigned lo, unsigned hi, int amt) {
+long long __i64_sar(unsigned lo, unsigned hi, int amt) {
   int shi = hi;
   unsigned fill = 0;
   if (hi >> 31) fill = 4294967295u;
+  long long r;
+  unsigned *p = (unsigned *)&r;
   amt = amt & 63;
-  if (amt == 0) { r[0] = lo; r[1] = hi; return; }
-  if (amt >= 32) { r[0] = shi >> (amt - 32); r[1] = fill; return; }
-  r[0] = (lo >> amt) | (hi << (32 - amt));
-  r[1] = shi >> amt;
+  if (amt == 0) { p[0] = lo; p[1] = hi; return r; }
+  if (amt >= 32) { p[0] = shi >> (amt - 32); p[1] = fill; return r; }
+  p[0] = (lo >> amt) | (hi << (32 - amt));
+  p[1] = shi >> amt;
+  return r;
 }
 
-/* unsigned 64-bit divmod: q = a / b, rem = a % b, via shift-subtract */
+/* unsigned 64-bit divmod via shift-subtract; quotient and remainder out-params */
 void __u64_divmod(unsigned alo, unsigned ahi, unsigned blo, unsigned bhi,
                   unsigned *qlo, unsigned *qhi, unsigned *rlo, unsigned *rhi) {
   unsigned ql = 0;
@@ -132,21 +154,27 @@ void __u64_divmod(unsigned alo, unsigned ahi, unsigned blo, unsigned bhi,
   rhi[0] = rh;
 }
 
-void __u64_div(unsigned *r, unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
+long long __u64_div(unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
   unsigned ql; unsigned qh; unsigned rl; unsigned rh;
   __u64_divmod(alo, ahi, blo, bhi, &ql, &qh, &rl, &rh);
-  r[0] = ql;
-  r[1] = qh;
+  long long r;
+  unsigned *p = (unsigned *)&r;
+  p[0] = ql;
+  p[1] = qh;
+  return r;
 }
 
-void __u64_mod(unsigned *r, unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
+long long __u64_mod(unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
   unsigned ql; unsigned qh; unsigned rl; unsigned rh;
   __u64_divmod(alo, ahi, blo, bhi, &ql, &qh, &rl, &rh);
-  r[0] = rl;
-  r[1] = rh;
+  long long r;
+  unsigned *p = (unsigned *)&r;
+  p[0] = rl;
+  p[1] = rh;
+  return r;
 }
 
-void __i64_div(unsigned *r, unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
+long long __i64_div(unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
   int aneg = (ahi >> 31) & 1;
   int bneg = (bhi >> 31) & 1;
   if (aneg) { unsigned c = 0; if (alo == 0) c = 1; alo = ~alo + 1; ahi = ~ahi + c; }
@@ -154,11 +182,14 @@ void __i64_div(unsigned *r, unsigned alo, unsigned ahi, unsigned blo, unsigned b
   unsigned ql; unsigned qh; unsigned rl; unsigned rh;
   __u64_divmod(alo, ahi, blo, bhi, &ql, &qh, &rl, &rh);
   if (aneg ^ bneg) { unsigned c = 0; if (ql == 0) c = 1; ql = ~ql + 1; qh = ~qh + c; }
-  r[0] = ql;
-  r[1] = qh;
+  long long r;
+  unsigned *p = (unsigned *)&r;
+  p[0] = ql;
+  p[1] = qh;
+  return r;
 }
 
-void __i64_mod(unsigned *r, unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
+long long __i64_mod(unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
   int aneg = (ahi >> 31) & 1;
   int bneg = (bhi >> 31) & 1;
   if (aneg) { unsigned c = 0; if (alo == 0) c = 1; alo = ~alo + 1; ahi = ~ahi + c; }
@@ -166,11 +197,13 @@ void __i64_mod(unsigned *r, unsigned alo, unsigned ahi, unsigned blo, unsigned b
   unsigned ql; unsigned qh; unsigned rl; unsigned rh;
   __u64_divmod(alo, ahi, blo, bhi, &ql, &qh, &rl, &rh);
   if (aneg) { unsigned c = 0; if (rl == 0) c = 1; rl = ~rl + 1; rh = ~rh + c; }
-  r[0] = rl;
-  r[1] = rh;
+  long long r;
+  unsigned *p = (unsigned *)&r;
+  p[0] = rl;
+  p[1] = rh;
+  return r;
 }
 
-/* signed compare: -1 if a < b, 0 if equal, 1 if a > b */
 int __i64_cmp(unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
   int sa = ahi;
   int sb = bhi;
@@ -181,7 +214,6 @@ int __i64_cmp(unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
   return 0;
 }
 
-/* unsigned compare: -1 if a < b, 0 if equal, 1 if a > b */
 int __u64_cmp(unsigned alo, unsigned ahi, unsigned blo, unsigned bhi) {
   if (ahi < bhi) return -1;
   if (ahi > bhi) return 1;
