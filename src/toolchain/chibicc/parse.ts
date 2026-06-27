@@ -71,6 +71,8 @@ export type NodeKind =
   | 'return'
   | 'if'
   | 'for'
+  | 'do'
+  | 'switch'
   | 'block'
   | 'exprstmt'
   | 'break'
@@ -107,6 +109,9 @@ export interface Node {
   member?: Member;
   // Cast target type.
   castType?: Type;
+  // Switch cases.
+  cases?: { value: number; body: Node }[];
+  defaultCase?: Node;
 }
 
 // An Obj is a named object: a global variable, a string literal, a local
@@ -838,6 +843,16 @@ class Parser {
       return { kind: 'for', line, cond, thenStmt: bodyStmt };
     }
 
+    if (this.consume('do')) {
+      const bodyStmt = this.stmt();
+      this.expect('while');
+      this.expect('(');
+      const cond = this.expr();
+      this.expect(')');
+      this.expect(';');
+      return { kind: 'do', line, cond, thenStmt: bodyStmt };
+    }
+
     if (this.consume('for')) {
       this.expect('(');
       this.enterScope();
@@ -861,6 +876,13 @@ class Parser {
       return { kind: 'for', line, init, cond, thenStmt: bodyStmt, inc };
     }
 
+    if (this.consume('switch')) {
+      this.expect('(');
+      const cond = this.expr();
+      this.expect(')');
+      return this.switchStmt(line, cond);
+    }
+
     if (this.consume('break')) {
       this.expect(';');
       return { kind: 'break', line };
@@ -880,6 +902,42 @@ class Parser {
     const e = this.expr();
     this.expect(';');
     return { kind: 'exprstmt', line, lhs: e };
+  }
+
+  private switchStmt(line: number, cond: Node): Node {
+    this.expect('{');
+    const cases: { value: number; body: Node }[] = [];
+    let defaultCase: Node | undefined;
+    let current: { value?: number; stmts: Node[] } | undefined;
+
+    const flush = (): void => {
+      if (!current) return;
+      const body: Node = { kind: 'block', line, body: current.stmts };
+      if (current.value === undefined) defaultCase = body;
+      else cases.push({ value: current.value, body });
+    };
+
+    while (!this.consume('}')) {
+      if (this.consume('case')) {
+        flush();
+        const value = this.evalConst(this.expr());
+        this.expect(':');
+        current = { value, stmts: [] };
+        continue;
+      }
+      if (this.consume('default')) {
+        flush();
+        this.expect(':');
+        current = { stmts: [] };
+        continue;
+      }
+      if (!current) this.error('expected case/default label in switch');
+      if (this.isTypeName()) current.stmts.push(this.declaration());
+      else current.stmts.push(this.stmt());
+    }
+    flush();
+
+    return { kind: 'switch', line, cond, cases, defaultCase };
   }
 
   // --- expressions ---------------------------------------------------------

@@ -206,6 +206,27 @@ class Generator {
         this.continueStack.pop();
         return;
       }
+      case 'do': {
+        const top = this.label('do');
+        const cont = this.label('do.cont');
+        const end = this.label('do.end');
+        this.breakStack.push(end);
+        this.continueStack.push(cont);
+        this.emit(`${top}:`);
+        this.genStmt(node.thenStmt!);
+        this.emit(`${cont}:`);
+        this.genExpr(node.cond!);
+        this.emit('  MOV R7, 0');
+        this.emit('  CMP R0, R7');
+        this.emit(`  JNZ ${top}`);
+        this.emit(`${end}:`);
+        this.breakStack.pop();
+        this.continueStack.pop();
+        return;
+      }
+      case 'switch':
+        this.genSwitch(node);
+        return;
       case 'break': {
         const target = this.breakStack.at(-1);
         if (!target) throw new CodegenError('break outside a loop');
@@ -222,6 +243,36 @@ class Generator {
         // Any other node used in statement position is an expression.
         this.genExpr(node);
     }
+  }
+
+  private genSwitch(node: Node): void {
+    const end = this.label('switch.end');
+    const defaultLabel = node.defaultCase ? this.label('switch.default') : end;
+    const labels = (node.cases ?? []).map((c) => ({ ...c, label: this.label('switch.case') }));
+
+    this.genExpr(node.cond!);
+    this.push();
+    for (const c of labels) {
+      this.pop('R0');
+      this.push();
+      this.emit(`  MOV R7, ${c.value >>> 0}`);
+      this.emit('  CMP R0, R7');
+      this.emit(`  JZ ${c.label}`);
+    }
+    this.pop('R0');
+    this.emit(`  JMP ${defaultLabel}`);
+
+    this.breakStack.push(end);
+    for (const c of labels) {
+      this.emit(`${c.label}:`);
+      this.genStmt(c.body);
+    }
+    if (node.defaultCase) {
+      this.emit(`${defaultLabel}:`);
+      this.genStmt(node.defaultCase);
+    }
+    this.emit(`${end}:`);
+    this.breakStack.pop();
   }
 
   // --- expressions ---------------------------------------------------------

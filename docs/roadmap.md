@@ -995,13 +995,14 @@ chibicc tokenizer / preprocessor / parser / type checker
   objects are emitted as internal data/BSS symbols, casts now support scalar
   narrowing/sign-extension for the integer subset, and the preprocessor handles
   object-like macros, simple function-like macros, and `#if`/`#ifdef`/`#ifndef`/
-  `#elif`/`#else`/`#endif`. Coverage is in
+  `#elif`/`#else`/`#endif`. The statement subset now includes `do ... while`
+  and basic `switch`/`case`/`default` with fallthrough and `break`. Coverage is in
   `test/chibicc-phase32.test.ts`, including guest-executed programs that exercise
   typedefs, enums, struct padding, aggregate globals/locals, char-array string
   initialization, member access, 16-bit fields, function-pointer dispatch,
   direct function-pointer array declarators, unsigned arithmetic, persistent
   static locals, explicit casts, conditional preprocessing, and macro argument
-  substitution through the VM.
+  substitution, plus switch/do-while control flow through the VM.
 
   Done when the host cross-compiler can build a broad set of small C conformance
   and regression programs for custom32 and run them deterministically inside the

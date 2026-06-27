@@ -218,6 +218,59 @@ int main(void) {
 }
 `;
 
+const CONTROL_SRC = `
+int slen(char *s) {
+  int n = 0;
+  while (s[n]) { n = n + 1; }
+  return n;
+}
+
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+
+int putnum(int v) {
+  char buf[12];
+  int i = 11;
+  buf[11] = 0;
+  if (v == 0) { return puts("0"); }
+  while (v > 0) {
+    i = i - 1;
+    buf[i] = 48 + v % 10;
+    v = v / 10;
+  }
+  return puts(buf + i);
+}
+
+int classify(int x) {
+  int r = 0;
+  switch (x) {
+  case 0:
+    r = 1;
+    break;
+  case 1:
+    r = r + 2;
+  case 2:
+    r = r + 4;
+    break;
+  default:
+    r = 8;
+  }
+  return r;
+}
+
+int main(void) {
+  int i = 0;
+  int total = 0;
+  do {
+    total = total + classify(i);
+    i = i + 1;
+  } while (i < 4);
+  puts("control=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+
 function linkProgram(src: string, name: string): Uint8Array {
   return linkGuestExecutable([crt0Object(), compileObject(src, { name })]);
 }
@@ -311,4 +364,14 @@ test('chibicc Phase 32 conditional preprocessing runs in the guest', () => {
 
   const out = bootAndRun(disk, 'preproc');
   assert.ok(out.includes('preproc=42\n'), `missing preprocessor result in:\n${out}`);
+});
+
+test('chibicc Phase 32 do-while and switch run in the guest', () => {
+  const disk = buildGuestDiskImage();
+  const fs = installFs(disk);
+  fs.writeFile('/bin/control', linkProgram(CONTROL_SRC, 'control.o'));
+  fs.chmod('/bin/control', 0o755);
+
+  const out = bootAndRun(disk, 'control');
+  assert.ok(out.includes('control=19\n'), `missing control result in:\n${out}`);
 });

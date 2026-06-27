@@ -109,6 +109,8 @@ export function addType(node: Node | null | undefined): void {
   addType(node.els);
   addType(node.init);
   addType(node.inc);
+  for (const c of node.cases ?? []) addType(c.body);
+  addType(node.defaultCase);
   for (const stmt of node.body ?? []) addType(stmt);
   for (const arg of node.args ?? []) addType(arg);
   addType(node.funcExpr);
