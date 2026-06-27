@@ -103,11 +103,25 @@ export class CPU {
 
   // --- flag updates ---
 
-  // Update ZF/SF from an arithmetic/logic result (CF is handled by the caller).
+  // Update ZF/SF from an arithmetic/logic result (CF/OF are handled by callers).
   private setZS(result: number): number {
     const r = result >>> 0;
     this.setFlag(FLAG.ZF, r === 0);
     this.setFlag(FLAG.SF, (r & 0x80000000) !== 0);
+    return r;
+  }
+
+  private setAddFlags(a: number, b: number, result: number): number {
+    const r = this.setZS(result);
+    this.setFlag(FLAG.CF, (a >>> 0) + (b >>> 0) > 0xffffffff);
+    this.setFlag(FLAG.OF, ((~(a ^ b) & (a ^ r)) & 0x80000000) !== 0);
+    return r;
+  }
+
+  private setSubFlags(a: number, b: number, result: number): number {
+    const r = this.setZS(result);
+    this.setFlag(FLAG.CF, (a >>> 0) < (b >>> 0));
+    this.setFlag(FLAG.OF, (((a ^ b) & (a ^ r)) & 0x80000000) !== 0);
     return r;
   }
 
@@ -118,6 +132,10 @@ export class CPU {
 
   private getFlag(bit: number): boolean {
     return (this.flags & bit) !== 0;
+  }
+
+  private signedLess(): boolean {
+    return this.getFlag(FLAG.SF) !== this.getFlag(FLAG.OF);
   }
 
   // --- stack (downward-growing) ---
@@ -186,16 +204,15 @@ export class CPU {
 
       // --- arithmetic / logic ---
       case 'ADD': {
-        const sum = r[ops[0]!]! + r[ops[1]!]!;
-        this.setFlag(FLAG.CF, sum > 0xffffffff);
-        r[ops[0]!] = this.setZS(sum);
+        const a = r[ops[0]!]!;
+        const b = r[ops[1]!]!;
+        r[ops[0]!] = this.setAddFlags(a, b, a + b);
         break;
       }
       case 'SUB': {
         const a = r[ops[0]!]!;
         const b = r[ops[1]!]!;
-        this.setFlag(FLAG.CF, a < b); // borrow
-        r[ops[0]!] = this.setZS(a - b);
+        r[ops[0]!] = this.setSubFlags(a, b, a - b);
         break;
       }
       case 'MUL': {
@@ -235,16 +252,15 @@ export class CPU {
         r[ops[0]!] = this.setZS(r[ops[0]!]! >>> (r[ops[1]!]! & 31));
         break;
       case 'INC':
-        r[ops[0]!] = this.setZS(r[ops[0]!]! + 1);
+        r[ops[0]!] = this.setAddFlags(r[ops[0]!]!, 1, r[ops[0]!]! + 1);
         break;
       case 'DEC':
-        r[ops[0]!] = this.setZS(r[ops[0]!]! - 1);
+        r[ops[0]!] = this.setSubFlags(r[ops[0]!]!, 1, r[ops[0]!]! - 1);
         break;
       case 'CMP': {
         const a = r[ops[0]!]!;
         const b = r[ops[1]!]!;
-        this.setFlag(FLAG.CF, a < b);
-        this.setZS(a - b); // discard the result, update flags only
+        this.setSubFlags(a, b, a - b); // discard the result, update flags only
         break;
       }
 
@@ -258,17 +274,17 @@ export class CPU {
       case 'JNZ':
         if (!this.getFlag(FLAG.ZF)) this.pc = ops[0]!;
         break;
-      case 'JG': // a > b (signed): ZF==0 and SF==0
-        if (!this.getFlag(FLAG.ZF) && !this.getFlag(FLAG.SF)) this.pc = ops[0]!;
+      case 'JG': // a > b (signed): ZF==0 and SF==OF
+        if (!this.getFlag(FLAG.ZF) && !this.signedLess()) this.pc = ops[0]!;
         break;
-      case 'JGE': // a >= b: SF==0
-        if (!this.getFlag(FLAG.SF)) this.pc = ops[0]!;
+      case 'JGE': // a >= b: SF==OF
+        if (!this.signedLess()) this.pc = ops[0]!;
         break;
-      case 'JL': // a < b: SF==1
-        if (this.getFlag(FLAG.SF)) this.pc = ops[0]!;
+      case 'JL': // a < b: SF!=OF
+        if (this.signedLess()) this.pc = ops[0]!;
         break;
-      case 'JLE': // a <= b: SF==1 or ZF==1
-        if (this.getFlag(FLAG.SF) || this.getFlag(FLAG.ZF)) this.pc = ops[0]!;
+      case 'JLE': // a <= b: SF!=OF or ZF==1
+        if (this.signedLess() || this.getFlag(FLAG.ZF)) this.pc = ops[0]!;
         break;
       case 'CALL':
         this.push(this.pc); // save the return address (next instruction after CALL)

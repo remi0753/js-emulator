@@ -20,10 +20,13 @@ signed during the operation.
 | 1   | `SF` | top bit (sign) of the result is 1        |
 | 2   | `CF` | carry / borrow occurred                  |
 | 3   | `IF` | interrupts enabled (`EI`/`DI`)           |
+| 4   | `OF` | signed overflow occurred                 |
 
 Conditional jumps read these flags after a `CMP a,b` (which computes `a - b` and
-discards the result). Signed comparisons are judged from `SF`/`ZF`:
-`JG`=`!ZF && !SF`, `JGE`=`!SF`, `JL`=`SF`, `JLE`=`SF || ZF`.
+discards the result). Signed comparisons are judged from `SF xor OF` plus `ZF`:
+`JG`=`!ZF && SF==OF`, `JGE`=`SF==OF`, `JL`=`SF!=OF`,
+`JLE`=`SF!=OF || ZF`. Unsigned comparisons use `CF` plus `ZF`:
+`JA`=`!CF && !ZF`, `JAE`=`!CF`, `JB`=`CF`, `JBE`=`CF || ZF`.
 
 ## Memory model
 
@@ -59,6 +62,10 @@ never disagree on operand layout.
 | `STORER` | `rd, rs`  | `mem32[rd] = rs` (indirect)     |
 | `LB`     | `rd, ra`  | `rd = mem8[ra]` (zero-extended) |
 | `SB`     | `ra, rv`  | `mem8[ra] = rv & 0xff`          |
+| `LBS`    | `rd, ra`  | `rd = mem8[ra]` (sign-extended) |
+| `LH`     | `rd, ra`  | `rd = mem16[ra]` (zero-extended) |
+| `LHS`    | `rd, ra`  | `rd = mem16[ra]` (sign-extended) |
+| `SH`     | `ra, rv`  | `mem16[ra] = rv & 0xffff`       |
 
 ### Arithmetic / logic (update ZF/SF, and CF where applicable)
 | Mnemonic              | Operands  | Effect                              |
@@ -66,11 +73,14 @@ never disagree on operand layout.
 | `ADD`                 | `rd, rs`  | `rd += rs`                          |
 | `SUB`                 | `rd, rs`  | `rd -= rs`                          |
 | `MUL`                 | `rd, rs`  | `rd *= rs` (low 32 bits)            |
-| `DIV`                 | `rd, rs`  | `rd = floor(rd / rs)` (rs=0 faults) |
-| `MOD`                 | `rd, rs`  | `rd = rd % rs` (rs=0 faults)        |
+| `DIV`                 | `rd, rs`  | unsigned `rd = floor(rd / rs)` (rs=0 faults) |
+| `MOD`                 | `rd, rs`  | unsigned `rd = rd % rs` (rs=0 faults)        |
+| `IDIV`                | `rd, rs`  | signed `rd = trunc(rd / rs)` (rs=0 faults)   |
+| `IMOD`                | `rd, rs`  | signed C-style remainder (rs=0 faults)       |
 | `AND` `OR` `XOR`      | `rd, rs`  | bitwise                             |
 | `NOT`                 | `rd`      | `rd = ~rd`                          |
 | `SHL` `SHR`           | `rd, rs`  | shift left / logical right          |
+| `SAR`                 | `rd, rs`  | arithmetic right shift              |
 | `INC` `DEC`           | `rd`      | `rd ± 1`                            |
 | `CMP`                 | `rd, rs`  | `rd - rs`, flags only               |
 
@@ -79,7 +89,8 @@ never disagree on operand layout.
 |-----------------------|----------|------------------------------------|
 | `JMP`                 | `addr`   | unconditional                      |
 | `JZ` / `JNZ`          | `addr`   | `ZF==1` / `ZF==0`                  |
-| `JG` `JGE` `JL` `JLE` | `addr`   | signed comparison (SF/ZF)          |
+| `JG` `JGE` `JL` `JLE` | `addr`   | signed comparison (`SF xor OF`, `ZF`) |
+| `JA` `JAE` `JB` `JBE` | `addr`   | unsigned comparison (`CF`, `ZF`)   |
 | `CALL`                | `addr`   | push `PC`, then jump               |
 | `CALLR`               | `rs`     | push `PC`, then jump to `rs`       |
 | `RET`                 | —        | pop `PC`                           |

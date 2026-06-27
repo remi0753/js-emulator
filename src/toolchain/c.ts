@@ -1244,12 +1244,12 @@ class Codegen {
       case '/':
         this.emit(`  MOVR R2, R0`);
         this.emit(`  MOVR R0, R1`);
-        this.emit(`  DIV R0, R2`);
+        this.emit(`  IDIV R0, R2`);
         break;
       case '%':
         this.emit(`  MOVR R2, R0`);
         this.emit(`  MOVR R0, R1`);
-        this.emit(`  MOD R0, R2`);
+        this.emit(`  IMOD R0, R2`);
         break;
       case '&':
         this.emit(`  AND R0, R1`);
@@ -1268,7 +1268,7 @@ class Codegen {
       case '>>':
         this.emit(`  MOVR R2, R0`);
         this.emit(`  MOVR R0, R1`);
-        this.emit(`  SHR R0, R2`);
+        this.emit(`  SAR R0, R2`);
         break;
       case '==':
       case '!=':

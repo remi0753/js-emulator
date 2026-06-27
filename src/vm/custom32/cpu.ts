@@ -195,12 +195,22 @@ export class CPU {
     const b3 = this.rd8(v + 3);
     return (b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)) >>> 0;
   }
+  private rd16(v: number): number {
+    const b0 = this.rd8(v);
+    const b1 = this.rd8(v + 1);
+    return (b0 | (b1 << 8)) >>> 0;
+  }
   private wr32(v: number, x: number): void {
     const u = x >>> 0;
     this.wr8(v, u & 0xff);
     this.wr8(v + 1, (u >>> 8) & 0xff);
     this.wr8(v + 2, (u >>> 16) & 0xff);
     this.wr8(v + 3, (u >>> 24) & 0xff);
+  }
+  private wr16(v: number, x: number): void {
+    const u = x >>> 0;
+    this.wr8(v, u & 0xff);
+    this.wr8(v + 1, (u >>> 8) & 0xff);
   }
 
   // --- fetch (advances PC) ---
@@ -222,12 +232,27 @@ export class CPU {
     this.setFlag(FLAG.SF, (r & 0x80000000) !== 0);
     return r;
   }
+  private setAddFlags(a: number, b: number, result: number): number {
+    const r = this.setZS(result);
+    this.setFlag(FLAG.CF, (a >>> 0) + (b >>> 0) > 0xffffffff);
+    this.setFlag(FLAG.OF, ((~(a ^ b) & (a ^ r)) & 0x80000000) !== 0);
+    return r;
+  }
+  private setSubFlags(a: number, b: number, result: number): number {
+    const r = this.setZS(result);
+    this.setFlag(FLAG.CF, (a >>> 0) < (b >>> 0));
+    this.setFlag(FLAG.OF, (((a ^ b) & (a ^ r)) & 0x80000000) !== 0);
+    return r;
+  }
   private setFlag(bit: number, on: boolean): void {
     if (on) this.flags |= bit;
     else this.flags &= ~bit;
   }
   private getFlag(bit: number): boolean {
     return (this.flags & bit) !== 0;
+  }
+  private signedLess(): boolean {
+    return this.getFlag(FLAG.SF) !== this.getFlag(FLAG.OF);
   }
   private push(value: number): void {
     this.sp -= WORD;
@@ -441,18 +466,33 @@ export class CPU {
       case 'SB':
         this.wr8(r[ops[0]!]!, r[ops[1]!]! & 0xff);
         break;
+      case 'LBS': {
+        const v = this.rd8(r[ops[1]!]!);
+        r[ops[0]!] = (v & 0x80) !== 0 ? (v | 0xffffff00) >>> 0 : v;
+        break;
+      }
+      case 'LH':
+        r[ops[0]!] = this.rd16(r[ops[1]!]!);
+        break;
+      case 'LHS': {
+        const v = this.rd16(r[ops[1]!]!);
+        r[ops[0]!] = (v & 0x8000) !== 0 ? (v | 0xffff0000) >>> 0 : v;
+        break;
+      }
+      case 'SH':
+        this.wr16(r[ops[0]!]!, r[ops[1]!]! & 0xffff);
+        break;
 
       case 'ADD': {
-        const sum = r[ops[0]!]! + r[ops[1]!]!;
-        this.setFlag(FLAG.CF, sum > 0xffffffff);
-        r[ops[0]!] = this.setZS(sum);
+        const a = r[ops[0]!]!;
+        const b = r[ops[1]!]!;
+        r[ops[0]!] = this.setAddFlags(a, b, a + b);
         break;
       }
       case 'SUB': {
         const a = r[ops[0]!]!;
         const b = r[ops[1]!]!;
-        this.setFlag(FLAG.CF, a < b);
-        r[ops[0]!] = this.setZS(a - b);
+        r[ops[0]!] = this.setSubFlags(a, b, a - b);
         break;
       }
       case 'MUL':
@@ -468,6 +508,18 @@ export class CPU {
         const b = r[ops[1]!]!;
         if (b === 0) throw new CpuFault('divide-by-zero', 'divide by zero (MOD)');
         r[ops[0]!] = this.setZS(r[ops[0]!]! % b);
+        break;
+      }
+      case 'IDIV': {
+        const b = r[ops[1]!]! | 0;
+        if (b === 0) throw new CpuFault('divide-by-zero', 'divide by zero');
+        r[ops[0]!] = this.setZS(Math.trunc((r[ops[0]!]! | 0) / b));
+        break;
+      }
+      case 'IMOD': {
+        const b = r[ops[1]!]! | 0;
+        if (b === 0) throw new CpuFault('divide-by-zero', 'divide by zero (IMOD)');
+        r[ops[0]!] = this.setZS((r[ops[0]!]! | 0) % b);
         break;
       }
       case 'AND':
@@ -488,17 +540,19 @@ export class CPU {
       case 'SHR':
         r[ops[0]!] = this.setZS(r[ops[0]!]! >>> (r[ops[1]!]! & 31));
         break;
+      case 'SAR':
+        r[ops[0]!] = this.setZS((r[ops[0]!]! | 0) >> (r[ops[1]!]! & 31));
+        break;
       case 'INC':
-        r[ops[0]!] = this.setZS(r[ops[0]!]! + 1);
+        r[ops[0]!] = this.setAddFlags(r[ops[0]!]!, 1, r[ops[0]!]! + 1);
         break;
       case 'DEC':
-        r[ops[0]!] = this.setZS(r[ops[0]!]! - 1);
+        r[ops[0]!] = this.setSubFlags(r[ops[0]!]!, 1, r[ops[0]!]! - 1);
         break;
       case 'CMP': {
         const a = r[ops[0]!]!;
         const b = r[ops[1]!]!;
-        this.setFlag(FLAG.CF, a < b);
-        this.setZS(a - b);
+        this.setSubFlags(a, b, a - b);
         break;
       }
 
@@ -512,16 +566,16 @@ export class CPU {
         if (!this.getFlag(FLAG.ZF)) this.pc = ops[0]!;
         break;
       case 'JG':
-        if (!this.getFlag(FLAG.ZF) && !this.getFlag(FLAG.SF)) this.pc = ops[0]!;
+        if (!this.getFlag(FLAG.ZF) && !this.signedLess()) this.pc = ops[0]!;
         break;
       case 'JGE':
-        if (!this.getFlag(FLAG.SF)) this.pc = ops[0]!;
+        if (!this.signedLess()) this.pc = ops[0]!;
         break;
       case 'JL':
-        if (this.getFlag(FLAG.SF)) this.pc = ops[0]!;
+        if (this.signedLess()) this.pc = ops[0]!;
         break;
       case 'JLE':
-        if (this.getFlag(FLAG.SF) || this.getFlag(FLAG.ZF)) this.pc = ops[0]!;
+        if (this.signedLess() || this.getFlag(FLAG.ZF)) this.pc = ops[0]!;
         break;
       case 'CALL':
         this.push(this.pc);
@@ -530,6 +584,18 @@ export class CPU {
       case 'CALLR':
         this.push(this.pc);
         this.pc = r[ops[0]!]! >>> 0;
+        break;
+      case 'JA':
+        if (!this.getFlag(FLAG.CF) && !this.getFlag(FLAG.ZF)) this.pc = ops[0]!;
+        break;
+      case 'JAE':
+        if (!this.getFlag(FLAG.CF)) this.pc = ops[0]!;
+        break;
+      case 'JB':
+        if (this.getFlag(FLAG.CF)) this.pc = ops[0]!;
+        break;
+      case 'JBE':
+        if (this.getFlag(FLAG.CF) || this.getFlag(FLAG.ZF)) this.pc = ops[0]!;
         break;
       case 'RET':
         this.pc = this.pop();

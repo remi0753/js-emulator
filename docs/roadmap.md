@@ -803,7 +803,7 @@ chibicc tokenizer / preprocessor / parser / type checker
     -> guest executable
 ```
 
-- **Phase 28** ⬜ stabilize custom32 as a real C target.
+- **Phase 28** ✅ stabilize custom32 as a real C target.
 
   Before SMP, make the single-core machine a dependable target for ordinary C.
   Audit and fix the ISA semantics that C depends on: signed overflow-aware
@@ -824,9 +824,27 @@ chibicc tokenizer / preprocessor / parser / type checker
   conventions would complicate `va_list`, `alloca`, debugging, and
   interoperability.
 
-  Done when ABI documentation exists, focused ISA/ABI tests cover edge cases,
-  and the existing kernel/userland compiler path either follows the ABI or has a
-  documented migration path away from its bootstrap-only conventions.
+  Added the frozen ILP32 ABI contract in `docs/custom32-c-abi.md`, covering type
+  sizes/alignment, the hardware-`SP` call stack, caller/callee-saved registers,
+  scalar and aggregate returns, struct/union/enum/bit-field layout, variadic
+  traversal, symbol/relocation expectations, runtime helper conventions, and the
+  syscall boundary. The document explicitly marks the current TypeScript C-like
+  compiler's `__csp` stack as bootstrap-only and records the migration path to a
+  single hardware-stack ABI.
+
+  Audited and tightened the C-dependent ISA surface: `CMP` now records signed
+  overflow (`OF`) and signed branches use `SF xor OF`; unsigned branches
+  (`JA`/`JAE`/`JB`/`JBE`) use `CF`/`ZF`; signed `IDIV`/`IMOD`, arithmetic `SAR`,
+  sign-extending byte/halfword loads (`LBS`/`LHS`), zero-extending halfword load
+  (`LH`), and halfword store (`SH`) are available alongside existing unsigned
+  `DIV`/`MOD` and logical `SHR`. The bootstrap compiler now emits `IDIV`/`IMOD`
+  for signed `int` `/`/`%` and `SAR` for `int >>`.
+
+  Coverage is in `test/custom32-abi-phase28.test.ts`. Done: ABI documentation
+  exists, focused ISA/ABI tests cover signed overflow comparisons, unsigned
+  order, signed/unsigned division and shifts, sign-extending loads, and the
+  existing compiler path has a documented migration path away from its
+  bootstrap-only conventions.
 
 - **Phase 29** ⬜ define object files, archives, and host assembler/linker tools.
 

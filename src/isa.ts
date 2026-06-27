@@ -23,8 +23,12 @@ export const ISA = {
   STORER: { opcode: 0x06, args: ['reg', 'reg'] },
   LB: { opcode: 0x07, args: ['reg', 'reg'] }, // rd = mem8[ra] (zero-extended)
   SB: { opcode: 0x08, args: ['reg', 'reg'] }, // mem8[ra] = rv & 0xff  (operands: ra, rv)
+  LBS: { opcode: 0x09, args: ['reg', 'reg'] }, // rd = mem8[ra] (sign-extended)
+  LH: { opcode: 0x0a, args: ['reg', 'reg'] }, // rd = mem16[ra] (zero-extended)
+  LHS: { opcode: 0x0b, args: ['reg', 'reg'] }, // rd = mem16[ra] (sign-extended)
+  SH: { opcode: 0x0c, args: ['reg', 'reg'] }, // mem16[ra] = rv & 0xffff (operands: ra, rv)
 
-  // --- arithmetic / logic (update ZF/SF/CF) ---
+  // --- arithmetic / logic (update ZF/SF/CF/OF as applicable) ---
   ADD: { opcode: 0x10, args: ['reg', 'reg'] },
   SUB: { opcode: 0x11, args: ['reg', 'reg'] },
   MUL: { opcode: 0x12, args: ['reg', 'reg'] },
@@ -39,6 +43,8 @@ export const ISA = {
   INC: { opcode: 0x1b, args: ['reg'] },
   DEC: { opcode: 0x1c, args: ['reg'] },
   CMP: { opcode: 0x1d, args: ['reg', 'reg'] },
+  IDIV: { opcode: 0x1e, args: ['reg', 'reg'] }, // signed truncating division
+  IMOD: { opcode: 0x1f, args: ['reg', 'reg'] }, // signed remainder
 
   // --- control flow ---
   JMP: { opcode: 0x20, args: ['addr'] },
@@ -51,6 +57,11 @@ export const ISA = {
   CALL: { opcode: 0x27, args: ['addr'] },
   RET: { opcode: 0x28, args: [] },
   CALLR: { opcode: 0x29, args: ['reg'] }, // indirect call: push return pc, jump to rX
+  JA: { opcode: 0x2a, args: ['addr'] }, // unsigned > after CMP
+  JAE: { opcode: 0x2b, args: ['addr'] }, // unsigned >= after CMP
+  JB: { opcode: 0x2c, args: ['addr'] }, // unsigned < after CMP
+  JBE: { opcode: 0x2d, args: ['addr'] }, // unsigned <= after CMP
+  SAR: { opcode: 0x2e, args: ['reg', 'reg'] }, // arithmetic right shift
 
   // --- stack ---
   PUSH: { opcode: 0x30, args: ['reg'] },
@@ -118,6 +129,7 @@ export const FLAG = {
   SF: 1 << 1, // top bit (sign) of the result is 1
   CF: 1 << 2, // carry / borrow
   IF: 1 << 3, // interrupts enabled
+  OF: 1 << 4, // signed overflow
 } as const;
 
 // Trap vectors (model B). CPU exceptions and device IRQs index the IDT here;
