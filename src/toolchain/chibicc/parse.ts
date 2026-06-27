@@ -432,33 +432,48 @@ class Parser {
     return ty;
   }
 
-  // declarator = "*"* ident type-suffix
+  // declarator = "*"* ("(" declarator ")" | ident?) type-suffix
+  //
+  // A faithful port of chibicc's recursive declarator: when a parenthesized
+  // declarator appears, parse the inner declarator twice. The first (dummy)
+  // pass skips ahead so the outer type-suffix can be applied to `ty`; the
+  // second pass re-parses the inner declarator against that completed type.
+  // This handles nested function pointers, pointer-to-array, function-returning-
+  // pointer, and abstract (name-less) declarators uniformly.
   private declarator(base: Type): { ty: Type; name: string } {
     let ty = base;
     while (this.consume('*')) ty = pointerTo(ty);
-    if (this.consume('(')) {
-      if (this.consume('*')) {
-        const name = this.expectIdent();
-        const inner = this.typeSuffix(pointerTo(base));
-        this.expect(')');
-        if (this.equal('(')) {
-          const fn = this.funcParams(base);
-          return { ty: this.retargetFunctionPointer(inner, fn), name };
-        }
-        return { ty: inner, name };
-      }
-      this.error('unsupported parenthesized declarator');
+
+    if (this.equal('(') && this.isParenDeclarator()) {
+      const start = this.pos;
+      this.pos++; // '('
+      this.declarator(tyVoid); // dummy pass: advance past the inner declarator
+      this.expect(')');
+      ty = this.typeSuffix(ty);
+      const afterSuffix = this.pos;
+      this.pos = start + 1;
+      const inner = this.declarator(ty);
+      this.expect(')');
+      this.pos = afterSuffix;
+      return inner;
     }
-    const name = this.expectIdent();
+
+    let name = '';
+    if (this.peek().kind === 'ident') name = this.expectIdent();
     ty = this.typeSuffix(ty);
     return { ty, name };
   }
 
-  private retargetFunctionPointer(ty: Type, fn: Type): Type {
-    if (ty.kind === 'ptr') return pointerTo(fn);
-    if (ty.kind === 'array')
-      return arrayOf(this.retargetFunctionPointer(elementType(ty), fn), ty.arrayLen ?? 0);
-    this.error('expected a function pointer declarator');
+  // Positioned at "(", decide whether it opens a nested declarator (e.g.
+  // "int (*p)") or a function parameter list (e.g. the abstract type "int(int)").
+  private isParenDeclarator(): boolean {
+    const next = this.peek(1);
+    if (next.text === ')') return false; // "()" → function suffix
+    if (next.text === '*' || next.text === '(' || next.text === '[') return true;
+    // A typedef name after "(" is a parameter type; any other identifier names
+    // the declared object.
+    if (next.kind === 'ident') return this.findTypedef(next.text) === undefined;
+    return false; // a type keyword → parameter list
   }
 
   // type-name = declspec abstract-declarator
@@ -467,21 +482,9 @@ class Parser {
     return this.abstractDeclarator(spec.ty);
   }
 
+  // An abstract declarator is just a declarator that need not bind a name.
   private abstractDeclarator(base: Type): Type {
-    let ty = base;
-    while (this.consume('*')) ty = pointerTo(ty);
-    return this.abstractTypeSuffix(ty);
-  }
-
-  private abstractTypeSuffix(base: Type): Type {
-    if (this.consume('[')) {
-      const len = this.peek().value;
-      if (this.peek().kind !== 'num') this.error('expected an array length');
-      this.pos++;
-      this.expect(']');
-      return arrayOf(this.abstractTypeSuffix(base), len);
-    }
-    return base;
+    return this.declarator(base).ty;
   }
 
   // type-suffix = "(" func-params ")" | "[" num "]" type-suffix | ε

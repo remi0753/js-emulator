@@ -327,6 +327,54 @@ int main(void) {
 }
 `;
 
+const DECLARATOR_SRC = `
+int storage[3];
+int *get_storage(void) { return storage; }
+int add(int a, int b) { return a + b; }
+int mul(int a, int b) { return a * b; }
+
+int slen(char *s) {
+  int n = 0;
+  while (s[n]) { n = n + 1; }
+  return n;
+}
+
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+
+int putnum(int v) {
+  char buf[12];
+  int i = 11;
+  buf[11] = 0;
+  if (v == 0) { return puts("0"); }
+  while (v > 0) {
+    i = i - 1;
+    buf[i] = 48 + v % 10;
+    v = v / 10;
+  }
+  return puts(buf + i);
+}
+
+int main(void) {
+  storage[0] = 10;
+  storage[1] = 20;
+  storage[2] = 30;
+  int (*ap)[3] = &storage;           /* pointer to array of 3 int */
+  int *p = get_storage();            /* function returning pointer */
+  typedef int (*binop)(int, int);    /* nested function-pointer typedef */
+  binop ops[2];
+  ops[0] = add;
+  ops[1] = mul;
+  int total = (*ap)[1] + p[2];           /* 20 + 30 = 50 */
+  total = total + sizeof(int (*)(int));  /* abstract declarator: + 4 = 54 */
+  total = total + ops[0](3, 4);          /* + 7 = 61 */
+  total = total + ops[1](2, 3);          /* + 6 = 67 */
+  puts("declarator=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+
 function linkProgram(src: string, name: string): Uint8Array {
   return linkGuestExecutable([crt0Object(), compileObject(src, { name })]);
 }
@@ -399,6 +447,15 @@ test('chibicc Phase 32 frontend accepts typedef, enum, struct, and initializers'
     /cannot find include/,
   );
   assert.throws(() => compile('#include "x.h"\n'), /not supported/);
+  // Declarators: pointer-to-array, function-returning-pointer, abstract types.
+  assert.equal(
+    compile('int main(void) { return sizeof(int (*)(int)); }').match(/MOV R0, 4/)?.length,
+    1,
+  );
+  assert.doesNotThrow(() =>
+    compile('int g[3]; int (*ap)[3]; int *f(void){return g;} int main(void){return 0;}'),
+  );
+  assert.match(compile(DECLARATOR_SRC), /\.global get_storage/);
 });
 
 test('chibicc Phase 32 aggregate program runs deterministically in the guest', () => {
@@ -439,6 +496,16 @@ test('chibicc Phase 32 conditional preprocessing runs in the guest', () => {
 
   const out = bootAndRun(disk, 'preproc');
   assert.ok(out.includes('preproc=42\n'), `missing preprocessor result in:\n${out}`);
+});
+
+test('chibicc Phase 32 complex declarators run in the guest', () => {
+  const disk = buildGuestDiskImage();
+  const fs = installFs(disk);
+  fs.writeFile('/bin/declarator', linkProgram(DECLARATOR_SRC, 'declarator.o'));
+  fs.chmod('/bin/declarator', 0o755);
+
+  const out = bootAndRun(disk, 'declarator');
+  assert.ok(out.includes('declarator=67\n'), `missing declarator result in:\n${out}`);
 });
 
 test('chibicc Phase 32 preprocessor includes, stringize, and paste run in the guest', () => {
