@@ -7,9 +7,11 @@
 // the shared `Executable` format. A thin helper flattens the result into the
 // guest's loadable header format.
 //
-// Layout: all text sections first (at `textOrigin`), then data, then bss, each
-// object's sections concatenated in input order (then archive pull order) and
-// padded to a 4-byte boundary. Output is deterministic for a given input order.
+// Layout: all text sections first (at `textOrigin`), then data at the next page
+// boundary, then bss. Each object's same-kind sections are concatenated in input
+// order (then archive pull order) and padded to a 4-byte boundary. Output is
+// deterministic for a given input order, and the emitted JEX segments remain
+// page-aligned for the generic executable loader.
 
 import type { Archive } from '../formats/archive.ts';
 import { type Executable, SEG } from '../formats/executable.ts';
@@ -27,6 +29,7 @@ export interface LinkedObjects {
 }
 
 const DEFAULT_TEXT_ORIGIN = 0x1000;
+const PAGE_SIZE = 4096;
 
 interface PlacedObject {
   obj: ObjectFile;
@@ -66,6 +69,9 @@ export function linkObjects(
 ): LinkedObjects {
   const textOrigin = options.textOrigin ?? DEFAULT_TEXT_ORIGIN;
   const entryName = options.entry ?? '_start';
+  if (textOrigin % PAGE_SIZE !== 0) {
+    throw new Error('link: text origin must be page-aligned');
+  }
 
   // Symbol resolution: load the explicit objects, then repeatedly pull archive
   // members that satisfy a still-undefined symbol until a fixed point.
@@ -115,7 +121,8 @@ export function linkObjects(
     textCursor = align(textCursor + obj.text.length, 4);
   }
   const textEnd = textCursor;
-  let dataCursor = textEnd;
+  const dataStart = align(textEnd, PAGE_SIZE);
+  let dataCursor = dataStart;
   for (const p of placed) {
     p.dataBase = dataCursor;
     dataCursor = align(dataCursor + p.obj.data.length, 4);
@@ -157,10 +164,10 @@ export function linkObjects(
 
   // Compose section bytes and apply relocations.
   const text = new Uint8Array(textEnd - textOrigin);
-  const data = new Uint8Array(dataEnd - textEnd);
+  const data = new Uint8Array(dataEnd - dataStart);
   for (const p of placed) {
     text.set(p.obj.text, p.textBase - textOrigin);
-    data.set(p.obj.data, p.dataBase - textEnd);
+    data.set(p.obj.data, p.dataBase - dataStart);
   }
   for (const p of placed) {
     for (const reloc of p.obj.relocs) {
@@ -175,7 +182,7 @@ export function linkObjects(
       }
       const value = (addr + reloc.addend) >>> 0;
       if (reloc.section === 'text') writeWord(text, p.textBase - textOrigin + reloc.offset, value);
-      else writeWord(data, p.dataBase - textEnd + reloc.offset, value);
+      else writeWord(data, p.dataBase - dataStart + reloc.offset, value);
     }
   }
 
@@ -186,7 +193,7 @@ export function linkObjects(
     entry,
     segments: [
       { vaddr: textOrigin, data: text, memSize: text.length, flags: SEG.R | SEG.X },
-      { vaddr: textEnd, data, memSize: memEnd - textEnd, flags: SEG.R | SEG.W },
+      { vaddr: dataStart, data, memSize: memEnd - dataStart, flags: SEG.R | SEG.W },
     ],
   };
   return { executable, entry, symbols: globalAddrs };

@@ -77,8 +77,10 @@ Source: [`src/toolchain/object-linker.ts`](../src/toolchain/object-linker.ts).
    symbol is admitted (which may introduce new undefined symbols). A remaining
    undefined symbol is an error.
 3. Lay out sections at concrete addresses: all `text` first (at `--text-origin`,
-   default the guest user load base), then `data`, then `bss`, each object's
-   sections concatenated in input/pull order and 4-byte aligned.
+   default the guest user load base), then `data` at the next page boundary,
+   then `bss`. Each object's same-kind sections are concatenated in input/pull
+   order and 4-byte aligned, while the emitted executable segments are
+   page-aligned for the generic JEX loader.
 4. Resolve every symbol address and apply relocations.
 5. Emit the executable. `--format guest` (default) writes the 12-byte loadable
    header (magic, entry, memSize) the guest exec path consumes; `--format raw`

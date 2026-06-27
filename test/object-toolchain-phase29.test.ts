@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { encodeArchive, parseArchive } from '../src/formats/archive.ts';
+import { encodeExecutable, parseExecutable } from '../src/formats/executable.ts';
 import { encodeObject, parseObject } from '../src/formats/object.ts';
 import { Fs } from '../src/storage/fs.ts';
 import { PortBlockDevice } from '../src/storage/port-block-device.ts';
@@ -25,6 +26,7 @@ import { PORT } from '../src/vm/custom32/platform.ts';
 import { PortBus } from '../src/vm/custom32/ports.ts';
 
 const USER_BASE = GUEST_KERNEL_LAYOUT.userLoadBase;
+const PAGE_SIZE = 4096;
 
 // --- hand-written assembly translation units ------------------------------
 
@@ -235,6 +237,32 @@ test('the linker applies absolute relocations against placed sections', () => {
   const data = linked.executable.segments[1]!.data;
   const patched = data[0]! | (data[1]! << 8) | (data[2]! << 16) | (data[3]! << 24);
   assert.equal(patched >>> 0, valueAddr);
+});
+
+test('the linker emits page-aligned segments for raw JEX executables', () => {
+  const obj = assembleObject(
+    `
+    .global _start
+    .text
+    _start:
+      HLT
+    .data
+    value:
+      .word 1
+    `,
+    'raw.o',
+  );
+  const linked = linkObjects([obj], [], { textOrigin: 0x1000 });
+  const encoded = encodeExecutable(linked.executable);
+  const decoded = parseExecutable(encoded);
+
+  assert.equal(decoded.segments.length, 2);
+  assert.equal(decoded.segments[0]!.vaddr % PAGE_SIZE, 0);
+  assert.equal(decoded.segments[1]!.vaddr % PAGE_SIZE, 0);
+  assert.ok(
+    decoded.segments[1]!.vaddr >=
+      decoded.segments[0]!.vaddr + decoded.segments[0]!.memSize,
+  );
 });
 
 test('the linker reports undefined and duplicate symbols', () => {
