@@ -319,7 +319,8 @@ class Generator {
     if (node.ty?.kind === 'struct' || node.ty?.kind === 'union') {
       throw new CodegenError('cannot load an aggregate value directly');
     }
-    if (node.ty?.kind === 'char') this.emit(`  ${isUnsignedInteger(node.ty) ? 'LB' : 'LBS'} R0, R0`);
+    if (node.ty?.kind === 'char')
+      this.emit(`  ${isUnsignedInteger(node.ty) ? 'LB' : 'LBS'} R0, R0`);
     else if (node.ty?.kind === 'short')
       this.emit(`  ${isUnsignedInteger(node.ty) ? 'LH' : 'LHS'} R0, R0`);
     else this.emit('  LOADR R0, R0');
@@ -331,8 +332,7 @@ class Generator {
     else if (node.ty?.kind === 'short') this.emit('  SH R1, R0');
     else if (node.ty?.kind === 'struct' || node.ty?.kind === 'union') {
       throw new CodegenError('cannot assign an aggregate value directly');
-    }
-    else this.emit('  STORER R1, R0');
+    } else this.emit('  STORER R1, R0');
   }
 
   private genExpr(node: Node): void {

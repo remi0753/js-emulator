@@ -389,8 +389,7 @@ class Parser {
       if (!tag) this.error(`expected a ${kind} tag`);
       const found = this.findTag(tag);
       if (found) return found;
-      const incomplete =
-        kind === 'struct' ? structType([], 0, 1, tag) : unionType([], 0, 1, tag);
+      const incomplete = kind === 'struct' ? structType([], 0, 1, tag) : unionType([], 0, 1, tag);
       this.currentTagScope().set(tag, incomplete);
       return incomplete;
     }
@@ -457,7 +456,8 @@ class Parser {
 
   private retargetFunctionPointer(ty: Type, fn: Type): Type {
     if (ty.kind === 'ptr') return pointerTo(fn);
-    if (ty.kind === 'array') return arrayOf(this.retargetFunctionPointer(elementType(ty), fn), ty.arrayLen ?? 0);
+    if (ty.kind === 'array')
+      return arrayOf(this.retargetFunctionPointer(elementType(ty), fn), ty.arrayLen ?? 0);
     this.error('expected a function pointer declarator');
   }
 
@@ -673,7 +673,11 @@ class Parser {
       } else if (ty.kind === 'union') {
         const member = ty.members?.[0];
         if (member && !this.equal('}')) {
-          this.localInitializerInto({ kind: 'member', line: lhs.line, lhs, member }, member.ty, out);
+          this.localInitializerInto(
+            { kind: 'member', line: lhs.line, lhs, member },
+            member.ty,
+            out,
+          );
           this.consume(',');
         }
         while (!this.equal('}')) {

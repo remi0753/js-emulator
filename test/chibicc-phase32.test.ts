@@ -271,8 +271,71 @@ int main(void) {
 }
 `;
 
+const PREPROCESSOR2_HEADERS = new Map<string, string>([
+  [
+    'calc.h',
+    `#ifndef CALC_H
+#define CALC_H
+#define TRIPLE(x) ((x) * 3)
+#define SEVEN 7
+#endif
+`,
+  ],
+]);
+
+const resolvePreproc2Include = (name: string) => {
+  const text = PREPROCESSOR2_HEADERS.get(name);
+  return text === undefined ? undefined : { path: name, text };
+};
+
+const PREPROCESSOR2_SRC = `
+#include "calc.h"
+#include "calc.h"
+
+#define STR(x) #x
+#define CONCAT(a, b) a ## b
+
+int slen(char *s) {
+  int n = 0;
+  while (s[n]) { n = n + 1; }
+  return n;
+}
+
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+
+int putnum(int v) {
+  char buf[12];
+  int i = 11;
+  buf[11] = 0;
+  if (v == 0) { return puts("0"); }
+  while (v > 0) {
+    i = i - 1;
+    buf[i] = 48 + v % 10;
+    v = v / 10;
+  }
+  return puts(buf + i);
+}
+
+int CONCAT(answer, fn)(void) { return 20; }
+
+int main(void) {
+  int total = TRIPLE(4) + answerfn() + slen(STR(abc)) + SEVEN;
+  puts("preproc2=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+
 function linkProgram(src: string, name: string): Uint8Array {
   return linkGuestExecutable([crt0Object(), compileObject(src, { name })]);
+}
+
+function linkProgramWithIncludes(src: string, name: string): Uint8Array {
+  return linkGuestExecutable([
+    crt0Object(),
+    compileObject(src, { name, resolveInclude: resolvePreproc2Include }),
+  ]);
 }
 
 function installFs(image: Uint8Array): Fs {
@@ -322,8 +385,20 @@ test('chibicc Phase 32 frontend accepts typedef, enum, struct, and initializers'
   assert.match(staticCastAsm, /MOV R7, 4294967040/);
   assert.doesNotMatch(compile(PREPROCESSOR_SRC), /missing_symbol/);
   assert.throws(() => compile('#if 1\nint main(void) { return 0; }\n'), /unterminated conditional/);
-  assert.throws(() => compile('#define ADD(a,b) (a+b)\nint main(void) { return ADD(1); }\n'), /expects 2 arguments/);
+  assert.throws(
+    () => compile('#define ADD(a,b) (a+b)\nint main(void) { return ADD(1); }\n'),
+    /expects 2 arguments/,
+  );
   assert.match(compile('typedef int T; int main(void) { T T = 4; return T; }'), /MOV R0, 4/);
+  // Preprocessor: #include + guards, # stringize, ## paste.
+  const preproc2Asm = compile(PREPROCESSOR2_SRC, { resolveInclude: resolvePreproc2Include });
+  assert.match(preproc2Asm, /\.global answerfn/);
+  assert.doesNotMatch(preproc2Asm, /TRIPLE|CONCAT/);
+  assert.throws(
+    () => compile('#include "missing.h"\n', { resolveInclude: () => undefined }),
+    /cannot find include/,
+  );
+  assert.throws(() => compile('#include "x.h"\n'), /not supported/);
 });
 
 test('chibicc Phase 32 aggregate program runs deterministically in the guest', () => {
@@ -364,6 +439,16 @@ test('chibicc Phase 32 conditional preprocessing runs in the guest', () => {
 
   const out = bootAndRun(disk, 'preproc');
   assert.ok(out.includes('preproc=42\n'), `missing preprocessor result in:\n${out}`);
+});
+
+test('chibicc Phase 32 preprocessor includes, stringize, and paste run in the guest', () => {
+  const disk = buildGuestDiskImage();
+  const fs = installFs(disk);
+  fs.writeFile('/bin/preproc2', linkProgramWithIncludes(PREPROCESSOR2_SRC, 'preproc2.o'));
+  fs.chmod('/bin/preproc2', 0o755);
+
+  const out = bootAndRun(disk, 'preproc2');
+  assert.ok(out.includes('preproc2=42\n'), `missing preprocessor2 result in:\n${out}`);
 });
 
 test('chibicc Phase 32 do-while and switch run in the guest', () => {

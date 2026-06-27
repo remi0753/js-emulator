@@ -24,7 +24,7 @@
 //   --install-as PATH guest path for --install (default /bin/<output name>)
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 
 import { type Archive, isArchive, parseArchive } from '../src/formats/archive.ts';
 import { encodeObject, isObject, type ObjectFile, parseObject } from '../src/formats/object.ts';
@@ -67,6 +67,7 @@ function main(argv: string[]): void {
   let installAs: string | undefined;
   const libDirs: string[] = ['.'];
   const libNames: string[] = [];
+  const includeDirs: string[] = [];
   const inputs: string[] = [];
 
   for (let i = 0; i < argv.length; i++) {
@@ -95,6 +96,8 @@ function main(argv: string[]): void {
     else if (arg.startsWith('-L')) libDirs.push(arg.slice(2));
     else if (arg === '-l') libNames.push(argv[++i] ?? fail('-l requires an argument'));
     else if (arg.startsWith('-l')) libNames.push(arg.slice(2));
+    else if (arg === '-I') includeDirs.push(argv[++i] ?? fail('-I requires an argument'));
+    else if (arg.startsWith('-I')) includeDirs.push(arg.slice(2));
     else if (arg === '-h' || arg === '--help') {
       console.log('usage: custom32-cc [options] inputs...  (see header for options)');
       return;
@@ -112,9 +115,19 @@ function main(argv: string[]): void {
     if (path.endsWith('.c')) {
       const source = readFileSync(path, 'utf8');
       const name = objectOutPath(basename(path));
+      // `"..."` includes search the including file's directory first, then `-I`
+      // dirs; `<...>` includes search only the `-I` dirs.
+      const resolveInclude = (incName: string, isAngle: boolean) => {
+        const dirs = isAngle ? includeDirs : [dirname(path), ...includeDirs];
+        for (const dir of dirs) {
+          const full = resolvePath(dir, incName);
+          if (existsSync(full)) return { path: full, text: readFileSync(full, 'utf8') };
+        }
+        return undefined;
+      };
       const obj =
         frontend === 'chibicc'
-          ? chibiccCompileObject(source, { name })
+          ? chibiccCompileObject(source, { name, resolveInclude })
           : compileObject(source, { name, moduleId: basename(path) });
       objects.push(obj);
       emittedObjects.push({ input: path, obj });

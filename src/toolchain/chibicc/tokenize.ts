@@ -57,8 +57,11 @@ const KEYWORDS = new Set([
   'union',
 ]);
 
-// Punctuators, longest first so the scanner takes the maximal munch.
+// Punctuators, longest first so the scanner takes the maximal munch. `#`/`##`
+// only appear inside macro replacement lists (directive lines are stripped
+// textually before the body is tokenized), where they drive stringize/paste.
 const PUNCTUATORS = [
+  '##',
   '<<',
   '>>',
   '<=',
@@ -91,6 +94,7 @@ const PUNCTUATORS = [
   '~',
   '.',
   ':',
+  '#',
 ];
 
 function isIdentStart(c: string): boolean {

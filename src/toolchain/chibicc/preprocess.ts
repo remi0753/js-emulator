@@ -1,10 +1,12 @@
 // Minimal C preprocessor for the chibicc-derived custom32 frontend.
 //
 // chibicc's `preprocess.c` is a full macro/conditional engine. This Phase 32
-// slice supports object-like and simple function-like `#define`/`#undef` plus
-// conditional compilation (`#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif`)
-// for single translation units. Directive lines are stripped but replaced by
-// blank lines so token line numbers still match the source.
+// slice supports object-like and function-like `#define`/`#undef` (including the
+// `#` stringize and `##` paste operators), conditional compilation
+// (`#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif`), and `#include` with
+// `#pragma once` / `#ifndef` include guards. Directive lines are stripped but
+// replaced by blank lines so token line numbers still match the source;
+// included files are spliced in textually after their own directives run.
 
 import { type Token, tokenize } from './tokenize.ts';
 
@@ -13,6 +15,14 @@ export class PreprocessError extends Error {
     super(`preprocess error (line ${line}): ${message}`);
   }
 }
+
+// Resolve an `#include` spec to the file's source text. `isAngle` is true for
+// `<...>` includes and false for `"..."`. Returning `undefined` means "not
+// found"; the returned `path` identifies the file for `#pragma once`.
+export type IncludeResolver = (
+  name: string,
+  isAngle: boolean,
+) => { path: string; text: string } | undefined;
 
 interface Macro {
   params?: string[];
@@ -26,6 +36,8 @@ interface ScanResult {
   macros: MacroTable;
 }
 
+const MAX_INCLUDE_DEPTH = 64;
+
 interface ConditionalFrame {
   parentActive: boolean;
   active: boolean;
@@ -38,11 +50,11 @@ function truthy(value: number): boolean {
 }
 
 function evalIfExpression(source: string, macros: MacroTable, line: number): number {
-  const normalized = source.replace(/\bdefined\s*(?:\(\s*([A-Za-z_]\w*)\s*\)|([A-Za-z_]\w*))/g, (
-    _m,
-    parenName: string | undefined,
-    bareName: string | undefined,
-  ) => (macros.has(parenName ?? bareName ?? '') ? '1' : '0'));
+  const normalized = source.replace(
+    /\bdefined\s*(?:\(\s*([A-Za-z_]\w*)\s*\)|([A-Za-z_]\w*))/g,
+    (_m, parenName: string | undefined, bareName: string | undefined) =>
+      macros.has(parenName ?? bareName ?? '') ? '1' : '0',
+  );
   const raw = tokenize(normalized);
   const expanded = expand(raw, macros);
   let pos = 0;
@@ -135,14 +147,33 @@ function evalIfExpression(source: string, macros: MacroTable, line: number): num
   return result;
 }
 
-// Pull `#define`/`#undef` out of the source line by line, leaving blank lines in
-// their place. Conditional directives keep inactive source out of the token
-// stream while preserving line numbering.
-function scanDirectives(source: string): ScanResult {
-  const macros: MacroTable = new Map();
+interface ScanState {
+  macros: MacroTable;
+  out: string[];
+  conds: ConditionalFrame[];
+  resolver?: IncludeResolver;
+  pragmaOnce: Set<string>;
+  depth: number;
+  // Path of the file currently being scanned, for `#pragma once`.
+  currentPath?: string;
+}
+
+// Parse an `#include` operand into its filename and bracket style.
+function parseIncludeSpec(rest: string, line: number): { name: string; isAngle: boolean } {
+  const angle = /^<([^>]*)>/.exec(rest);
+  if (angle) return { name: angle[1]!, isAngle: true };
+  const quoted = /^"([^"]*)"/.exec(rest);
+  if (quoted) return { name: quoted[1]!, isAngle: false };
+  throw new PreprocessError('malformed #include', line);
+}
+
+// Pull directives out of the source line by line, leaving blank lines in their
+// place. Conditional directives keep inactive source out of the token stream;
+// `#include` recursively splices resolved files in. Mutates `state`.
+function processLines(source: string, state: ScanState): void {
+  const { macros, out, conds } = state;
+  const condBase = conds.length;
   const lines = source.split('\n');
-  const out: string[] = [];
-  const conds: ConditionalFrame[] = [];
 
   const isActive = (): boolean => conds.every((c) => c.active);
 
@@ -238,13 +269,47 @@ function scanDirectives(source: string): ScanResult {
     } else if (directive === 'undef') {
       const m = /^([A-Za-z_]\w*)/.exec(rest);
       if (m) macros.delete(m[1]!);
+    } else if (directive === 'include') {
+      if (!state.resolver) throw new PreprocessError('#include is not supported here', i + 1);
+      if (state.depth >= MAX_INCLUDE_DEPTH) {
+        throw new PreprocessError('#include nested too deeply', i + 1);
+      }
+      const spec = parseIncludeSpec(rest, i + 1);
+      const resolved = state.resolver(spec.name, spec.isAngle);
+      if (!resolved) throw new PreprocessError(`cannot find include '${spec.name}'`, i + 1);
+      if (!state.pragmaOnce.has(resolved.path)) {
+        const savedPath = state.currentPath;
+        state.currentPath = resolved.path;
+        state.depth++;
+        processLines(resolved.text, state);
+        state.depth--;
+        state.currentPath = savedPath;
+      }
+    } else if (directive === 'pragma') {
+      if (rest.trim() === 'once' && state.currentPath) state.pragmaOnce.add(state.currentPath);
     }
-    // Includes and unsupported directives are intentionally ignored in this
-    // single-translation-unit slice once conditionals have selected the source.
+    // Other unsupported directives are intentionally ignored in this slice once
+    // conditionals have selected the source.
   }
 
-  if (conds.length > 0) throw new PreprocessError('unterminated conditional directive', lines.length);
-  return { text: out.join('\n'), macros };
+  if (conds.length !== condBase) {
+    throw new PreprocessError('unterminated conditional directive', lines.length);
+  }
+}
+
+// Pull directives out of the top-level translation unit and any files it
+// includes, producing the combined source text plus the final macro table.
+function scanDirectives(source: string, resolver?: IncludeResolver): ScanResult {
+  const state: ScanState = {
+    macros: new Map(),
+    out: [],
+    conds: [],
+    resolver,
+    pragmaOnce: new Set(),
+    depth: 0,
+  };
+  processLines(source, state);
+  return { text: state.out.join('\n'), macros: state.macros };
 }
 
 function parseMacroArgs(
@@ -253,7 +318,8 @@ function parseMacroArgs(
   macro: Macro,
 ): { args: Token[][]; next: number } {
   const open = tokens[start];
-  if (open?.text !== '(') throw new PreprocessError('expected macro argument list', open?.line ?? 0);
+  if (open?.text !== '(')
+    throw new PreprocessError('expected macro argument list', open?.line ?? 0);
   const args: Token[][] = [];
   let current: Token[] = [];
   let depth = 0;
@@ -284,22 +350,76 @@ function parseMacroArgs(
   throw new PreprocessError('unterminated macro argument list', open.line);
 }
 
+// Build a string-literal token from the spelling of an argument's tokens, for
+// the `#` stringize operator.
+function stringize(tokens: Token[], line: number): Token {
+  const text = tokens.map((t) => t.text).join(' ');
+  const bytes: number[] = [];
+  for (const ch of text) bytes.push(ch.codePointAt(0)! & 0xff);
+  bytes.push(0);
+  return { kind: 'str', text: JSON.stringify(text), line, value: 0, str: Uint8Array.from(bytes) };
+}
+
+// Concatenate two tokens' spellings into a single token for the `##` operator.
+function paste(left: Token, right: Token, line: number): Token {
+  const combined = left.text + right.text;
+  const toks = tokenize(combined).filter((t) => t.kind !== 'eof');
+  if (toks.length !== 1) {
+    throw new PreprocessError(`pasting '${left.text}' and '${right.text}' is invalid`, line);
+  }
+  return { ...toks[0]!, line };
+}
+
+// Resolve `##` paste operators left to right in a replacement-list fragment.
+function applyPaste(tokens: Token[], line: number): Token[] {
+  if (!tokens.some((t) => t.kind === 'punct' && t.text === '##')) return tokens;
+  const out: Token[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i]!;
+    if (tok.kind === 'punct' && tok.text === '##') {
+      const right = tokens[i + 1];
+      if (out.length > 0 && right) {
+        out.push(paste(out.pop()!, right, line));
+        i++;
+      }
+      // A `##` with an empty operand (placemarker) simply drops out.
+      continue;
+    }
+    out.push(tok);
+  }
+  return out;
+}
+
 function substituteMacro(macro: Macro, args: Token[][], line: number): Token[] {
   const params = macro.params ?? [];
   if (args.length !== params.length) {
-    throw new PreprocessError(`macro expects ${params.length} arguments but got ${args.length}`, line);
+    throw new PreprocessError(
+      `macro expects ${params.length} arguments but got ${args.length}`,
+      line,
+    );
   }
   const byName = new Map(params.map((name, i) => [name, args[i]!] as const));
   const out: Token[] = [];
-  for (const tok of macro.body) {
+  for (let i = 0; i < macro.body.length; i++) {
+    const tok = macro.body[i]!;
+    // `#param` stringizes the argument's spelling.
+    if (tok.kind === 'punct' && tok.text === '#') {
+      const next = macro.body[i + 1];
+      if (next?.kind === 'ident' && byName.has(next.text)) {
+        out.push(stringize(byName.get(next.text)!, line));
+        i++;
+        continue;
+      }
+      throw new PreprocessError("'#' is not followed by a macro parameter", line);
+    }
     const arg = tok.kind === 'ident' ? byName.get(tok.text) : undefined;
     if (arg) {
-      out.push(...arg);
+      for (const a of arg) out.push({ ...a, line });
     } else {
       out.push({ ...tok, line });
     }
   }
-  return out;
+  return applyPaste(out, line);
 }
 
 // Substitute object-like and simple function-like macros in the token stream. A
@@ -324,7 +444,7 @@ function expand(tokens: Token[], macros: MacroTable): Token[] {
           next.push(...substituteMacro(macro, parsed.args, tok.line));
           i = parsed.next - 1;
         } else {
-          for (const r of macro.body) next.push({ ...r, line: tok.line });
+          for (const r of applyPaste(macro.body, tok.line)) next.push({ ...r, line: tok.line });
         }
         changed = true;
       } else {
@@ -337,8 +457,10 @@ function expand(tokens: Token[], macros: MacroTable): Token[] {
   return work;
 }
 
-// Run the preprocessor: directive extraction, tokenization, macro expansion.
-export function preprocess(source: string): Token[] {
-  const { text, macros } = scanDirectives(source);
+// Run the preprocessor: directive extraction (including `#include`),
+// tokenization, and macro expansion. `resolver` supplies header text for
+// `#include`; without it, `#include` is rejected.
+export function preprocess(source: string, resolver?: IncludeResolver): Token[] {
+  const { text, macros } = scanDirectives(source, resolver);
   return expand(tokenize(text), macros);
 }

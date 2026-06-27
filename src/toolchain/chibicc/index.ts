@@ -13,17 +13,20 @@ import type { ObjectFile } from '../../formats/object.ts';
 import { assembleObject } from '../as.ts';
 import { generate } from './codegen.ts';
 import { type Program, parse } from './parse.ts';
-import { preprocess } from './preprocess.ts';
+import { type IncludeResolver, preprocess } from './preprocess.ts';
 import { addType } from './type.ts';
 
 export interface CompileOptions {
   // Object file name (diagnostics / dump output).
   name?: string;
+  // Resolves `#include` directives to header text. Without it, `#include`
+  // is rejected.
+  resolveInclude?: IncludeResolver;
 }
 
 // Parse and type-check a translation unit into a typed program.
-function frontend(source: string): Program {
-  const program = parse(preprocess(source));
+function frontend(source: string, options: CompileOptions = {}): Program {
+  const program = parse(preprocess(source, options.resolveInclude));
   for (const obj of program.objects) {
     if (obj.isFunction && obj.bodyNode) addType(obj.bodyNode);
   }
@@ -31,18 +34,18 @@ function frontend(source: string): Program {
 }
 
 // Compile a C translation unit to custom32 assembly text.
-export function compile(source: string): string {
-  return generate(frontend(source));
+export function compile(source: string, options: CompileOptions = {}): string {
+  return generate(frontend(source, options));
 }
 
 // Compile a C translation unit straight to a relocatable object file. The unit
 // carries no startup code or runtime helpers; link it with `crt0Object()` (from
 // ../cc.ts) the same way bootstrap-compiled objects are.
 export function compileObject(source: string, options: CompileOptions = {}): ObjectFile {
-  return assembleObject(compile(source), options.name ?? 'a.o');
+  return assembleObject(compile(source, options), options.name ?? 'a.o');
 }
 
 export { CodegenError } from './codegen.ts';
 export { ParseError } from './parse.ts';
-export { PreprocessError } from './preprocess.ts';
+export { type IncludeResolver, PreprocessError } from './preprocess.ts';
 export { TokenizeError } from './tokenize.ts';

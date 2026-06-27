@@ -129,7 +129,7 @@ export function addType(node: Node | null | undefined): void {
       return;
     case 'sub':
       node.ty = isPointerLike(node.lhs?.ty ?? tyInt)
-        ? node.lhs?.ty ?? tyInt
+        ? (node.lhs?.ty ?? tyInt)
         : usualArithmeticType(node.lhs?.ty, node.rhs?.ty);
       return;
     case 'mul':
