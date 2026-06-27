@@ -83,8 +83,17 @@ export function isUnsignedInteger(ty: Type | undefined): boolean {
   return !!ty && isInteger(ty) && ty.isUnsigned === true;
 }
 
+// Whether `ty` is still unsigned *after* integer promotion. char/short (signed
+// or unsigned) promote to signed int because int holds all their values; only
+// int/long-ranked unsigned types stay unsigned. This governs the signedness of
+// division/remainder, shifts, and comparisons in the usual arithmetic
+// conversions (see docs/custom32-c-abi.md).
+export function isPromotedUnsigned(ty: Type | undefined): boolean {
+  return isUnsignedInteger(ty) && (ty as Type).size >= 4;
+}
+
 export function usualArithmeticType(lhs: Type | undefined, rhs: Type | undefined): Type {
-  return isUnsignedInteger(lhs) || isUnsignedInteger(rhs) ? tyUInt : tyInt;
+  return isPromotedUnsigned(lhs) || isPromotedUnsigned(rhs) ? tyUInt : tyInt;
 }
 
 export function isPointerLike(ty: Type): boolean {
@@ -142,7 +151,7 @@ export function addType(node: Node | null | undefined): void {
       return;
     case 'shl':
     case 'shr':
-      node.ty = isUnsignedInteger(node.lhs?.ty) ? tyUInt : tyInt;
+      node.ty = isPromotedUnsigned(node.lhs?.ty) ? tyUInt : tyInt;
       return;
     case 'assign':
       node.ty = node.lhs?.ty ?? tyInt;

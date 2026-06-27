@@ -428,6 +428,48 @@ int main(void) {
 }
 `;
 
+const PROMO_SRC = `
+unsigned char uc = 10;
+unsigned short us = 60000;
+
+int slen(char *s) {
+  int n = 0;
+  while (s[n]) { n = n + 1; }
+  return n;
+}
+
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+
+int putnum(int v) {
+  char buf[12];
+  int i = 11;
+  buf[11] = 0;
+  if (v == 0) { return puts("0"); }
+  while (v > 0) {
+    i = i - 1;
+    buf[i] = 48 + v % 10;
+    v = v / 10;
+  }
+  return puts(buf + i);
+}
+
+int main(void) {
+  int total = 0;
+  if ((uc - 20) / 3 == -3) { total = total + 1; }   /* signed division after promotion */
+  if (uc - 20 < 0) { total = total + 2; }           /* signed comparison after promotion */
+  if (us * 2 == 120000) { total = total + 4; }      /* short promotes to int, no wrap */
+  unsigned int u = 1u;
+  int neg = -1;
+  if (neg > u) { total = total + 8; }               /* mixed: unsigned comparison */
+  if ((unsigned char)-1 == 255) { total = total + 16; }
+  if ((uc - 20) >> 1 == -5) { total = total + 32; } /* arithmetic right shift after promotion */
+  puts("promo=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+
 function linkProgram(src: string, name: string): Uint8Array {
   return linkGuestExecutable([crt0Object(), compileObject(src, { name })]);
 }
@@ -519,6 +561,15 @@ test('chibicc Phase 32 frontend accepts typedef, enum, struct, and initializers'
     compile('struct S{int x;int y;}; struct S s = {.y=9}; int main(void){return s.y;}'),
     /\.global s/,
   );
+  // Integer promotion: unsigned char/short promote to signed int, so arithmetic
+  // uses signed division (IDIV) rather than unsigned (DIV).
+  assert.match(compile('unsigned char c; int main(void){ return (c - 20) / 3; }'), /IDIV/);
+  assert.doesNotMatch(
+    compile('unsigned char c; int main(void){ return (c - 20) / 3; }'),
+    /\bDIV R0/,
+  );
+  // ...but unsigned int stays unsigned.
+  assert.match(compile('unsigned int u; int main(void){ return u / 3; }'), /\bDIV R0/);
 });
 
 test('chibicc Phase 32 aggregate program runs deterministically in the guest', () => {
@@ -559,6 +610,16 @@ test('chibicc Phase 32 conditional preprocessing runs in the guest', () => {
 
   const out = bootAndRun(disk, 'preproc');
   assert.ok(out.includes('preproc=42\n'), `missing preprocessor result in:\n${out}`);
+});
+
+test('chibicc Phase 32 integer promotions run in the guest', () => {
+  const disk = buildGuestDiskImage();
+  const fs = installFs(disk);
+  fs.writeFile('/bin/promo', linkProgram(PROMO_SRC, 'promo.o'));
+  fs.chmod('/bin/promo', 0o755);
+
+  const out = bootAndRun(disk, 'promo');
+  assert.ok(out.includes('promo=63\n'), `missing promotion result in:\n${out}`);
 });
 
 test('chibicc Phase 32 initializers run in the guest', () => {

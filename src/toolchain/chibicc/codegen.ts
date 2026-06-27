@@ -21,7 +21,7 @@
 
 import { SYSCALL_INT } from '../../isa.ts';
 import type { GReloc, Node, Obj, Program } from './parse.ts';
-import { isUnsignedInteger } from './type.ts';
+import { isPromotedUnsigned, isUnsignedInteger } from './type.ts';
 
 export class CodegenError extends Error {
   constructor(message: string) {
@@ -476,7 +476,7 @@ class Generator {
         this.emit('  SHL R0, R1');
         return;
       case 'shr':
-        this.emit(`  ${isUnsignedInteger(node.lhs?.ty) ? 'SHR' : 'SAR'} R0, R1`);
+        this.emit(`  ${isPromotedUnsigned(node.lhs?.ty) ? 'SHR' : 'SAR'} R0, R1`);
         return;
       case 'eq':
       case 'ne':
@@ -492,7 +492,9 @@ class Generator {
   private genCompare(node: Node): void {
     const yes = this.label('cmp.true');
     const done = this.label('cmp.done');
-    const unsigned = isUnsignedInteger(node.lhs?.ty) || isUnsignedInteger(node.rhs?.ty);
+    // Signedness follows the usual arithmetic conversions: a comparison is
+    // unsigned only when an operand is still unsigned after integer promotion.
+    const unsigned = isPromotedUnsigned(node.lhs?.ty) || isPromotedUnsigned(node.rhs?.ty);
     const jump = {
       eq: 'JZ',
       ne: 'JNZ',
