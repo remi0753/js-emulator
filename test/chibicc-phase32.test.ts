@@ -156,6 +156,58 @@ int main(void) {
 }
 `;
 
+const PREPROCESSOR_SRC = `
+#define ENABLED 1
+#define WIDTH 4
+
+int slen(char *s) {
+  int n = 0;
+  while (s[n]) { n = n + 1; }
+  return n;
+}
+
+int puts(char *s) { return __syscall(1, 1, s, slen(s)); }
+
+int putnum(int v) {
+  char buf[12];
+  int i = 11;
+  buf[11] = 0;
+  if (v == 0) { return puts("0"); }
+  while (v > 0) {
+    i = i - 1;
+    buf[i] = 48 + v % 10;
+    v = v / 10;
+  }
+  return puts(buf + i);
+}
+
+int main(void) {
+  int total = 0;
+#if ENABLED && WIDTH * 2 == 8
+  total = total + 1;
+#else
+  total = total + missing_symbol;
+#endif
+#ifdef ENABLED
+  total = total + 2;
+#endif
+#ifndef DISABLED
+  total = total + 4;
+#endif
+#if 0
+  total = total + missing_symbol;
+#elif defined(ENABLED)
+  total = total + 8;
+#else
+  total = total + missing_symbol;
+#endif
+  puts("preproc=");
+  putnum(total);
+  puts("\\n");
+  return total;
+}
+`;
+
 function linkProgram(src: string, name: string): Uint8Array {
   return linkGuestExecutable([crt0Object(), compileObject(src, { name })]);
 }
@@ -205,6 +257,8 @@ test('chibicc Phase 32 frontend accepts typedef, enum, struct, and initializers'
   assert.match(staticCastAsm, /\.L\.static\.bump\.counter/);
   assert.match(staticCastAsm, /MOV R7, 255/);
   assert.match(staticCastAsm, /MOV R7, 4294967040/);
+  assert.doesNotMatch(compile(PREPROCESSOR_SRC), /missing_symbol/);
+  assert.throws(() => compile('#if 1\nint main(void) { return 0; }\n'), /unterminated conditional/);
   assert.match(compile('typedef int T; int main(void) { T T = 4; return T; }'), /MOV R0, 4/);
 });
 
@@ -236,4 +290,14 @@ test('chibicc Phase 32 static locals and casts run in the guest', () => {
 
   const out = bootAndRun(disk, 'static-cast');
   assert.ok(out.includes('static-cast=71\n'), `missing static/cast result in:\n${out}`);
+});
+
+test('chibicc Phase 32 conditional preprocessing runs in the guest', () => {
+  const disk = buildGuestDiskImage();
+  const fs = installFs(disk);
+  fs.writeFile('/bin/preproc', linkProgram(PREPROCESSOR_SRC, 'preproc.o'));
+  fs.chmod('/bin/preproc', 0o755);
+
+  const out = bootAndRun(disk, 'preproc');
+  assert.ok(out.includes('preproc=15\n'), `missing preprocessor result in:\n${out}`);
 });

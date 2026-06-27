@@ -18,7 +18,7 @@ file by file:
 | File | chibicc counterpart | Role |
 |------|---------------------|------|
 | `tokenize.ts` | `tokenize.c` | source text -> token stream |
-| `preprocess.ts` | `preprocess.c` | object-like macros (minimal slice) |
+| `preprocess.ts` | `preprocess.c` | object-like macros + conditional directives (Phase 32 slice) |
 | `type.ts` | `type.c` | C types, sizes/alignment, `add_type` |
 | `parse.ts` | `parse.c` | recursive-descent parser + semantics |
 | `codegen.ts` | `codegen.c` | **custom32 backend (local, not imported)** |
@@ -41,10 +41,9 @@ This first slice deliberately covers only what Phase 31 requires:
 - function definitions, prototypes, and direct calls;
 - the `__syscall` (and a few raw device/CPU) intrinsics for libc-free programs.
 
-Not yet supported (Phase 32 and later): the full preprocessor, typedef / enum /
-struct / union, initializer lists, function pointers, `long long`, unsigned
-semantics, variadic functions, aggregate calls/returns, bit-fields, and
-`float`/`double`.
+Not yet supported (Phase 32 and later): function-like macros/includes, `long
+long`, variadic functions, aggregate calls/returns, bit-fields, compound
+literals, VLAs, and `float`/`double`.
 
 ## ABI
 

@@ -990,13 +990,15 @@ chibicc tokenizer / preprocessor / parser / type checker
   and indirect calls through variables or array elements using `CALLR`. Unsigned
   integer types now select unsigned comparisons, division/remainder, logical
   right shift, and zero-extending byte/halfword loads. Function-local `static`
-  objects are emitted as internal data/BSS symbols, and casts now support scalar
-  narrowing/sign-extension for the integer subset. Coverage is in
+  objects are emitted as internal data/BSS symbols, casts now support scalar
+  narrowing/sign-extension for the integer subset, and the preprocessor handles
+  object-like macros plus `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif`.
+  Coverage is in
   `test/chibicc-phase32.test.ts`, including guest-executed programs that exercise
   typedefs, enums, struct padding, aggregate globals/locals, char-array string
   initialization, member access, 16-bit fields, function-pointer dispatch,
-  unsigned arithmetic, persistent static locals, and explicit casts through the
-  VM.
+  unsigned arithmetic, persistent static locals, explicit casts, and conditional
+  preprocessing through the VM.
 
   Done when the host cross-compiler can build a broad set of small C conformance
   and regression programs for custom32 and run them deterministically inside the
