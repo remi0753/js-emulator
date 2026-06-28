@@ -191,6 +191,7 @@ test('ignored signals do not interrupt sleep, SIGCHLD is delivered, and signal r
 
       int main(int argc, char **argv) {
         int fds[2];
+        int ready[2];
         int pid;
         int status;
         int i;
@@ -209,14 +210,21 @@ test('ignored signals do not interrupt sleep, SIGCHLD is delivered, and signal r
         if (waitpid(pid, &status, 0) != pid || child_signal != 17) return 4;
 
         if (pipe(fds) < 0) return 5;
+        if (pipe(ready) < 0) return 6;
         pid = fork();
         if (pid == 0) {
           close(fds[1]);
+          close(ready[0]);
           signal(10, 1);
+          write(ready[1], "r", 1);
+          close(ready[1]);
           if (read(fds[0], &byte, 1) != 1 || byte != 'x') exit(6);
           exit(0);
         }
         close(fds[0]);
+        close(ready[1]);
+        if (read(ready[0], &byte, 1) != 1 || byte != 'r') return 7;
+        close(ready[0]);
         i = 0;
         while (i < 4) {
           __syscall(2, 0, 0, 0);
@@ -228,9 +236,9 @@ test('ignored signals do not interrupt sleep, SIGCHLD is delivered, and signal r
           __syscall(2, 0, 0, 0);
           i = i + 1;
         }
-        if (write(fds[1], "x", 1) != 1) return 7;
+        if (write(fds[1], "x", 1) != 1) return 8;
         close(fds[1]);
-        if (waitpid(pid, &status, 0) != pid || status != 0) return 8;
+        if (waitpid(pid, &status, 0) != pid || status != 0) return 9;
         write(1, "signal-edge-ok\\n", 15);
         return 0;
       }

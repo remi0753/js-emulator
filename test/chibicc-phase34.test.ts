@@ -6,10 +6,16 @@ import { PortBlockDevice } from '../src/storage/port-block-device.ts';
 import { crt0Object } from '../src/toolchain/cc.ts';
 import { compile, compileObject } from '../src/toolchain/chibicc/index.ts';
 import { linkGuestExecutable } from '../src/v3/guest-cc.ts';
-import { compileChibiccFrontend, compileGuestBackend } from '../src/v3/guest-chibicc.ts';
+import {
+  buildChibiccCompiler,
+  compileChibiccFrontend,
+  compileGuestBackend,
+  installChibiccToolchain,
+} from '../src/v3/guest-chibicc.ts';
 import {
   buildGuestDiskImage,
   buildGuestKernelImage,
+  GUEST_DEVELOPMENT_FS_BLOCKS,
   GUEST_KERNEL_LAYOUT,
 } from '../src/v3/guest-kernel.ts';
 import { BlockDisk } from '../src/vm/custom32/devices/disk.ts';
@@ -94,7 +100,7 @@ function installFs(image: Uint8Array): Fs {
   return fs;
 }
 
-function bootAndRun(disk: Uint8Array, command: string): string {
+function bootAndRun(disk: Uint8Array, command: string, budget = 60_000_000): string {
   const image = buildGuestKernelImage();
   let out = '';
   const machine = new Machine({
@@ -106,8 +112,8 @@ function bootAndRun(disk: Uint8Array, command: string): string {
   machine.keyboard.close();
   machine.load(0, image.flat);
   machine.reset({ pc: image.entry, sp: GUEST_KERNEL_LAYOUT.kstackTop });
-  const result = machine.run(60_000_000);
-  assert.equal(result.reason, 'halt');
+  const result = machine.run(budget);
+  assert.equal(result.reason, 'halt', `VM stopped with ${result.reason}; output:\n${out}`);
   return out;
 }
 
@@ -149,6 +155,11 @@ test('chibicc Phase 34 cross-compiles the custom32 backend (codegen.c)', () => {
   assert.ok(symbols.has('align_to'), 'codegen.c must export align_to()');
 });
 
+test('chibicc Phase 34 links the guest-native compiler driver', () => {
+  const cc = buildChibiccCompiler();
+  assert.ok(cc.length > 0, 'guest cc executable should not be empty');
+});
+
 test('chibicc Phase 34 frontend gaps run in the guest', () => {
   const disk = buildGuestDiskImage();
   const fs = installFs(disk);
@@ -158,4 +169,18 @@ test('chibicc Phase 34 frontend gaps run in the guest', () => {
   const out = bootAndRun(disk, 'features');
   // 5 + 4 + 8 + 119 + 13 + 3 + 7 + 5 = 164
   assert.ok(out.includes('features=164\n'), `missing features result in:\n${out}`);
+});
+
+test('chibicc Phase 34 runs guest cc and emits assembly inside the OS', () => {
+  const disk = buildGuestDiskImage({ fsBlocks: GUEST_DEVELOPMENT_FS_BLOCKS });
+  const fs = installFs(disk);
+  installChibiccToolchain(fs);
+  fs.writeFile(
+    '/ret.c',
+    new TextEncoder().encode('int main(void) { int x = 40; return x + 2; }\n'),
+  );
+
+  const out = bootAndRun(disk, 'cc -S -o /tmp/ret.s /ret.c\ncat /tmp/ret.s', 300_000_000);
+  assert.ok(out.includes('main:\n'), `missing generated main label in:\n${out}`);
+  assert.match(out, /  ADD R0, R[17]\n/, `missing generated addition in:\n${out}`);
 });

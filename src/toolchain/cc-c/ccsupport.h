@@ -10,5 +10,8 @@ int ispunct(int c);
 int strcasecmp(char *a, char *b);
 int strncasecmp(char *a, char *b, int n);
 char *strerror(int errnum);
+long double strtold(char *nptr, char **endptr);
+struct tm *localtime(time_t *timep);
+char *ctime_r(time_t *timep, char *buf);
 
 #endif

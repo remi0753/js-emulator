@@ -209,19 +209,38 @@ void ifree(int inum) {
 
 int bmap(int inum, int bn) {
   int ind;
+  int dind;
+  int data;
+  int outer;
+  int inner;
   if (bn < CFG_NDIRECT) {
     return inode_slot(inum, bn);
   }
   if (bn >= CFG_MAXFILE) return 0;
-  ind = inode_slot(inum, CFG_NDIRECT);
+  bn = bn - CFG_NDIRECT;
+  if (bn < CFG_NINDIRECT) {
+    ind = inode_slot(inum, CFG_NDIRECT);
+    if (ind == 0) return 0;
+    return read32_at(bread(ind) + bn * 4);
+  }
+  bn = bn - CFG_NINDIRECT;
+  dind = inode_slot(inum, CFG_NDIRECT + 1);
+  if (dind == 0) return 0;
+  outer = bn / CFG_NINDIRECT;
+  inner = bn % CFG_NINDIRECT;
+  data = bread(dind);
+  ind = read32_at(data + outer * 4);
   if (ind == 0) return 0;
-  return read32_at(bread(ind) + (bn - CFG_NDIRECT) * 4);
+  return read32_at(bread(ind) + inner * 4);
 }
 
 int bmap_alloc(int inum, int bn) {
   int addr;
   int ind;
+  int dind;
   int data;
+  int outer;
+  int inner;
   if (bn < 0 || bn >= CFG_MAXFILE) return 0;
   addr = bmap(inum, bn);
   if (addr != 0) return addr;
@@ -231,16 +250,42 @@ int bmap_alloc(int inum, int bn) {
     inode_set32(inum, 28 + bn * 4, addr);
     return addr;
   }
-  ind = inode_slot(inum, CFG_NDIRECT);
+  bn = bn - CFG_NDIRECT;
+  if (bn < CFG_NINDIRECT) {
+    ind = inode_slot(inum, CFG_NDIRECT);
+    if (ind == 0) {
+      ind = balloc();
+      if (ind == 0) return 0;
+      inode_set32(inum, 28 + CFG_NDIRECT * 4, ind);
+    }
+    addr = balloc();
+    if (addr == 0) return 0;
+    data = bread(ind);
+    write32_at(data + bn * 4, addr);
+    bwrite(ind, data);
+    return addr;
+  }
+  bn = bn - CFG_NINDIRECT;
+  dind = inode_slot(inum, CFG_NDIRECT + 1);
+  if (dind == 0) {
+    dind = balloc();
+    if (dind == 0) return 0;
+    inode_set32(inum, 28 + (CFG_NDIRECT + 1) * 4, dind);
+  }
+  outer = bn / CFG_NINDIRECT;
+  inner = bn % CFG_NINDIRECT;
+  data = bread(dind);
+  ind = read32_at(data + outer * 4);
   if (ind == 0) {
     ind = balloc();
     if (ind == 0) return 0;
-    inode_set32(inum, 28 + CFG_NDIRECT * 4, ind);
+    write32_at(data + outer * 4, ind);
+    bwrite(dind, data);
   }
   addr = balloc();
   if (addr == 0) return 0;
   data = bread(ind);
-  write32_at(data + (bn - CFG_NDIRECT) * 4, addr);
+  write32_at(data + inner * 4, addr);
   bwrite(ind, data);
   return addr;
 }
@@ -311,9 +356,12 @@ int writei(int inum, int off, int n, int src) {
 
 void itrunc(int inum) {
   int i;
+  int j;
   int addr;
   int ind;
+  int dind;
   int data;
+  int data2;
   i = 0;
   while (i < CFG_NDIRECT) {
     addr = inode_slot(inum, i);
@@ -334,6 +382,27 @@ void itrunc(int inum) {
     }
     bfree(ind);
     inode_set32(inum, 28 + CFG_NDIRECT * 4, 0);
+  }
+  dind = inode_slot(inum, CFG_NDIRECT + 1);
+  if (dind != 0) {
+    data = bread(dind);
+    i = 0;
+    while (i < CFG_NINDIRECT) {
+      ind = read32_at(data + i * 4);
+      if (ind != 0) {
+        data2 = bread(ind);
+        j = 0;
+        while (j < CFG_NINDIRECT) {
+          addr = read32_at(data2 + j * 4);
+          if (addr != 0) bfree(addr);
+          j = j + 1;
+        }
+        bfree(ind);
+      }
+      i = i + 1;
+    }
+    bfree(dind);
+    inode_set32(inum, 28 + (CFG_NDIRECT + 1) * 4, 0);
   }
   inode_set32(inum, 12, 0);
   inode_touch(inum, 0, 1, 1);

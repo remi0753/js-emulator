@@ -68,7 +68,7 @@
 #define CFG_FS_PROC 3
 #define CFG_FS_SYS 5
 #define CFG_FS_TMP 4
-#define CFG_FS_VERSION 2
+#define CFG_FS_VERSION 3
 #define CFG_FT_CONS 1
 #define CFG_FT_FILE 3
 #define CFG_FT_KBD 2
@@ -97,11 +97,11 @@
 #define CFG_MAX_PROC 8
 #define CFG_MAX_VMAS 16
 #define CFG_MAXARG 16
-#define CFG_MAXFILE 140
+#define CFG_MAXFILE 0x408b
 #define CFG_MODE_USER 1
 #define CFG_NBUF 16
 #define CFG_NCHARDEV 10
-#define CFG_NDIRECT 12
+#define CFG_NDIRECT 11
 #define CFG_NET_IRQ 2
 #define CFG_NET_RX_DATA 770
 #define CFG_NET_RX_LEN 769

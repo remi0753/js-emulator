@@ -1139,10 +1139,23 @@ chibicc tokenizer / preprocessor / parser / type checker
   control-flow / 64-bit core the frontend itself uses; floating point,
   VLAs/alloca, and atomics are deferred slices that currently raise a codegen
   error. It cross-compiles to a custom32 object under the bootstrap frontend
-  (`compileGuestBackend()`, exercised in `test/chibicc-phase34.test.ts`). Next:
-  write the `main.c` driver, then guest-ify as/ld for end-to-end boot runs —
-  end-to-end guest execution also waits on variadic-function support (the
-  frontend's `error`/`format` use it), a cross-compiler ABI change.
+  (`compileGuestBackend()`, exercised in `test/chibicc-phase34.test.ts`).
+
+  The guest-native driver now exists too: `cc-c/main.c` links with the vendored
+  frontend, local backend, guest libc, and compiler compat shims into `/bin/cc`.
+  It runs inside the OS as `cc -S`, reads a C file from the guest filesystem,
+  and writes custom32 assembly back to the guest filesystem. The compiler build
+  installs its headers under `/include`, uses a larger compiler C stack, and is
+  covered by `test/chibicc-phase34.test.ts`, which boots the OS, runs guest
+  `cc -S -o /tmp/ret.s /ret.c`, and verifies the generated assembly. Supporting
+  work added `open_memstream` to guest libc and extended the filesystem to a
+  double-indirect inode layout so compiler-sized binaries fit on development
+  images.
+
+  Next: guest-ify as/ld, or fold an assembler/linker library into `cc`, so the
+  guest can turn that assembly into an executable and run it without host-side
+  compilation after boot. Floating point, VLAs/alloca, and atomics remain
+  deferred backend slices.
 
 - **Phase 35** ⬜ bootstrap the compiler and climb real packages.
 

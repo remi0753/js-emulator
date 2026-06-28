@@ -8,26 +8,27 @@
 // - Superblock (block 1): magic + geometry.
 // - Inodes: fixed 80-byte dinodes, IPB per block; inode 1 is the root dir.
 // - Bitmap: one bit per block (1 = allocated).
-// - Files/dirs: NDIRECT direct block pointers + 1 singly-indirect block.
+// - Files/dirs: NDIRECT direct block pointers, 1 singly-indirect block, and 1
+//   doubly-indirect block.
 // - Directories: arrays of fixed 16-byte entries { inum(u16), name[14] }.
 
 import { type BlockDevice, BLOCK_SIZE as BSIZE } from './block.ts';
 
 export const ROOTINO = 1; // root directory inode number
-export const NDIRECT = 12;
+export const NDIRECT = 11;
 export const NINDIRECT = BSIZE / 4; // 128
-export const MAXFILE = NDIRECT + NINDIRECT;
+export const MAXFILE = NDIRECT + NINDIRECT + NINDIRECT * NINDIRECT;
 
 export const DINODE_SIZE = 80;
 const IPB = Math.floor(BSIZE / DINODE_SIZE); // inodes per block (6)
-const NADDR = NDIRECT + 1; // direct pointers + the indirect pointer
+const NADDR = NDIRECT + 2; // direct pointers + indirect + double-indirect
 const BPB = BSIZE * 8; // bits (blocks) per bitmap block
 
 export const DIRSIZ = 14;
 const DIRENT_SIZE = 16; // u16 inum + 14-byte name
 
 export const FSMAGIC = 0x10203040;
-export const FS_VERSION = 2;
+export const FS_VERSION = 3;
 
 // Inode types.
 export const T_DIR = 1;
@@ -234,20 +235,47 @@ export class Fs {
       }
       return addr;
     }
-    const idx = bn - NDIRECT;
-    if (idx >= NINDIRECT) throw new FsError('bmap: file too large');
+    let idx = bn - NDIRECT;
+    if (idx < NINDIRECT) {
+      let indirect = din.addrs[NDIRECT]!;
+      if (indirect === 0) {
+        if (!alloc) return 0;
+        indirect = this.balloc();
+        din.addrs[NDIRECT] = indirect;
+      }
+      const ib = this.disk.read(indirect);
+      let addr = read32(ib, idx * 4);
+      if (addr === 0 && alloc) {
+        addr = this.balloc();
+        write32(ib, idx * 4, addr);
+        this.disk.write(indirect, ib);
+      }
+      return addr;
+    }
 
-    let indirect = din.addrs[NDIRECT]!;
+    idx -= NINDIRECT;
+    if (idx >= NINDIRECT * NINDIRECT) throw new FsError('bmap: file too large');
+    let doubleIndirect = din.addrs[NDIRECT + 1]!;
+    if (doubleIndirect === 0) {
+      if (!alloc) return 0;
+      doubleIndirect = this.balloc();
+      din.addrs[NDIRECT + 1] = doubleIndirect;
+    }
+    const dib = this.disk.read(doubleIndirect);
+    const outer = Math.floor(idx / NINDIRECT);
+    const inner = idx % NINDIRECT;
+    let indirect = read32(dib, outer * 4);
     if (indirect === 0) {
       if (!alloc) return 0;
       indirect = this.balloc();
-      din.addrs[NDIRECT] = indirect;
+      write32(dib, outer * 4, indirect);
+      this.disk.write(doubleIndirect, dib);
     }
     const ib = this.disk.read(indirect);
-    let addr = read32(ib, idx * 4);
+    let addr = read32(ib, inner * 4);
     if (addr === 0 && alloc) {
       addr = this.balloc();
-      write32(ib, idx * 4, addr);
+      write32(ib, inner * 4, addr);
       this.disk.write(indirect, ib);
     }
     return addr;
@@ -269,6 +297,21 @@ export class Fs {
       }
       this.bfree(din.addrs[NDIRECT]!);
       din.addrs[NDIRECT] = 0;
+    }
+    if (din.addrs[NDIRECT + 1]) {
+      const dib = this.disk.read(din.addrs[NDIRECT + 1]!);
+      for (let outer = 0; outer < NINDIRECT; outer++) {
+        const indirect = read32(dib, outer * 4);
+        if (indirect === 0) continue;
+        const ib = this.disk.read(indirect);
+        for (let inner = 0; inner < NINDIRECT; inner++) {
+          const a = read32(ib, inner * 4);
+          if (a) this.bfree(a);
+        }
+        this.bfree(indirect);
+      }
+      this.bfree(din.addrs[NDIRECT + 1]!);
+      din.addrs[NDIRECT + 1] = 0;
     }
     din.size = 0;
     this.iupdate(inum, din);

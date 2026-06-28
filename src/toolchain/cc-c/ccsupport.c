@@ -50,3 +50,29 @@ char *strerror(int errnum) {
   (void)errnum;
   return "error";
 }
+
+long double strtold(char *nptr, char **endptr) {
+  return strtol(nptr, endptr, 0);
+}
+
+static struct tm deterministic_tm;
+
+struct tm *localtime(time_t *timep) {
+  (void)timep;
+  deterministic_tm.tm_sec = 0;
+  deterministic_tm.tm_min = 0;
+  deterministic_tm.tm_hour = 0;
+  deterministic_tm.tm_mday = 1;
+  deterministic_tm.tm_mon = 0;
+  deterministic_tm.tm_year = 126;
+  deterministic_tm.tm_wday = 4;
+  deterministic_tm.tm_yday = 0;
+  deterministic_tm.tm_isdst = 0;
+  return &deterministic_tm;
+}
+
+char *ctime_r(time_t *timep, char *buf) {
+  (void)timep;
+  strcpy(buf, "Thu Jan  1 00:00:00 2026\n");
+  return buf;
+}

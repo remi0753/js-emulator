@@ -44,8 +44,8 @@ export function compileObject(source: string, options: CompileObjectOptions = {}
 // (`__csp`/`__stack`), `environ`, and the `memcpy`/`memset`/`strlen`/`strcmp`
 // helpers. `_start` (start kind `user`) reads argc/argv/envp from the exec ABI,
 // publishes `environ`, calls `main`, and exits with its return value.
-export function crt0Object(): ObjectFile {
-  return assembleObject(`${userStartAssembly()}\n${runtimeAssembly(4096)}`, 'crt0.o');
+export function crt0Object(stackSize = 4096): ObjectFile {
+  return assembleObject(`${userStartAssembly()}\n${runtimeAssembly(stackSize)}`, 'crt0.o');
 }
 
 // Startup for the privileged guest kernel. The VM supplies the hardware stack;

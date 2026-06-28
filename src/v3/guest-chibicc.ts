@@ -14,6 +14,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { ObjectFile } from '../formats/object.ts';
+import type { Fs } from '../storage/fs.ts';
 import { compileObject, crt0Object } from '../toolchain/cc.ts';
 import type { IncludeResolver } from '../toolchain/chibicc/index.ts';
 import { i64RuntimeObject } from '../toolchain/chibicc/runtime64.ts';
@@ -97,6 +98,42 @@ const ALL_FRONTEND_UNITS = [
   'upstream/unicode.c',
 ] as const;
 
+const COMPILER_UNITS = [
+  'main.c',
+  ...ALL_FRONTEND_UNITS,
+  'codegen.c',
+] as const;
+
+const COMPILER_HEADERS = [
+  'include/assert.h',
+  'include/glob.h',
+  'include/libgen.h',
+  'include/stdbool.h',
+  'include/stdarg.h',
+  'include/stdnoreturn.h',
+  'include/strings.h',
+  'include/sys/stat.h',
+  'include/sys/types.h',
+  'include/sys/wait.h',
+  'include/time.h',
+] as const;
+
+const USERLAND_HEADERS = [
+  'stddef.h',
+  'stdint.h',
+  'limits.h',
+  'errno.h',
+  'stdio.h',
+  'stdlib.h',
+  'string.h',
+  'ctype.h',
+  'fcntl.h',
+  'unistd.h',
+  'sys/stat.h',
+] as const;
+
+const COMPILER_STACK_SIZE = 256 * 1024;
+
 // Compile every vendored frontend translation unit to a relocatable object,
 // proving the real chibicc C frontend cross-compiles under the bootstrap
 // compiler. Throws if any unit fails to compile.
@@ -116,7 +153,7 @@ export function compileGuestBackend(): ObjectFile {
 // libc, startup, and runtime helpers.
 function linkCompilerProgram(units: readonly string[]): Uint8Array {
   const objects: ObjectFile[] = [
-    crt0Object(),
+    crt0Object(COMPILER_STACK_SIZE),
     ...units.map(compileCc),
     compileCc('ccsupport.c'),
     compileLibc(),
@@ -130,4 +167,35 @@ function linkCompilerProgram(units: readonly string[]): Uint8Array {
 // before the codegen.c port is written.
 export function buildChibiccProbe(): Uint8Array {
   return linkCompilerProgram(['probe.c', ...FRONTEND_UNITS]);
+}
+
+// Build the guest-native `cc` executable: vendored chibicc frontend, local
+// custom32 backend, and the freestanding driver in `cc-c/main.c`.
+export function buildChibiccCompiler(): Uint8Array {
+  return linkCompilerProgram(COMPILER_UNITS);
+}
+
+export interface InstallChibiccOptions {
+  path?: string;
+}
+
+// Install the guest compiler and the headers it can search at `/include`.
+// The compiler currently emits custom32 assembly (`-S`); guest as/ld are the
+// next Phase 34 slice.
+export function installChibiccToolchain(fs: Fs, options: InstallChibiccOptions = {}): void {
+  const path = options.path ?? '/bin/cc';
+  fs.writeFile(path, buildChibiccCompiler());
+  fs.chmod(path, 0o755);
+  for (const header of USERLAND_HEADERS) {
+    fs.writeFile(
+      `/include/${header}`,
+      new TextEncoder().encode(substituteDefines(userlandSource(header), GUEST_KERNEL_DEFINES)),
+    );
+  }
+  for (const header of COMPILER_HEADERS) {
+    fs.writeFile(
+      `/include/${header.replace(/^include\//, '')}`,
+      new TextEncoder().encode(ccSource(header)),
+    );
+  }
 }

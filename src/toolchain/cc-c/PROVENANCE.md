@@ -23,14 +23,20 @@ include/         freestanding compat headers so the frontend preprocesses under
                  the guest libc (stdbool, stdnoreturn, assert, glob, libgen,
                  strings, sys/*, time)
 ccsupport.{h,c}  small libc gap-fillers the guest libc lacks (strndup, ispunct,
-                 strcasecmp/strncasecmp, strerror)
+                 strcasecmp/strncasecmp, strerror, strtold, deterministic time)
 codegen.c        custom32 backend — LOCAL, replaces upstream codegen.c (x86-64)
-main.c           freestanding driver: read .c from FS, emit custom32 asm  [TODO]
+main.c           freestanding driver: read .c from FS, emit custom32 asm
 probe.c          de-risking probe: tokenize an in-memory string with the real
                  chibicc tokenizer and report counts
 ```
 
-`codegen.c` (the only substantial authored piece) is ported from the TS port's
+`main.c` is a guest-native `cc -S` driver. It keeps upstream's process-spawning
+driver out of the guest for now: it reads one C file from the guest filesystem,
+runs tokenize/preprocess/parse/codegen in process, and writes custom32 assembly
+back to the guest filesystem. Guest `as`/`ld` are still a separate Phase 34
+slice before `cc` can produce and run executables entirely in the guest.
+
+`codegen.c` is ported from the TS port's
 `codegen.ts`, but walks upstream's Node/Obj/Type model and assigns local frame
 offsets itself (as upstream's codegen.c does). It covers the integer / pointer /
 struct / control-flow / 64-bit core the frontend itself uses; floating point,

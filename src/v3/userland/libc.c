@@ -25,6 +25,10 @@ FILE *stdout = &stdout_object;
 FILE *stderr = &stderr_object;
 char minus_text[2] = {45, 0};
 
+#define FILE_READ 1
+#define FILE_WRITE 2
+#define FILE_MEMSTREAM 4
+
 sighandler_t signal_handlers[32];
 int signal_current;
 
@@ -779,6 +783,12 @@ FILE *fdopen(int fd, char *mode) {
   else stream->flags = 2;
   stream->error = 0;
   stream->eof = 0;
+  stream->mem_buffer = 0;
+  stream->mem_size = 0;
+  stream->mem_data = 0;
+  stream->mem_capacity = 0;
+  stream->mem_length = 0;
+  stream->mem_position = 0;
   return stream;
 }
 
@@ -794,20 +804,86 @@ FILE *fopen(char *path, char *mode) {
   return fdopen(fd, mode);
 }
 
+int memstream_grow(FILE *stream, int need) {
+  char *next;
+  int capacity;
+  if (need <= stream->mem_capacity) return 0;
+  capacity = stream->mem_capacity;
+  if (capacity < 64) capacity = 64;
+  while (capacity < need) capacity = capacity * 2;
+  next = realloc(stream->mem_data, capacity);
+  if (next == 0) {
+    stream->error = 1;
+    return -1;
+  }
+  stream->mem_data = next;
+  stream->mem_capacity = capacity;
+  return 0;
+}
+
+void memstream_publish(FILE *stream) {
+  if ((stream->flags & FILE_MEMSTREAM) == 0) return;
+  if (memstream_grow(stream, stream->mem_length + 1) < 0) return;
+  stream->mem_data[stream->mem_length] = 0;
+  *stream->mem_buffer = stream->mem_data;
+  *stream->mem_size = stream->mem_length;
+}
+
+FILE *open_memstream(char **buffer, size_t *size) {
+  FILE *stream;
+  if (buffer == 0 || size == 0) return 0;
+  stream = fdopen(-1, "w");
+  if (stream == 0) return 0;
+  stream->flags = FILE_WRITE | FILE_MEMSTREAM;
+  stream->mem_buffer = buffer;
+  stream->mem_size = size;
+  stream->mem_capacity = 0;
+  stream->mem_length = 0;
+  stream->mem_position = 0;
+  stream->mem_data = 0;
+  *buffer = 0;
+  *size = 0;
+  if (memstream_grow(stream, 1) < 0) {
+    free(stream);
+    return 0;
+  }
+  memstream_publish(stream);
+  return stream;
+}
+
 int fclose(FILE *stream) {
   int result;
   if (stream == 0) return -1;
+  if ((stream->flags & FILE_MEMSTREAM) != 0) {
+    memstream_publish(stream);
+    free(stream);
+    return 0;
+  }
   result = close(stream->fd);
   if (stream != stdin && stream != stdout && stream != stderr) free(stream);
   return result;
 }
 
 int fflush(FILE *stream) {
+  if (stream != 0) memstream_publish(stream);
   return 0;
 }
 
 int fseek(FILE *stream, int offset, int whence) {
   int result;
+  if ((stream->flags & FILE_MEMSTREAM) != 0) {
+    if (whence == SEEK_SET) result = offset;
+    else if (whence == SEEK_CUR) result = stream->mem_position + offset;
+    else if (whence == SEEK_END) result = stream->mem_length + offset;
+    else result = -1;
+    if (result < 0) {
+      stream->error = 1;
+      return -1;
+    }
+    stream->mem_position = result;
+    stream->eof = 0;
+    return 0;
+  }
   result = lseek(stream->fd, offset, whence);
   if (result < 0) {
     stream->error = 1;
@@ -819,6 +895,7 @@ int fseek(FILE *stream, int offset, int whence) {
 
 int ftell(FILE *stream) {
   int result;
+  if ((stream->flags & FILE_MEMSTREAM) != 0) return stream->mem_position;
   result = lseek(stream->fd, 0, 1);
   if (result < 0) stream->error = 1;
   return result;
@@ -847,6 +924,21 @@ int fread(void *buffer, int size, int count, FILE *stream) {
   int done;
   int n;
   if (size <= 0 || count <= 0) return 0;
+  if ((stream->flags & FILE_MEMSTREAM) != 0) {
+    bytes = buffer;
+    total = size * count;
+    if (stream->mem_position >= stream->mem_length) {
+      stream->eof = 1;
+      return 0;
+    }
+    if (total > stream->mem_length - stream->mem_position) {
+      total = stream->mem_length - stream->mem_position;
+      stream->eof = 1;
+    }
+    memcpy(bytes, stream->mem_data + stream->mem_position, total);
+    stream->mem_position = stream->mem_position + total;
+    return total / size;
+  }
   bytes = buffer;
   total = size * count;
   done = 0;
@@ -873,6 +965,14 @@ int fwrite(void *buffer, int size, int count, FILE *stream) {
   if (size <= 0 || count <= 0) return 0;
   bytes = buffer;
   total = size * count;
+  if ((stream->flags & FILE_MEMSTREAM) != 0) {
+    if (memstream_grow(stream, stream->mem_position + total + 1) < 0) return 0;
+    memcpy(stream->mem_data + stream->mem_position, bytes, total);
+    stream->mem_position = stream->mem_position + total;
+    if (stream->mem_position > stream->mem_length) stream->mem_length = stream->mem_position;
+    memstream_publish(stream);
+    return count;
+  }
   done = 0;
   while (done < total) {
     n = write(stream->fd, bytes + done, total - done);
@@ -901,6 +1001,10 @@ int fgetc(FILE *stream) {
 int fputc(int character, FILE *stream) {
   char c;
   c = character;
+  if ((stream->flags & FILE_MEMSTREAM) != 0) {
+    if (fwrite(&c, 1, 1, stream) != 1) return -1;
+    return c;
+  }
   if (write(stream->fd, &c, 1) != 1) {
     stream->error = 1;
     return -1;

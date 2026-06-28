@@ -110,6 +110,12 @@ struct file_stream {
   int flags;
   int error;
   int eof;
+  char **mem_buffer;
+  size_t *mem_size;
+  char *mem_data;
+  int mem_capacity;
+  int mem_length;
+  int mem_position;
 };
 typedef struct file_stream FILE;
 
@@ -233,6 +239,7 @@ void shutdown(void);
 
 FILE *fdopen(int fd, char *mode);
 FILE *fopen(char *path, char *mode);
+FILE *open_memstream(char **buffer, size_t *size);
 int fclose(FILE *stream);
 int fflush(FILE *stream);
 int fseek(FILE *stream, int offset, int whence);
