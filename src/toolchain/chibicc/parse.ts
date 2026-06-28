@@ -73,6 +73,8 @@ export type NodeKind =
   | 'logand'
   | 'logor'
   | 'assign'
+  | 'comma'
+  | 'cond'
   | 'addr'
   | 'deref'
   | 'funcall'
@@ -1313,13 +1315,79 @@ class Parser {
   }
 
   private assign(): Node {
-    const node = this.logor();
-    if (this.equal('=')) {
-      const line = this.peek().line;
-      this.pos++;
-      return { kind: 'assign', line, lhs: node, rhs: this.assign() };
-    }
+    const node = this.conditional();
+    const line = this.peek().line;
+    if (this.consume('=')) return { kind: 'assign', line, lhs: node, rhs: this.assign() };
+    // Compound assignments `A op= B` desugar to `A = A op B` with A evaluated
+    // once (see toAssign). `+=`/`-=` route through newAdd/newSub for pointer
+    // scaling; the rest are plain arithmetic/bitwise binaries.
+    if (this.consume('+=')) return this.toAssign(this.newAdd(node, this.assign(), line));
+    if (this.consume('-=')) return this.toAssign(this.newSub(node, this.assign(), line));
+    if (this.consume('*='))
+      return this.toAssign({ kind: 'mul', line, lhs: node, rhs: this.assign() });
+    if (this.consume('/='))
+      return this.toAssign({ kind: 'div', line, lhs: node, rhs: this.assign() });
+    if (this.consume('%='))
+      return this.toAssign({ kind: 'mod', line, lhs: node, rhs: this.assign() });
+    if (this.consume('&='))
+      return this.toAssign({ kind: 'bitand', line, lhs: node, rhs: this.assign() });
+    if (this.consume('|='))
+      return this.toAssign({ kind: 'bitor', line, lhs: node, rhs: this.assign() });
+    if (this.consume('^='))
+      return this.toAssign({ kind: 'bitxor', line, lhs: node, rhs: this.assign() });
+    if (this.consume('<<='))
+      return this.toAssign({ kind: 'shl', line, lhs: node, rhs: this.assign() });
+    if (this.consume('>>='))
+      return this.toAssign({ kind: 'shr', line, lhs: node, rhs: this.assign() });
     return node;
+  }
+
+  // `cond ? then : els`. Stored in if-statement fields so addType/codegen reuse
+  // the cond/thenStmt/els shape.
+  private conditional(): Node {
+    const node = this.logor();
+    if (!this.equal('?')) return node;
+    const line = this.peek().line;
+    this.pos++;
+    const thenStmt = this.expr();
+    this.expect(':');
+    const els = this.conditional();
+    return { kind: 'cond', line, cond: node, thenStmt, els };
+  }
+
+  // Convert `A op= B` (a binary whose lhs is the assignment target) to
+  // `tmp = &A, *tmp = *tmp op B` using the comma operator, so A is evaluated
+  // exactly once. Mirrors chibicc's to_assign.
+  private toAssign(binary: Node): Node {
+    const line = binary.line;
+    addType(binary.lhs);
+    addType(binary.rhs);
+    const tmp = this.newLocal('', pointerTo(binary.lhs?.ty ?? tyInt));
+    const tmpVar = (): Node => ({ kind: 'var', line, variable: tmp });
+    const expr1: Node = {
+      kind: 'assign',
+      line,
+      lhs: tmpVar(),
+      rhs: { kind: 'addr', line, lhs: binary.lhs },
+    };
+    const expr2: Node = {
+      kind: 'assign',
+      line,
+      lhs: { kind: 'deref', line, lhs: tmpVar() },
+      rhs: { ...binary, lhs: { kind: 'deref', line, lhs: tmpVar() } },
+    };
+    return { kind: 'comma', line, lhs: expr1, rhs: expr2 };
+  }
+
+  // Postfix `x++`/`x--`: `(typeof x)((x += addend) - addend)` so the expression
+  // value is the old value while x is updated. Mirrors chibicc's new_inc_dec.
+  private newIncDec(node: Node, line: number, addend: number): Node {
+    addType(node);
+    const incremented = this.toAssign(
+      this.newAdd(node, { kind: 'num', line, value: addend }, line),
+    );
+    const restored = this.newAdd(incremented, { kind: 'num', line, value: -addend }, line);
+    return { kind: 'cast', line, lhs: restored, castType: node.ty };
   }
 
   private logor(): Node {
@@ -1430,6 +1498,11 @@ class Parser {
     const line = this.peek().line;
     if (this.consume('+')) return this.unary();
     if (this.consume('-')) return { kind: 'neg', line, lhs: this.unary() };
+    // `++x` => `x += 1`, `--x` => `x -= 1`.
+    if (this.consume('++'))
+      return this.toAssign(this.newAdd(this.unary(), { kind: 'num', line, value: 1 }, line));
+    if (this.consume('--'))
+      return this.toAssign(this.newSub(this.unary(), { kind: 'num', line, value: 1 }, line));
     if (this.consume('!')) return { kind: 'not', line, lhs: this.unary() };
     if (this.consume('*')) return { kind: 'deref', line, lhs: this.unary() };
     if (this.consume('&')) return { kind: 'addr', line, lhs: this.unary() };
@@ -1471,6 +1544,14 @@ class Parser {
       }
       if (this.equal('(')) {
         node = this.callExpr(node, line);
+        continue;
+      }
+      if (this.consume('++')) {
+        node = this.newIncDec(node, line, 1);
+        continue;
+      }
+      if (this.consume('--')) {
+        node = this.newIncDec(node, line, -1);
         continue;
       }
       return node;

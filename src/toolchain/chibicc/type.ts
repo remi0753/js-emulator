@@ -205,6 +205,18 @@ export function addType(node: Node | null | undefined): void {
     case 'assign':
       node.ty = node.lhs?.ty ?? tyInt;
       return;
+    case 'comma':
+      node.ty = node.rhs?.ty ?? tyInt;
+      return;
+    case 'cond': {
+      const t = node.thenStmt?.ty ?? tyInt;
+      const e = node.els?.ty ?? tyInt;
+      if (t.kind === 'void' || e.kind === 'void') node.ty = tyVoid;
+      else if (isPointerLike(t)) node.ty = t;
+      else if (isPointerLike(e)) node.ty = e;
+      else node.ty = usualArithmeticType(t, e);
+      return;
+    }
     case 'neg':
       if (isFloating(node.lhs?.ty)) {
         node.ty = node.lhs?.ty ?? tyInt;

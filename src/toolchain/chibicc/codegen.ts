@@ -590,6 +590,17 @@ class Generator {
   }
 
   private genExpr(node: Node): void {
+    // The comma operator and `?:` are evaluated before the value-type routing
+    // below so their result width is decided by the arm that produces it.
+    if (node.kind === 'comma') {
+      this.genExpr(node.lhs!);
+      this.genExpr(node.rhs!);
+      return;
+    }
+    if (node.kind === 'cond') {
+      this.genConditional(node);
+      return;
+    }
     // 64-bit values live in the R0(low):R1(high) pair and take a separate path.
     if (is64(node.ty)) {
       this.gen64Expr(node);
@@ -830,6 +841,22 @@ class Generator {
   }
 
   // Short-circuit && / ||, normalized to 0/1.
+  // `cond ? then : els`. Both arms are generated with their own value type so a
+  // 64-bit or float result lands in the right register(s).
+  private genConditional(node: Node): void {
+    const els = this.label('cond.else');
+    const end = this.label('cond.end');
+    this.genCond(node.cond!);
+    this.emit('  MOV R7, 0');
+    this.emit('  CMP R0, R7');
+    this.emit(`  JZ ${els}`);
+    this.genExpr(node.thenStmt!);
+    this.emit(`  JMP ${end}`);
+    this.emit(`${els}:`);
+    this.genExpr(node.els!);
+    this.emit(`${end}:`);
+  }
+
   private genLogical(node: Node): void {
     const isAnd = node.kind === 'logand';
     const set = this.label('logic.set');

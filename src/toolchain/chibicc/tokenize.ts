@@ -69,18 +69,32 @@ const KEYWORDS = new Set([
 // Punctuators, longest first so the scanner takes the maximal munch. `#`/`##`
 // only appear inside macro replacement lists (directive lines are stripped
 // textually before the body is tokenized), where they drive stringize/paste.
+// Longest-first so the greedy `startsWith` scan never splits a multi-char
+// operator (e.g. `<<=` before `<<` before `<`).
 const PUNCTUATORS = [
+  '<<=',
+  '>>=',
   '...',
-  '##',
-  '<<',
-  '>>',
-  '<=',
-  '>=',
   '==',
   '!=',
+  '<=',
+  '>=',
+  '->',
+  '+=',
+  '-=',
+  '*=',
+  '/=',
+  '%=',
+  '&=',
+  '|=',
+  '^=',
+  '++',
+  '--',
   '&&',
   '||',
-  '->',
+  '<<',
+  '>>',
+  '##',
   '+',
   '-',
   '*',
@@ -104,6 +118,7 @@ const PUNCTUATORS = [
   '~',
   '.',
   ':',
+  '?',
   '#',
 ];
 
@@ -220,6 +235,16 @@ export function tokenize(source: string): Token[] {
         j = i + 2;
         while (j < source.length && /[0-9a-fA-F]/.test(source[j]!)) j++;
         full = Number.parseInt(source.slice(i + 2, j), 16);
+      } else if (c === '0' && (source[i + 1] === 'b' || source[i + 1] === 'B')) {
+        j = i + 2;
+        while (j < source.length && /[01]/.test(source[j]!)) j++;
+        full = Number.parseInt(source.slice(i + 2, j), 2);
+      } else if (c === '0' && /[0-7]/.test(source[i + 1] ?? '')) {
+        // Octal: a leading 0 followed by octal digits (a bare `0` falls through
+        // to the decimal path below).
+        j = i + 1;
+        while (j < source.length && /[0-7]/.test(source[j]!)) j++;
+        full = Number.parseInt(source.slice(i + 1, j), 8);
       } else {
         while (j < source.length && isDigit(source[j]!)) j++;
         let isFloating = false;

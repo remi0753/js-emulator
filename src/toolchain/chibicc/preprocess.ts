@@ -170,10 +170,29 @@ function parseIncludeSpec(rest: string, line: number): { name: string; isAngle: 
 // Pull directives out of the source line by line, leaving blank lines in their
 // place. Conditional directives keep inactive source out of the token stream;
 // `#include` recursively splices resolved files in. Mutates `state`.
+// C translation phase 2: a backslash at end of a physical line splices it with
+// the next. The merged text stays on the first line and the consumed lines
+// become blank so line numbering (and the `out` line-preservation below) stays
+// aligned with the original source.
+function spliceContinuations(physical: string[]): string[] {
+  const lines: string[] = new Array(physical.length).fill('');
+  for (let i = 0; i < physical.length; i++) {
+    let cur = physical[i]!;
+    let j = i;
+    while (cur.replace(/\r$/, '').endsWith('\\') && j + 1 < physical.length) {
+      cur = cur.replace(/\r$/, '').slice(0, -1) + physical[j + 1]!;
+      j++;
+    }
+    lines[i] = cur;
+    i = j;
+  }
+  return lines;
+}
+
 function processLines(source: string, state: ScanState): void {
   const { macros, out, conds } = state;
   const condBase = conds.length;
-  const lines = source.split('\n');
+  const lines = spliceContinuations(source.split('\n'));
 
   const isActive = (): boolean => conds.every((c) => c.active);
 
