@@ -48,10 +48,9 @@ arithmetic, comparisons, and int conversions.
 
 ## ABI
 
-`codegen.ts` emits the same software-stack ABI as the bootstrap compiler
-(`src/toolchain/c.ts`): a software stack pointer `__csp` holds C arguments and
-locals, arguments are staged right-to-left, R6 is the frame base, and R0 is the
-expression accumulator. This lets chibicc objects link against the existing,
-tested `crt0Object()` startup/runtime and interoperate with bootstrap-compiled
-libc. Migrating to the hardware-`SP` ABI frozen in `docs/custom32-c-abi.md` is
-future work tracked in that document.
+`codegen.ts` emits the custom32 software-stack ABI: a software stack pointer
+`__csp` holds C arguments and locals, arguments are staged right-to-left, R6 is
+the frame base, and R0 is the expression accumulator. Chibicc objects link
+against the shared hand-written `crt0Object()`/`kernelCrt0Object()` startup and
+runtime helpers in `src/toolchain/cc.ts`. Migrating to the hardware-`SP` ABI
+frozen in `docs/custom32-c-abi.md` is future work tracked in that document.

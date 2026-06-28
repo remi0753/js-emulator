@@ -6,10 +6,9 @@
 // typed AST into custom32 assembly that `as.ts` assembles and the object linker
 // links.
 //
-// ABI: this slice emits the same software-stack convention the bootstrap
-// compiler (`src/toolchain/c.ts`) uses, so chibicc objects link against the
-// existing, tested `crt0Object()` startup/runtime and interoperate with the
-// bootstrap libc:
+// ABI: this slice emits the custom32 software-stack convention used by the
+// maintained guest toolchain, so chibicc objects link against the shared
+// `crt0Object()`/`kernelCrt0Object()` startup and runtime helpers:
 //   - R0 is the expression accumulator; R1/R5/R7 are scratch.
 //   - A software stack pointer `__csp` (a 4-byte global owned by crt0) holds C
 //     arguments and locals; the hardware SP only carries return addresses.
@@ -282,6 +281,15 @@ class Generator {
         this.emit(`  JMP ${target}`);
         return;
       }
+      case 'asm':
+        for (const line of (node.asmSource ?? '').split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed === '') continue;
+          const label = /^([A-Za-z_.][\w.]*)\s*:$/.exec(trimmed);
+          if (label) this.emit(`.global ${label[1]}`);
+          this.emit(`  ${trimmed}`);
+        }
+        return;
       default:
         // Any other node used in statement position is an expression.
         this.genExpr(node);
@@ -1317,6 +1325,52 @@ class Generator {
         return;
       case '__halt':
         this.emit('  HLT');
+        this.emit('  MOV R0, 0');
+        return;
+      case '__iret':
+        this.emit('  IRET');
+        this.emit('  MOV R0, 0');
+        return;
+      case '__lidt':
+        intoRegs(['R1']);
+        this.emit('  LIDT R1');
+        this.emit('  MOV R0, 0');
+        return;
+      case '__lksp':
+        intoRegs(['R1']);
+        this.emit('  LKSP R1');
+        this.emit('  MOV R0, 0');
+        return;
+      case '__stmr':
+        intoRegs(['R1']);
+        this.emit('  STMR R1');
+        this.emit('  MOV R0, 0');
+        return;
+      case '__lptbr':
+        intoRegs(['R1']);
+        this.emit('  LPTBR R1');
+        this.emit('  MOV R0, 0');
+        return;
+      case '__pgon':
+        this.emit('  PGON');
+        this.emit('  MOV R0, 0');
+        return;
+      case '__pgoff':
+        this.emit('  PGOFF');
+        this.emit('  MOV R0, 0');
+        return;
+      case '__rdpfla':
+        this.emit('  RDPFLA R0');
+        return;
+      case '__rderr':
+        this.emit('  RDERR R0');
+        return;
+      case '__ei':
+        this.emit('  EI');
+        this.emit('  MOV R0, 0');
+        return;
+      case '__di':
+        this.emit('  DI');
         this.emit('  MOV R0, 0');
         return;
       default:

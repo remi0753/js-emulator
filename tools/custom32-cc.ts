@@ -1,11 +1,9 @@
 #!/usr/bin/env node
 // custom32-cc: a host C driver for the custom32 guest target.
 //
-// It ties the toolchain stages together — compile C, assemble, link against
-// objects and static archives, and optionally install the result into a disk
-// image — the way `cc` does. The current TypeScript C-like compiler is the
-// bootstrap frontend; the pipeline below stays the same when a real frontend
-// replaces it.
+// It ties the toolchain stages together — compile C with the chibicc-derived
+// frontend, assemble, link against objects and static archives, and optionally
+// install the result into a disk image — the way `cc` does.
 //
 // Usage:
 //   custom32-cc [options] inputs...
@@ -19,7 +17,7 @@
 //   --text-origin N   override the text load address
 //   -L dir / -l name  archive search path / link libNAME.a
 //   -nostartfiles     do not link the built-in crt0 startup/runtime object
-//   --frontend F      C frontend: bootstrap (default) or chibicc
+//   --frontend F      C frontend: chibicc (default)
 //   --install IMG     install the linked executable into disk image IMG
 //   --install-as PATH guest path for --install (default /bin/<output name>)
 
@@ -35,12 +33,9 @@ import {
   type LinkFormat,
   linkExecutableImage,
 } from '../src/toolchain/cc.ts';
-import { compileObject as chibiccCompileObject } from '../src/toolchain/chibicc/index.ts';
 import { floatRuntimeArchive } from '../src/toolchain/chibicc/runtimeFloat.ts';
 import { i64RuntimeObject } from '../src/toolchain/chibicc/runtime64.ts';
 import { installExecutable, linkGuestExecutable } from '../src/v3/guest-cc.ts';
-
-type Frontend = 'bootstrap' | 'chibicc';
 
 function fail(message: string): never {
   console.error(`custom32-cc: ${message}`);
@@ -78,7 +73,6 @@ function main(argv: string[]): void {
   let format: LinkFormat = 'guest';
   let textOrigin: number | undefined;
   let noStartFiles = false;
-  let frontend: Frontend = 'bootstrap';
   let installImage: string | undefined;
   let installAs: string | undefined;
   const libDirs: string[] = ['.'];
@@ -101,9 +95,7 @@ function main(argv: string[]): void {
     else if (arg === '-nostartfiles' || arg === '--nostartfiles') noStartFiles = true;
     else if (arg === '--frontend') {
       const value = argv[++i];
-      if (value !== 'bootstrap' && value !== 'chibicc')
-        fail('--frontend must be bootstrap or chibicc');
-      frontend = value;
+      if (value !== 'chibicc') fail('--frontend must be chibicc');
     } else if (arg === '--install')
       installImage = argv[++i] ?? fail('--install requires an argument');
     else if (arg === '--install-as')
@@ -141,10 +133,7 @@ function main(argv: string[]): void {
         }
         return undefined;
       };
-      const obj =
-        frontend === 'chibicc'
-          ? chibiccCompileObject(source, { name, resolveInclude })
-          : compileObject(source, { name, moduleId: basename(path) });
+      const obj = compileObject(source, { name, moduleId: basename(path), resolveInclude });
       objects.push(obj);
       emittedObjects.push({ input: path, obj });
     } else if (path.endsWith('.s') || path.endsWith('.asm')) {
@@ -177,10 +166,8 @@ function main(argv: string[]): void {
 
   // Stage 2: link. crt0 (startup + runtime) is linked first unless suppressed.
   const chibiccRuntimes =
-    frontend === 'chibicc' && !noStartFiles && needsChibiccI64Runtime(objects)
-      ? [i64RuntimeObject()]
-      : [];
-  if (frontend === 'chibicc' && !noStartFiles) archives.push(floatRuntimeArchive());
+    !noStartFiles && needsChibiccI64Runtime(objects) ? [i64RuntimeObject()] : [];
+  if (!noStartFiles) archives.push(floatRuntimeArchive());
   const linkInputs = noStartFiles ? objects : [crt0Object(), ...objects, ...chibiccRuntimes];
   if (linkInputs.length === 0) fail('no objects to link');
 

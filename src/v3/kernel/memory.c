@@ -24,13 +24,13 @@ int read32_at(int addr) {
 int read16_at(int addr) {
   char *p;
   p = addr;
-  return p[0] | (p[1] << 8);
+  return (p[0] & 255) | ((p[1] & 255) << 8);
 }
 
 int read8_at(int addr) {
   char *p;
   p = addr;
-  return p[0];
+  return p[0] & 255;
 }
 
 void write32_at(int addr, int v) {

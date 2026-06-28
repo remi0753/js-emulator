@@ -75,7 +75,7 @@
 #define CFG_FT_NONE 0
 #define CFG_FT_PIPE 4
 #define CFG_FT_SOCKET 5
-#define CFG_IDT 0x70000
+#define CFG_IDT 0xd0000
 #define CFG_IDT_ENTRY_SIZE 8
 #define CFG_IDT_PRESENT 1
 #define CFG_IDT_USER 2
@@ -87,9 +87,9 @@
 #define CFG_KBD_IRQ 1
 #define CFG_KBD_STATUS 100
 #define CFG_KBD_VECTOR 33
-#define CFG_KERNEL_PT 0x71000
+#define CFG_KERNEL_PT 0xd1000
 #define CFG_KLOG_SIZE 0x1000
-#define CFG_KSTACK_TOP 0x80000
+#define CFG_KSTACK_TOP 0x100000
 #define CFG_MAP_ANONYMOUS 32
 #define CFG_MAP_FIXED 16
 #define CFG_MAP_PRIVATE 2
@@ -282,7 +282,7 @@
 #define CFG_WNOHANG 1
 #define CFG_WUNTRACED 2
 
-// Intrinsics recognized by src/toolchain/c.ts.
+// Intrinsics recognized by src/toolchain/chibicc.
 int __syscall(int number, int arg1, int arg2, int arg3);
 int __out(int port, int value);
 int __in(int port);

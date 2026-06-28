@@ -1,18 +1,21 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { encodeBootBlock, makeBootBlock } from '../formats/bootblock.ts';
+import type { ObjectFile } from '../formats/object.ts';
 import { BLOCK_SIZE } from '../storage/block.ts';
 import { Fs } from '../storage/fs.ts';
 import { PortBlockDevice } from '../storage/port-block-device.ts';
-import { type CompiledObject, compileC } from '../toolchain/c.ts';
-import { type KernelImage, linkExecutable, linkKernelImage } from '../toolchain/linker.ts';
-import { preprocess } from '../toolchain/preprocess.ts';
+import { compileObject, crt0Object, kernelCrt0Object } from '../toolchain/cc.ts';
+import type { IncludeResolver } from '../toolchain/chibicc/index.ts';
+import { floatRuntimeArchive } from '../toolchain/chibicc/runtimeFloat.ts';
+import { i64RuntimeObject } from '../toolchain/chibicc/runtime64.ts';
+import { type KernelImage, linkKernelImage } from '../toolchain/object-linker.ts';
 import { BlockDisk } from '../vm/custom32/devices/disk.ts';
 import { PORT } from '../vm/custom32/platform.ts';
 import { PortBus } from '../vm/custom32/ports.ts';
+import { linkGuestExecutable } from './guest-cc.ts';
 import {
   type Defines,
-  GUEST_EXECUTABLE_MAGIC,
   GUEST_KERNEL_DEFINES,
   GUEST_KERNEL_LAYOUT,
 } from './config.ts';
@@ -58,49 +61,59 @@ export const GUEST_USER_PROGRAMS = [
   'runtests',
 ] as const;
 
-function resolveUserlandInclude(name: string): string | undefined {
-  try {
-    return sourceFile(`userland/${name}`);
-  } catch {
-    return undefined;
-  }
+function resolveGuestInclude(dir: 'userland' | 'kernel'): IncludeResolver {
+  return (name) => {
+    try {
+      return {
+        path: `${dir}/${name}`,
+        text: substituteDefines(sourceFile(`${dir}/${name}`), GUEST_KERNEL_DEFINES, `${dir}/${name}`),
+      };
+    } catch {
+      return undefined;
+    }
+  };
+}
+
+const resolveUserlandInclude = resolveGuestInclude('userland');
+const resolveKernelInclude = resolveGuestInclude('kernel');
+
+function kernelSource(subpath: string): string {
+  return substituteDefines(sourceFile(`kernel/${subpath}`), GUEST_KERNEL_DEFINES, `kernel/${subpath}`);
+}
+
+function compileUserlandObject(source: string, name: string): ObjectFile {
+  return compileObject(source, { name: `${name}.o`, resolveInclude: resolveUserlandInclude });
+}
+
+function needsChibiccRuntime(objects: ObjectFile[]): boolean {
+  return objects.some((obj) =>
+    obj.symbols.some(
+      (sym) =>
+        sym.section === 'undef' &&
+        (sym.name.startsWith('__i64_') ||
+          sym.name.startsWith('__u64_') ||
+          /^__(add|sub|mul|div)[sd]f3$/.test(sym.name) ||
+          /^__cmp[sd]f2$/.test(sym.name) ||
+          /^__(float|fix|extend|trunc)/.test(sym.name)),
+    ),
+  );
 }
 
 const LIBC_SOURCE = substituteDefines(
-  preprocess(sourceFile('userland/libc.c'), resolveUserlandInclude),
+  sourceFile('userland/libc.c'),
   GUEST_KERNEL_DEFINES,
   'libc.c',
 );
 
 export function buildUserExecutable(name: string, programSource: string): Uint8Array {
-  const base = GUEST_KERNEL_LAYOUT.userLoadBase;
-  const libc = compileC(LIBC_SOURCE, { start: 'none', moduleId: `${name}_libc` });
-  const expandedProgram = preprocess(programSource, resolveUserlandInclude);
-  const program = compileC(substituteDefines(expandedProgram, GUEST_KERNEL_DEFINES, name), {
-    start: 'user',
-    moduleId: name,
-    cStackSize: 4096,
-  });
-  const linked = linkExecutable([program, libc], { textOrigin: base });
-
-  const [textSegment, dataSegment] = linked.executable.segments;
-  if (!textSegment || !dataSegment) {
-    throw new Error(`buildUserExecutable: ${name} missing segments`);
-  }
-
-  const fileImageLength = dataSegment.vaddr - base + dataSegment.data.length;
-  const memorySize = dataSegment.vaddr - base + dataSegment.memSize;
-  const image = new Uint8Array(fileImageLength);
-  image.set(textSegment.data, textSegment.vaddr - base);
-  image.set(dataSegment.data, dataSegment.vaddr - base);
-
-  const executable = new Uint8Array(12 + fileImageLength);
-  const header = new DataView(executable.buffer);
-  header.setUint32(0, GUEST_EXECUTABLE_MAGIC, true);
-  header.setUint32(4, linked.entry, true);
-  header.setUint32(8, memorySize, true);
-  executable.set(image, 12);
-  return executable;
+  const libc = compileUserlandObject(LIBC_SOURCE, `${name}_libc`);
+  const program = compileUserlandObject(
+    substituteDefines(programSource, GUEST_KERNEL_DEFINES, name),
+    name,
+  );
+  const objects = [crt0Object(), program, libc];
+  if (needsChibiccRuntime(objects)) objects.push(i64RuntimeObject());
+  return linkGuestExecutable(objects, [floatRuntimeArchive()]);
 }
 
 export interface GuestDiskImageOptions {
@@ -193,26 +206,15 @@ const KERNEL_SOURCE_FILES = [
   'drivers/power.c',
 ] as const;
 
-function resolveKernelInclude(name: string): string | undefined {
-  try {
-    return sourceFile(`kernel/${name}`);
-  } catch {
-    return undefined;
-  }
-}
-
-function compileKernelFile(subpath: string): CompiledObject {
-  const expanded = preprocess(sourceFile(`kernel/${subpath}`), resolveKernelInclude);
-  const source = substituteDefines(expanded, GUEST_KERNEL_DEFINES, `kernel/${subpath}`);
-  return compileC(source, {
-    start: subpath === 'main.c' ? 'kernel' : 'none',
-    cStackSize: 8192,
-    moduleId: subpath.replace(/[^A-Za-z0-9]/g, '_'),
+function compileKernelFile(subpath: string): ObjectFile {
+  return compileObject(kernelSource(subpath), {
+    name: `${subpath.replace(/[^A-Za-z0-9]/g, '_')}.o`,
+    resolveInclude: resolveKernelInclude,
   });
 }
 
 export function buildGuestKernelImage(): KernelImage {
-  const image = linkKernelImage(KERNEL_SOURCE_FILES.map(compileKernelFile));
+  const image = linkKernelImage([kernelCrt0Object(8192), ...KERNEL_SOURCE_FILES.map(compileKernelFile)]);
   if (image.flat.length > GUEST_KERNEL_LAYOUT.idt) {
     throw new Error(
       `guest kernel image overlaps reserved IDT/page-table region: image end 0x${image.flat.length.toString(16)}, IDT 0x${GUEST_KERNEL_LAYOUT.idt.toString(16)}`,

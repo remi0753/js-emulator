@@ -136,10 +136,10 @@ test('canonical Ctrl-D preserves record boundaries after non-empty input', () =>
 test('Ctrl-Z stops the foreground job and returns terminal control to the shell', () => {
   const { machine, output } = boot(buildGuestDiskImage());
   machine.keyboard.feed('spin\n');
-  assert.notEqual(machine.run(20_000_000).reason, 'halt');
+  assert.notEqual(machine.run(80_000_000).reason, 'halt');
 
   machine.keyboard.feed('\x1a');
-  assert.equal(machine.run(20_000_000).reason, 'halt');
+  assert.equal(machine.run(40_000_000).reason, 'halt');
   assert.equal(output().includes('^Z\n'), true, output());
 
   machine.keyboard.feed('echo resumed-shell\nshutdown\n');

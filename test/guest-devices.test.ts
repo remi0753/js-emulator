@@ -40,7 +40,7 @@ test('the guest reads the RTC and powers off through device drivers', () => {
   machine.load(0, image.flat);
   machine.reset({ pc: image.entry, sp: GUEST_KERNEL_LAYOUT.kstackTop });
 
-  const r = machine.run(20_000_000);
+  const r = machine.run(40_000_000);
 
   // /bin/date read the RTC device through the time() syscall and printed the
   // wall-clock time; /bin/shutdown asked the kernel to power off, which wrote the

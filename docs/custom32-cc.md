@@ -1,20 +1,19 @@
 # custom32-cc host C driver and ABI smoke suite (Phase 30)
 
 This document specifies the `custom32-cc` host driver — a `cc`-style front end
-that ties the existing toolchain stages together — and the ABI smoke suite that
-pins down the calling convention before the real C frontend (chibicc) replaces
-the current bootstrap compiler in Phase 31.
+that compiles C with the chibicc-derived frontend and ties the existing
+assembler, object linker, archive search, and disk install stages together.
 
 ```text
 custom32-cc  .c        -> .o    (compile one translation unit, with -c)
 custom32-cc  .c/.s/.o/.a -> exe (compile, assemble, link, optionally install)
 ```
 
-The driver reuses the Phase 29 object pipeline: a C translation unit is lowered
+The driver reuses the Phase 29 object pipeline: a C translation unit is compiled
 to a relocatable [`.o`](custom32-objfmt.md), then linked with objects, static
-archives, and a startup object exactly like hand-written assembly. The current
-TypeScript C-like compiler (`src/toolchain/c.ts`) is only the **bootstrap**
-frontend; the pipeline below does not change when a real frontend is dropped in.
+archives, and a startup object exactly like hand-written assembly. The legacy
+TypeScript C-like compiler (`src/toolchain/c.ts`) remains for historical tests;
+maintained guest builds use [`src/toolchain/chibicc/`](../src/toolchain/chibicc/).
 
 ## Pipeline
 
@@ -41,9 +40,9 @@ If every C object embedded its own `_start`, software stack (`__csp`/`__stack`),
 `environ`, and `memcpy`/`memset`/`strlen`/`strcmp`, linking two of them would
 fail on duplicate global symbols. Instead:
 
-- `compileObject` compiles each unit with **no startup and no runtime**
-  (`start: 'none'`, `includeRuntime: false`). The unit references `__csp` and the
-  runtime helpers as **undefined** symbols and omits the shared
+- `compileObject` compiles each unit with chibicc and emits **no startup and no
+  runtime**. The unit references `__csp` and the runtime helpers as
+  **undefined** symbols and omits the shared
   `__csp`/`__stack`/`environ` definitions entirely.
 - `crt0Object()` is the single object that **defines** `_start`, `__csp`,
   `__stack`, `environ`, and the runtime helpers. `_start` (the `user` startup)
@@ -54,16 +53,13 @@ fail on duplicate global symbols. Instead:
 C functions and non-`extern` globals are exported as global symbols; string
 literals and the shared stack symbols are not.
 
-### Lowering a compiled unit to an object
+### Compiling a unit to an object
 
-`compileC` emits assembly text plus data/bss symbol tables. `cc.ts` re-emits
-that as assembler source (`.text` body, `.data` with `.byte`/`.word`, `.bss`
-with `.space`) and runs the same [`as.ts`](../src/toolchain/as.ts) assembler the
-`.s` path uses. Because the assembler turns every bare-identifier operand into an
+The chibicc frontend preprocesses, parses, type-checks, and emits custom32
+assembly; [`as.ts`](../src/toolchain/as.ts) then assembles that text into an
+object file. Because the assembler turns every bare-identifier operand into an
 `abs32` relocation, cross-object references (calls, globals, pointer
-initializers) resolve at link time with no special cases. A 4-byte pointer
-initializer (a global pointing at a string literal or another global) becomes a
-`.word target` so the assembler records the relocation.
+initializers) resolve at link time with no special cases.
 
 ## CLI
 
@@ -83,6 +79,7 @@ archives (members pulled on demand).
 | `--text-origin N` | override the text load address |
 | `-L dir` / `-l name` | archive search path / link `libNAME.a` |
 | `-nostartfiles` | do not link the built-in `crt0` startup/runtime object |
+| `--frontend chibicc` | accepted for compatibility; chibicc is the only maintained frontend |
 | `--install IMG` | install the linked executable into disk image `IMG` |
 | `--install-as PATH` | guest path for `--install` (default `/bin/<output name>`) |
 
@@ -115,23 +112,18 @@ the console output (`compute=117`, the child's echoed `argv[0]`/`environ[0]`, an
 which also asserts the CLI-built executable matches the in-process pipeline byte
 for byte.
 
-## Selecting the C frontend (Phase 31)
-
-`custom32-cc --frontend chibicc` swaps just the `.c` compilation step from the
-bootstrap compiler (`src/toolchain/c.ts`) to the real C frontend in
-[`src/toolchain/chibicc/`](../src/toolchain/chibicc/), while reusing the whole
-assemble → link → install flow above. The default remains `--frontend
-bootstrap`.
+## C frontend
 
 The chibicc frontend is a TypeScript port of
 [chibicc](https://github.com/rui314/chibicc)'s architecture, kept isolated so the
 imported frontend (`tokenize.ts`/`preprocess.ts`/`type.ts`/`parse.ts`) stays
 separate from the custom32 backend (`codegen.ts`); see
 [`PROVENANCE.md`](../src/toolchain/chibicc/PROVENANCE.md). Its Phase 31 slice
-emits the same software-stack ABI as the bootstrap compiler, so chibicc objects
-link against the same `crt0Object()` and bootstrap libc. The end-to-end coverage
-is `test/chibicc-phase31.test.ts`, which builds `int main(void) { return 42; }`
-through this driver, boots the guest, and observes exit status 42.
+emitted the same software-stack ABI as the bootstrap compiler; the maintained
+driver now uses chibicc directly for kernel, userland, and CLI builds. The
+end-to-end coverage is `test/chibicc-phase31.test.ts`, which builds
+`int main(void) { return 42; }` through this driver, boots the guest, and
+observes exit status 42.
 
 ## npm scripts
 

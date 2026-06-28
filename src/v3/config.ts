@@ -146,9 +146,9 @@ const SIGNAL = {
 export const GUEST_EXECUTABLE_MAGIC = 0x35315850;
 
 export const GUEST_KERNEL_LAYOUT = {
-  idt: 0x70000,
-  kernelPageTable: 0x71000,
-  kstackTop: 0x80000,
+  idt: 0xd0000,
+  kernelPageTable: 0xd1000,
+  kstackTop: 0x100000,
   framePoolBase: 0x100000,
   framePoolEnd: 0x380000,
   timerPeriod: 8000,
@@ -434,7 +434,7 @@ export function renderGuestConfigHeader(): string {
 
 ${definitions}
 
-// Intrinsics recognized by src/toolchain/c.ts.
+// Intrinsics recognized by src/toolchain/chibicc.
 int __syscall(int number, int arg1, int arg2, int arg3);
 int __out(int port, int value);
 int __in(int port);

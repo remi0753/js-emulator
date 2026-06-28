@@ -85,6 +85,7 @@ export type NodeKind =
   | 'exprstmt'
   | 'break'
   | 'continue'
+  | 'asm'
   | 'member'
   | 'cast'
   | 'compoundlit'
@@ -130,6 +131,8 @@ export interface Node {
   // Switch cases.
   cases?: { value: number; body: Node }[];
   defaultCase?: Node;
+  // Inline custom32 assembly.
+  asmSource?: string;
 }
 
 // An Obj is a named object: a global variable, a string literal, a local
@@ -196,7 +199,23 @@ function align(n: number, a: number): number {
 }
 
 // Target intrinsics handled directly by the backend (codegen `genBuiltin`).
-const INTRINSICS = new Set(['__syscall', '__out', '__in', '__halt']);
+const INTRINSICS = new Set([
+  '__syscall',
+  '__out',
+  '__in',
+  '__halt',
+  '__iret',
+  '__lidt',
+  '__lksp',
+  '__stmr',
+  '__lptbr',
+  '__pgon',
+  '__pgoff',
+  '__rdpfla',
+  '__rderr',
+  '__ei',
+  '__di',
+]);
 
 class Parser {
   private pos = 0;
@@ -1222,6 +1241,21 @@ class Parser {
     if (this.consume('continue')) {
       this.expect(';');
       return { kind: 'continue', line };
+    }
+
+    if (this.peek().kind === 'ident' && this.peek().text === 'asm') {
+      this.pos++;
+      this.expect('(');
+      let source = '';
+      do {
+        const t = this.peek();
+        if (t.kind !== 'str') this.error('expected string literal in asm');
+        source += String.fromCharCode(...t.str.slice(0, -1));
+        this.pos++;
+      } while (this.peek().kind === 'str');
+      this.expect(')');
+      this.expect(';');
+      return { kind: 'asm', line, asmSource: source };
     }
 
     if (this.equal('{')) {

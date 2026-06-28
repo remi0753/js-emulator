@@ -37,6 +37,35 @@ function read16(frame: Uint8Array, offset: number): number {
   return (frame[offset]! << 8) | frame[offset + 1]!;
 }
 
+// Poll the NIC until a frame matching the predicate is injected. The interval is
+// cleared on *both* the resolve and reject paths — leaving it running keeps the
+// event loop alive and makes the whole test process hang after a timeout.
+// `onTick` runs every poll so callers can retry lossy host I/O (e.g. UDP sends)
+// until the bridge has finished binding.
+function waitForFrame(
+  nic: NetworkCard,
+  predicate: (frame: Uint8Array) => boolean = () => true,
+  onTick: () => void = () => {},
+  timeoutMs = 2000,
+): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const finish = (fn: () => void) => {
+      clearTimeout(timer);
+      clearInterval(poll);
+      fn();
+    };
+    const timer = setTimeout(
+      () => finish(() => reject(new Error('no matching frame injected'))),
+      timeoutMs,
+    );
+    const poll = setInterval(() => {
+      const frame = guestReceive(nic);
+      if (frame && predicate(frame)) finish(() => resolve(frame));
+      else onTick();
+    }, 5);
+  });
+}
+
 function read32(frame: Uint8Array, offset: number): number {
   return (
     ((frame[offset]! << 24) |
@@ -137,17 +166,7 @@ test('bridge NATs guest UDP to the host loopback and injects the reply', async (
 
     // The reply should be injected back as a frame addressed to the guest,
     // appearing to come from the gateway address/port the guest used.
-    const reply = await new Promise<Uint8Array>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('no reply frame injected')), 2000);
-      const poll = setInterval(() => {
-        const frame = guestReceive(nic);
-        if (frame) {
-          clearTimeout(timer);
-          clearInterval(poll);
-          resolve(frame);
-        }
-      }, 5);
-    });
+    const reply = await waitForFrame(nic);
 
     assert.equal(read16(reply, 12), 0x0800); // IPv4
     assert.equal(reply[23], 17); // UDP
@@ -180,20 +199,15 @@ test('hostfwd delivers a host datagram into the guest and routes the reply back'
       client.on('message', (message) => resolve(message.toString()));
     });
     await new Promise<void>((resolve) => client.bind(0, '127.0.0.1', resolve));
-    client.send('knock', hostPort, '127.0.0.1');
 
-    // The guest receives the datagram as a frame from the gateway.
-    const inFrame = await new Promise<Uint8Array>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('no inbound frame')), 2000);
-      const poll = setInterval(() => {
-        const frame = guestReceive(nic);
-        if (frame && read16(frame, 12) === 0x0800) {
-          clearTimeout(timer);
-          clearInterval(poll);
-          resolve(frame);
-        }
-      }, 5);
-    });
+    // The guest receives the datagram as a frame from the gateway. Resend the
+    // datagram on every poll: it travels over a real host UDP socket and the
+    // first ones can race the bridge's asynchronous hostfwd bind (or be dropped).
+    const inFrame = await waitForFrame(
+      nic,
+      (frame) => read16(frame, 12) === 0x0800,
+      () => client.send('knock', hostPort, '127.0.0.1'),
+    );
     assert.equal(read32(inFrame, 26), GATEWAY_IP);
     assert.equal(read32(inFrame, 30), GUEST_IP);
     assert.equal(read16(inFrame, 36), 9100);

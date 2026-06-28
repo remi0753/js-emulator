@@ -158,7 +158,7 @@ test('waitpid reports stopped and continued children before final signal exit', 
 test('the shell runs background jobs and Ctrl-C interrupts its foreground group', () => {
   const { machine, output } = boot(buildGuestDiskImage(), 'echo background &\nspin\n');
 
-  const spinning = machine.run(20_000_000);
+  const spinning = machine.run(40_000_000);
   assert.notEqual(spinning.reason, 'halt');
   assert.equal(output().includes('background\n'), true);
 

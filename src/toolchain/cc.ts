@@ -1,24 +1,18 @@
-// custom32-cc driver core: compile C, assemble, and link into a guest
-// executable through the relocatable object format.
+// custom32-cc driver core: compile C with the chibicc-derived frontend,
+// assemble, and link relocatable objects into executable images.
 //
-// This is the object-file counterpart to `guest-kernel.ts`'s `buildUserExecutable`,
-// which links `CompiledObject`s directly with the source-level `linker.ts`. Here a
-// C translation unit is lowered to a relocatable `ObjectFile` (via the same
-// `as.ts` assembler the `.s` path uses) so C, hand-written assembly, objects, and
-// static archives all link through one pipeline (`object-linker.ts`) and the
-// guest loader header is emitted by `flattenGuestExecutable`.
-//
-// To avoid every C object carrying its own startup/runtime (which would collide
-// at link time on `_start`, `__csp`, `memcpy`, ...), translation units are
-// compiled with no startup and no runtime, and a single shared `crt0Object()`
-// provides `_start`, the software-stack symbols, `environ`, and the runtime
-// helpers. Each TU references those as undefined symbols, resolved at link.
+// C translation units carry no startup code and no runtime helpers. A single
+// shared crt0 object provides `_start`, the software-stack symbols, `environ`,
+// and the small memory/string helpers required by generated code.
 
 import type { Archive } from '../formats/archive.ts';
 import { encodeExecutable } from '../formats/executable.ts';
 import type { ObjectFile } from '../formats/object.ts';
 import { assembleObject } from './as.ts';
-import { type CompiledObject, compileC } from './c.ts';
+import {
+  compileObject as chibiccCompileObject,
+  type CompileOptions as ChibiccCompileOptions,
+} from './chibicc/index.ts';
 import { flattenGuestExecutable, linkObjects } from './object-linker.ts';
 
 // Generic relocatable text origin when no target layout is supplied. Guest
@@ -27,38 +21,22 @@ import { flattenGuestExecutable, linkObjects } from './object-linker.ts';
 // independence from any one OS generation.
 const DEFAULT_TEXT_ORIGIN = 0x1000;
 
-// Startup and runtime symbols the shared crt0 object owns. Translation units
-// reference these but never define them, so they resolve to the single crt0
-// copy at link time instead of producing duplicate-symbol errors.
-const CRT0_TEXT_EXPORTS = new Set(['_start', 'memcpy', 'memset', 'strlen', 'strcmp']);
-const CRT0_DATA_EXPORTS = new Set(['__csp', '__stack', 'environ']);
-
 export interface CompileObjectOptions {
   // Object module name (for diagnostics / dump output).
   name?: string;
-  // Namespaces compiler-generated local labels; defaults to the name. Several C
-  // objects must use distinct ids so their private labels do not collide.
+  // Retained for compatibility with the bootstrap compiler driver. chibicc
+  // generates translation-unit-local labels internally and does not need it.
   moduleId?: string | number;
+  // Resolves `#include` directives.
+  resolveInclude?: ChibiccCompileOptions['resolveInclude'];
 }
 
 // Compile one C translation unit into a relocatable object. The unit carries no
 // startup code and no runtime helpers; link it with `crt0Object()`.
 export function compileObject(source: string, options: CompileObjectOptions = {}): ObjectFile {
-  const name = options.name ?? 'a.o';
-  const co = compileC(source, {
-    start: 'none',
-    includeRuntime: false,
-    moduleId: options.moduleId ?? name,
-  });
-  return lowerToObject(co, {
-    name,
-    // Defined functions are exported so other units can call them.
-    textExports: new Set(co.sourceMap.keys()),
-    // Non-extern globals (those that actually have storage here) are exported;
-    // string literals and the shared stack symbols are not.
-    isExportedData: (sym) => co.globals.has(sym),
-    // The shared software stack / environ live in crt0; never duplicate them.
-    exclude: CRT0_DATA_EXPORTS,
+  return chibiccCompileObject(source, {
+    name: options.name ?? 'a.o',
+    resolveInclude: options.resolveInclude,
   });
 }
 
@@ -67,87 +45,185 @@ export function compileObject(source: string, options: CompileObjectOptions = {}
 // helpers. `_start` (start kind `user`) reads argc/argv/envp from the exec ABI,
 // publishes `environ`, calls `main`, and exits with its return value.
 export function crt0Object(): ObjectFile {
-  const co = compileC('', { start: 'user', includeRuntime: true, moduleId: 'crt0' });
-  return lowerToObject(co, {
-    name: 'crt0.o',
-    textExports: CRT0_TEXT_EXPORTS,
-    isExportedData: (sym) => CRT0_DATA_EXPORTS.has(sym),
-    exclude: new Set(),
-  });
+  return assembleObject(`${userStartAssembly()}\n${runtimeAssembly(4096)}`, 'crt0.o');
 }
 
-interface LowerOptions {
-  name: string;
-  // Defined text labels to export as global symbols.
-  textExports: Set<string>;
-  // Whether a defined data/bss symbol should be exported as a global symbol.
-  isExportedData: (sym: string) => boolean;
-  // Data/bss symbols to omit entirely (provided by another object).
-  exclude: Set<string>;
+// Startup for the privileged guest kernel. The VM supplies the hardware stack;
+// this initializes the C software stack, calls kmain, and halts if it returns.
+export function kernelCrt0Object(stackSize = 8192): ObjectFile {
+  return assembleObject(`${kernelStartAssembly()}\n${runtimeAssembly(stackSize)}`, 'kcrt0.o');
 }
 
-// Lower a `CompiledObject` (assembly text + data/bss symbol tables) into a
-// relocatable object by re-emitting it as assembler source and running the same
-// `as.ts` assembler the `.s` path uses. The assembler turns every bare-identifier
-// operand into an `abs32` relocation, so cross-object references resolve at link.
-function lowerToObject(co: CompiledObject, opts: LowerOptions): ObjectFile {
-  const lines: string[] = [];
-  for (const sym of opts.textExports) lines.push(`.global ${sym}`);
-
-  lines.push('.text');
-  if (co.text.trim() !== '') lines.push(co.text);
-
-  const data = co.data.filter((d) => !opts.exclude.has(d.name));
-  if (data.length > 0) {
-    lines.push('.data');
-    for (const sym of data) {
-      if (opts.isExportedData(sym.name)) lines.push(`.global ${sym.name}`);
-      lines.push(`${sym.name}:`);
-      emitDataBytes(lines, sym.bytes, sym.relocs ?? []);
-      if (sym.size > sym.bytes.length) lines.push(`  .space ${sym.size - sym.bytes.length}`);
-    }
-  }
-
-  const bss = co.bss.filter((b) => !opts.exclude.has(b.name));
-  if (bss.length > 0) {
-    lines.push('.bss');
-    for (const sym of bss) {
-      if (opts.isExportedData(sym.name)) lines.push(`.global ${sym.name}`);
-      lines.push(`${sym.name}:`);
-      lines.push(`  .space ${sym.size}`);
-    }
-  }
-
-  return assembleObject(lines.join('\n'), opts.name);
+function userStartAssembly(): string {
+  return `
+.global _start
+.text
+_start:
+  MOV R5, __stack
+  STORE R5, __csp
+  STORE R2, environ
+  LOAD R5, __csp
+  STORER R5, R1
+  MOV R7, 4
+  ADD R5, R7
+  STORE R5, __csp
+  LOAD R5, __csp
+  STORER R5, R0
+  MOV R7, 4
+  ADD R5, R7
+  STORE R5, __csp
+  CALL main
+  LOAD R5, __csp
+  MOV R7, 8
+  SUB R5, R7
+  STORE R5, __csp
+  MOVR R1, R0
+  MOV R0, 0
+  INT 128
+`;
 }
 
-// Emit a data symbol's initialized bytes as `.byte`/`.word` directives. A 4-byte
-// relocation (e.g. a pointer global pointing at a string literal or another
-// global) becomes `.word target` so the assembler records an `abs32` relocation;
-// every other run of bytes becomes `.byte` literals.
-function emitDataBytes(
-  lines: string[],
-  bytes: Uint8Array,
-  relocs: { offset: number; target: string }[],
-): void {
-  const sorted = [...relocs].sort((a, b) => a.offset - b.offset);
-  let i = 0;
-  let r = 0;
-  while (i < bytes.length) {
-    if (r < sorted.length && sorted[r]!.offset === i) {
-      lines.push(`  .word ${sorted[r]!.target}`);
-      i += 4;
-      r++;
-      continue;
-    }
-    const next = r < sorted.length ? sorted[r]!.offset : bytes.length;
-    const chunk: number[] = [];
-    while (i < next) chunk.push(bytes[i++]!);
-    // Wrap long runs so directive lines stay readable.
-    for (let k = 0; k < chunk.length; k += 16) {
-      lines.push(`  .byte ${chunk.slice(k, k + 16).join(',')}`);
-    }
-  }
+function kernelStartAssembly(): string {
+  return `
+.global _start
+.text
+_start:
+  MOV R5, __stack
+  STORE R5, __csp
+  CALL kmain
+  HLT
+`;
+}
+
+function runtimeAssembly(stackSize: number): string {
+  return `
+.global memcpy, memset, strlen, strcmp
+.global __csp, __stack, environ
+.text
+memcpy:
+  PUSH R6
+  LOAD R6, __csp
+  MOVR R1, R6
+  MOV R7, 4
+  SUB R1, R7
+  LOADR R2, R1
+  MOVR R1, R6
+  MOV R7, 8
+  SUB R1, R7
+  LOADR R3, R1
+  MOVR R1, R6
+  MOV R7, 12
+  SUB R1, R7
+  LOADR R4, R1
+  MOVR R0, R2
+memcpy_loop:
+  MOV R7, 0
+  CMP R4, R7
+  JZ memcpy_done
+  LB R5, R3
+  SB R2, R5
+  INC R2
+  INC R3
+  DEC R4
+  JMP memcpy_loop
+memcpy_done:
+  STORE R6, __csp
+  POP R6
+  RET
+
+memset:
+  PUSH R6
+  LOAD R6, __csp
+  MOVR R1, R6
+  MOV R7, 4
+  SUB R1, R7
+  LOADR R2, R1
+  MOVR R1, R6
+  MOV R7, 8
+  SUB R1, R7
+  LOADR R3, R1
+  MOVR R1, R6
+  MOV R7, 12
+  SUB R1, R7
+  LOADR R4, R1
+  MOVR R0, R2
+memset_loop:
+  MOV R7, 0
+  CMP R4, R7
+  JZ memset_done
+  SB R2, R3
+  INC R2
+  DEC R4
+  JMP memset_loop
+memset_done:
+  STORE R6, __csp
+  POP R6
+  RET
+
+strlen:
+  PUSH R6
+  LOAD R6, __csp
+  MOVR R1, R6
+  MOV R7, 4
+  SUB R1, R7
+  LOADR R2, R1
+  MOV R0, 0
+strlen_loop:
+  LB R3, R2
+  MOV R7, 0
+  CMP R3, R7
+  JZ strlen_done
+  INC R0
+  INC R2
+  JMP strlen_loop
+strlen_done:
+  STORE R6, __csp
+  POP R6
+  RET
+
+strcmp:
+  PUSH R6
+  LOAD R6, __csp
+  MOVR R1, R6
+  MOV R7, 4
+  SUB R1, R7
+  LOADR R2, R1
+  MOVR R1, R6
+  MOV R7, 8
+  SUB R1, R7
+  LOADR R3, R1
+strcmp_loop:
+  LB R4, R2
+  LB R5, R3
+  CMP R4, R5
+  JNZ strcmp_diff
+  MOV R7, 0
+  CMP R4, R7
+  JZ strcmp_eq
+  INC R2
+  INC R3
+  JMP strcmp_loop
+strcmp_diff:
+  MOVR R0, R4
+  SUB R0, R5
+  JMP strcmp_done
+strcmp_eq:
+  MOV R0, 0
+strcmp_done:
+  STORE R6, __csp
+  POP R6
+  RET
+
+.data
+__csp:
+  .word 0
+environ:
+  .word 0
+
+.bss
+__stack:
+  .space ${stackSize}
+`;
 }
 
 export type LinkFormat = 'guest' | 'raw';
@@ -156,6 +232,7 @@ export interface LinkOptions {
   entry?: string;
   textOrigin?: number;
   format?: LinkFormat;
+  gcSections?: boolean;
   // Loadable-header magic for the `guest` format (required when format is
   // `guest`); ignored for `raw`. Supplied by the OS-aware caller so this module
   // stays independent of any one OS generation's constants.
@@ -175,6 +252,7 @@ export function linkExecutableImage(
   const linked = linkObjects(objects, archives, {
     entry: options.entry ?? '_start',
     textOrigin,
+    gcSections: options.gcSections ?? true,
   });
   if (format === 'raw') return encodeExecutable(linked.executable);
   if (options.magic === undefined) {

@@ -949,12 +949,11 @@ chibicc tokenizer / preprocessor / parser / type checker
   `break`/`continue`/`return`/blocks, function definitions, prototypes, and direct
   calls, plus the `__syscall` intrinsic for libc-free programs. Pointer-arithmetic
   scaling and `a[i]` desugaring happen in the parser (chibicc's `new_add`/
-  `new_sub`), so the backend never reasons about element sizes. `codegen.ts` emits
-  the same software-stack ABI as the bootstrap compiler, so chibicc objects
-  assemble through `as.ts` and link against the existing, tested `crt0Object()`
-  startup/runtime and bootstrap libc through the Phase 29 object pipeline. The
-  host driver gains a `custom32-cc --frontend chibicc` switch that swaps just the
-  `.c` compilation while reusing the whole assemble/link/install flow; the
+  `new_sub`), so the backend never reasons about element sizes. `codegen.ts`
+  emits the custom32 software-stack ABI, so chibicc objects assemble through
+  `as.ts` and link against the shared `crt0Object()` startup/runtime through the
+  Phase 29 object pipeline. The host driver now uses chibicc as the maintained
+  `.c` compiler while reusing the whole assemble/link/install flow; the
   hardware-`SP` ABI migration in `docs/custom32-c-abi.md` remains future work.
 
   Done: `test/chibicc-phase31.test.ts` compiles `int main(void) { return 42; }`

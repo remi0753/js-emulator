@@ -89,7 +89,7 @@ int compute(void) {
 int main(int argc, char **argv) {
   puts2("compute=");
   putnum(compute());
-  puts2("\n");
+  puts2("\\n");
   int pid = sys_fork();
   if (pid == 0) {
     child_argv[0] = "/bin/abichild";
@@ -104,7 +104,7 @@ int main(int argc, char **argv) {
   int code = (status >> 8) & 255;
   puts2("child exited ");
   putnum(code);
-  puts2("\n");
+  puts2("\\n");
   return 0;
 }
 `;
@@ -120,7 +120,7 @@ int main(int argc, char **argv) {
   puts2(" env=");
   if (environ != 0) { if (environ[0] != 0) { puts2(environ[0]); } else { puts2("(none)"); } }
   else { puts2("(none)"); }
-  puts2("\n");
+  puts2("\\n");
   sys_exit(7);
   return 7;
 }
