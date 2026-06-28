@@ -85,28 +85,38 @@ test('a caught signal interrupts a blocking syscall with EINTR', () => {
       }
       int main(int argc, char **argv) {
         int fds[2];
-        int ready[2];
         int pid;
         int status;
+        int fd;
+        int n;
         char byte;
+        char path[32];
+        char buf[256];
+        char *state;
         pipe(fds);
-        pipe(ready);
         pid = fork();
         if (pid == 0) {
           close(fds[1]);
-          close(ready[0]);
           signal(10, on_signal);
-          write(ready[1], "r", 1);
-          close(ready[1]);
           if (read(fds[0], &byte, 1) != -1) exit(1);
           if (errno != 4 || caught != 10) exit(2);
           write(1, "EINTR-ok\\n", 9);
           exit(0);
         }
         close(fds[0]);
-        close(ready[1]);
-        read(ready[0], &byte, 1);
-        close(ready[0]);
+        // Wait until the child is actually blocked in read() (State 'S' in
+        // /proc) before signalling, so the signal deterministically interrupts
+        // the syscall instead of racing the scheduler over handler delivery.
+        snprintf(path, 32, "/proc/%d/status", pid);
+        while (1) {
+          fd = open(path, 0);
+          n = read(fd, buf, 255);
+          close(fd);
+          if (n < 0) n = 0;
+          buf[n] = 0;
+          state = strstr(buf, "State:");
+          if (state != 0 && state[7] == 'S') break;
+        }
         kill(pid, 10);
         waitpid(pid, &status, 0);
         close(fds[1]);
@@ -117,7 +127,8 @@ test('a caught signal interrupts a blocking syscall with EINTR', () => {
   const { machine, output } = boot(disk, 'eintr\n');
   machine.keyboard.close();
 
-  assert.equal(machine.run(40_000_000).reason, 'halt');
+  // Budget includes the 64 MiB identity-map build during boot.
+  assert.equal(machine.run(55_000_000).reason, 'halt');
   assert.equal(output().includes('EINTR-ok\n'), true, output());
 });
 

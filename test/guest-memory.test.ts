@@ -74,8 +74,8 @@ test('copyin/copyout translate through the requested process address space', () 
           memset(pt0, 0, 4096);
           memset(pd1, 0, 4096);
           memset(pt1, 0, 4096);
-          pd0[1] = pt0 | CFG_PTE_USER;
-          pd1[1] = pt1 | CFG_PTE_USER;
+          pd0[CFG_USER_BASE >> 22] = pt0 | CFG_PTE_USER;
+          pd1[CFG_USER_BASE >> 22] = pt1 | CFG_PTE_USER;
           pt0[0] = frame0 | CFG_PTE_USER;
           pt1[0] = frame1 | CFG_PTE_USER;
           frame0[0] = 'A';

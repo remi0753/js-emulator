@@ -27,7 +27,9 @@ test('the maintained disk image contains the guest kernel and boots without host
   });
   machine.keyboard.feed('echo disk-kernel-ok\nshutdown\n');
 
-  assert.equal(machine.run(30_000_000).reason, 'halt');
+  // Budget covers the larger boot: the kernel builds a 64 MiB identity map
+  // (16 page tables) before reaching userspace.
+  assert.equal(machine.run(45_000_000).reason, 'halt');
   assert.equal(output.includes('disk-kernel-ok\n'), true, output);
   assert.equal(machine.power.poweredOff, true);
 });

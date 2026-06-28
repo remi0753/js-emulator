@@ -9,7 +9,10 @@ int free_list;
 // initial free list, which matters once the pool is large.
 int frame_next;
 int kernel_pt;
-int frame_refs[CFG_PHYS_FRAMES];
+// Per-frame refcounts live at a fixed low-RAM address (CFG_FRAME_REFS) rather
+// than in the kernel BSS: at CFG_PHYS_FRAMES entries the array is far too large
+// (64 KiB for a 64 MiB pool) to fit in the ~1 KiB of BSS headroom below the IDT.
+int *frame_refs;
 struct page_cache_entry page_cache[CFG_PAGE_CACHE_SIZE];
 
 void zero_page(int addr) {
@@ -228,17 +231,14 @@ int free_frame_count(void) {
 
 void pmm_init(void) {
   int i;
-  // The loader does not zero BSS, so frame_refs[]/page_cache[] must be cleared
-  // explicitly. Unlike the old allocator we do NOT thread an initial free list
-  // through every pool frame: the pool starts fully un-bumped and alloc_frame()
-  // carves frames off the front on demand, keeping boot cheap as the pool grows.
+  // The pool starts fully un-bumped: alloc_frame() carves frames off the front
+  // on demand, so boot stays cheap as the pool grows (no initial free-list walk).
   free_list = 0;
   frame_next = CFG_FRAME_POOL_BASE;
-  i = 0;
-  while (i < CFG_PHYS_FRAMES) {
-    frame_refs[i] = 0;
-    i = i + 1;
-  }
+  frame_refs = CFG_FRAME_REFS;
+  // frame_refs[] needs no clearing: alloc_frame() sets a slot to 1 before any
+  // retain/free/read touches it, so the uninitialized value is never observed.
+  // (Zeroing 16K entries every boot is pure cost once the pool is large.)
   i = 0;
   while (i < CFG_PAGE_CACHE_SIZE) {
     page_cache[i].used = 0;
@@ -248,13 +248,21 @@ void pmm_init(void) {
 
 // --- virtual memory ---
 
+// Build the kernel identity map: CFG_KERNEL_IDENTITY_PTS contiguous page tables
+// covering low RAM 1:1 (page table k at CFG_KERNEL_PT + k*4096). These are shared
+// into every process address space by new_address_space().
 void build_kernel_pt(void) {
   int *pt;
   int i;
+  int entries;
+  int addr;
   pt = CFG_KERNEL_PT;
+  entries = CFG_KERNEL_IDENTITY_PTS * 1024;
+  addr = 0;
   i = 0;
-  while (i < 1024) {
-    pt[i] = (i * 4096) | CFG_PTE_KERNEL;
+  while (i < entries) {
+    pt[i] = addr | CFG_PTE_KERNEL;
+    addr = addr + 4096;
     i = i + 1;
   }
   kernel_pt = CFG_KERNEL_PT;
@@ -263,10 +271,16 @@ void build_kernel_pt(void) {
 int new_address_space(void) {
   int pd;
   int *p;
+  int i;
   pd = alloc_frame();
   zero_page(pd);
   p = pd;
-  p[0] = kernel_pt | CFG_PTE_KERNEL; // share the kernel identity map
+  // Share the kernel identity map: one page-directory entry per identity PT.
+  i = 0;
+  while (i < CFG_KERNEL_IDENTITY_PTS) {
+    p[i] = (kernel_pt + i * 4096) | CFG_PTE_KERNEL;
+    i = i + 1;
+  }
   return pd;
 }
 
@@ -1105,7 +1119,7 @@ void copy_space(int src, int dst) {
   int v;
   int flags;
   sp = src;
-  di = 1;
+  di = CFG_KERNEL_IDENTITY_PTS; // skip the shared kernel identity PDEs
   while (di < 1024) {
     spde = sp[di];
     if ((spde & 1) != 0) {
@@ -1139,7 +1153,7 @@ void free_space(int pd) {
   int ti;
   int pte;
   pdp = pd;
-  di = 1;
+  di = CFG_KERNEL_IDENTITY_PTS; // shared kernel identity PDEs are never freed
   while (di < 1024) {
     pde = pdp[di];
     if ((pde & 1) != 0) {

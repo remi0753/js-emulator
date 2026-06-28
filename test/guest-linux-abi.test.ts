@@ -213,7 +213,7 @@ test('munmap leaves non-VMA image pages intact and user page faults become SIGSE
           int pid;
           int status;
           char *mapping;
-          if (munmap(0x400000, 4096) < 0) return 1;
+          if (munmap(0x4000000, 4096) < 0) return 1;
           mapping = mmap(0, 4096, 0, 0x22, -1, 0);
           if (mapping == -1) return 2;
           pid = fork();

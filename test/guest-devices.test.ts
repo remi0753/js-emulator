@@ -121,7 +121,8 @@ test('bad user inputs return errors without panicking the kernel', () => {
   machine.load(0, image.flat);
   machine.reset({ pc: image.entry, sp: GUEST_KERNEL_LAYOUT.kstackTop });
 
-  const r = machine.run(40_000_000);
+  // Budget includes the 64 MiB identity-map build during boot.
+  const r = machine.run(55_000_000);
 
   assert.equal(r.reason, 'halt');
   assert.equal(out.includes('PANIC'), false);

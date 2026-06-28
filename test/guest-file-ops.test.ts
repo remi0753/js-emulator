@@ -97,7 +97,8 @@ test('structured file objects dispatch vnode, pipe, terminal, and console operat
   machine.load(0, image.flat);
   machine.reset({ pc: image.entry, sp: GUEST_KERNEL_LAYOUT.kstackTop });
 
-  assert.equal(machine.run(30_000_000).reason, 'halt');
+  // Budget includes the 64 MiB identity-map build during boot.
+  assert.equal(machine.run(45_000_000).reason, 'halt');
   assert.equal(output.includes('vnode-data\n'), true);
   assert.equal(output.endsWith('kernel: all processes exited\n'), true);
 });

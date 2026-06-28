@@ -145,19 +145,35 @@ const SIGNAL = {
 
 export const GUEST_EXECUTABLE_MAGIC = 0x35315850;
 
+// Physical/virtual memory map. Low RAM (0 .. userBase) is identity-mapped by the
+// kernel and shared into every process page directory; the frame pool lives
+// inside it, so any frame the kernel dereferences (page tables, page cache,
+// copyin/out) is always addressable. The user virtual window sits ABOVE the
+// identity region so user PDEs never collide with the shared kernel PDEs.
+//
+//   0x00000000 .. 0x000d0000  kernel image + bss
+//   0x000d0000 .. 0x000d1000  IDT (1 page)
+//   0x000d1000 .. 0x000e1000  kernel page tables (kernelIdentityPts pages)
+//   0x000e1000 .. 0x000f1000  frame_refs[] (CFG_PHYS_FRAMES ints, fixed addr)
+//   0x000f1000 .. 0x00100000  kernel stack (grows down from kstackTop)
+//   0x00100000 .. 0x04000000  physical frame pool (~63 MiB)
+//   0x04000000 .. 0x08000000  user virtual window (64–128 MiB)
 export const GUEST_KERNEL_LAYOUT = {
   idt: 0xd0000,
   kernelPageTable: 0xd1000,
+  // One page table per 4 MiB of identity-mapped low RAM (= userBase / 4 MiB).
+  kernelIdentityPts: 0x4000000 / 0x400000,
+  frameRefs: 0xe1000,
   kstackTop: 0x100000,
   framePoolBase: 0x100000,
-  framePoolEnd: 0x380000,
+  framePoolEnd: 0x4000000,
   timerPeriod: 8000,
-  physSize: 0x400000,
-  userLoadBase: 0x400000,
-  userStackPage: 0x7ff000,
-  userStackTop: 0x800000,
-  userBase: 0x400000,
-  userEnd: 0x800000,
+  physSize: 0x4000000,
+  userLoadBase: 0x4000000,
+  userStackPage: 0x7fff000,
+  userStackTop: 0x8000000,
+  userBase: 0x4000000,
+  userEnd: 0x8000000,
 } as const;
 
 // Size of the syscall dispatch table: one slot per number, 0 to the max.
@@ -283,7 +299,9 @@ export const GUEST_KERNEL_DEFINES: Defines = {
   CFG_FRAME_POOL_BASE: GUEST_KERNEL_LAYOUT.framePoolBase,
   CFG_FRAME_POOL_END: GUEST_KERNEL_LAYOUT.framePoolEnd,
   CFG_PHYS_FRAMES: GUEST_KERNEL_LAYOUT.physSize / 4096,
+  CFG_FRAME_REFS: GUEST_KERNEL_LAYOUT.frameRefs,
   CFG_KERNEL_PT: GUEST_KERNEL_LAYOUT.kernelPageTable,
+  CFG_KERNEL_IDENTITY_PTS: GUEST_KERNEL_LAYOUT.kernelIdentityPts,
   CFG_USER_LOAD_BASE: GUEST_KERNEL_LAYOUT.userLoadBase,
   CFG_USER_STACK_PAGE: GUEST_KERNEL_LAYOUT.userStackPage,
   CFG_USER_GUARD_PAGE: GUEST_KERNEL_LAYOUT.userStackPage - 4096,
