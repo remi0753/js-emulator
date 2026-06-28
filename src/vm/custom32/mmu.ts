@@ -33,6 +33,9 @@ export function pageBase(vaddr: number): number {
 export interface TranslateOk {
   ok: true;
   paddr: number;
+  frame: number; // page base physical address (paddr with the offset masked off)
+  writable: boolean; // PTE.W: is the page writable?
+  user: boolean; // effective user-accessibility (PDE.U && PTE.U)
 }
 export interface TranslateFault {
   ok: false;
@@ -65,7 +68,13 @@ export class Mmu {
     if (opts.user && (pte & PTE.U) === 0) return fault('protection', true);
     if (opts.write && (pte & PTE.W) === 0) return fault('protection', true);
 
-    return { ok: true, paddr: (pte & ADDR_MASK) | pageOffset(vaddr) };
+    return {
+      ok: true,
+      paddr: (pte & ADDR_MASK) | pageOffset(vaddr),
+      frame: pte & ADDR_MASK,
+      writable: (pte & PTE.W) !== 0,
+      user: (pde & PTE.U) !== 0 && (pte & PTE.U) !== 0,
+    };
   }
 
   // Map the page containing vaddr to a physical frame (used by the kernel when

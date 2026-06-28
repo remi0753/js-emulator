@@ -38,6 +38,10 @@ const ARG_NONE = 0;
 const ARG_REG = 1;
 const ARG_WORD = 2;
 
+// Software TLB: direct-mapped, indexed by the low bits of the virtual page number.
+const TLB_ENTRIES = 1 << 12;
+const TLB_MASK = TLB_ENTRIES - 1;
+
 interface DecodedOpcode {
   mnemonic: Mnemonic;
   arg0: typeof ARG_NONE | typeof ARG_REG | typeof ARG_WORD;
@@ -137,6 +141,15 @@ export class CPU {
   private pendingIrqMask = 0;
   private pendingIrqOrder: number[] = [];
 
+  // Software TLB caching virtual-page -> physical-frame translations, refilled by
+  // xlateN on a miss. Flushed on any address-space change (ptbr load, paging
+  // toggle, reset) and on page-fault delivery, since the handler may edit PTEs in
+  // place (e.g. copy-on-write). Misses (faults) are never cached.
+  private readonly tlbTag = new Int32Array(TLB_ENTRIES).fill(-1);
+  private readonly tlbFrame = new Int32Array(TLB_ENTRIES);
+  private readonly tlbWrite = new Uint8Array(TLB_ENTRIES);
+  private readonly tlbUser = new Uint8Array(TLB_ENTRIES);
+
   // Optional deterministic trace hooks (off by default; the Tracer wires them).
   // onTrace fires once per executed instruction; onTrap fires for every reason
   // run() returns to the host (syscall, fault, page fault, IRQ, halt, timer).
@@ -159,6 +172,7 @@ export class CPU {
     this.mode = s.mode;
     this.ptbr = s.ptbr;
     this.pagingEnabled = s.pagingEnabled;
+    this.flushTlb(); // the address space may have changed
   }
 
   saveState(s: CpuState): void {
@@ -198,6 +212,7 @@ export class CPU {
     this.timerInterval = 0;
     this.timerCount = 0;
     this.poweredOff = false;
+    this.flushTlb();
   }
 
   // --- memory access with address translation ---
@@ -213,13 +228,31 @@ export class CPU {
       }
       return vaddr;
     }
+    const vpn = vaddr >>> 12;
+    const idx = vpn & TLB_MASK;
     const user = this.mode === MODE.USER;
+    if (this.tlbTag[idx] === vpn) {
+      // Hit: serve directly if this access is permitted. A permission mismatch
+      // (e.g. a write to a cached read-only page) falls through to a full walk so
+      // the proper protection fault is raised.
+      if ((!user || this.tlbUser[idx] !== 0) && (!write || this.tlbWrite[idx] !== 0)) {
+        return this.tlbFrame[idx]! + (vaddr & 0xfff);
+      }
+    }
     const r = this.mmu.translate(this.ptbr, vaddr, { write, user });
     if (!r.ok) {
       this.pfla = vaddr;
       throw new PageFault(vaddr, write, user, r.present);
     }
+    this.tlbTag[idx] = vpn;
+    this.tlbFrame[idx] = r.frame;
+    this.tlbWrite[idx] = r.writable ? 1 : 0;
+    this.tlbUser[idx] = r.user ? 1 : 0;
     return r.paddr;
+  }
+
+  private flushTlb(): void {
+    this.tlbTag.fill(-1);
   }
 
   private rd8(v: number): number {
@@ -410,6 +443,7 @@ export class CPU {
           this.pc = pc0; // restart the faulting instruction after the handler fixes it
           this.sp = sp0;
           this.pfla = e.vaddr;
+          this.flushTlb(); // the handler may remap pages in place (e.g. copy-on-write)
           const deliver = this.deliver(TRAP.PAGEFAULT, pc0, pfErrorCode(e));
           if (deliver === 'double') return this.trap(this.doubleFault());
           if (deliver === 'guest') continue;
@@ -758,12 +792,15 @@ export class CPU {
       }
       case 'LPTBR':
         this.ptbr = r[op0]! >>> 0;
+        this.flushTlb();
         break;
       case 'PGON':
         this.pagingEnabled = true;
+        this.flushTlb();
         break;
       case 'PGOFF':
         this.pagingEnabled = false;
+        this.flushTlb();
         break;
       case 'HLT':
         return { reason: 'halt' };
