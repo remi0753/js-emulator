@@ -25,7 +25,7 @@ import {
   TIMER_IRQ,
   TRAP,
 } from '../../isa.ts';
-import { type PhysicalMemory, WORD } from './memory.ts';
+import { PAGE_SIZE, type PhysicalMemory, WORD } from './memory.ts';
 import { Mmu } from './mmu.ts';
 import type { PortBus } from './ports.ts';
 
@@ -150,6 +150,12 @@ export class CPU {
   private readonly tlbWrite = new Uint8Array(TLB_ENTRIES);
   private readonly tlbUser = new Uint8Array(TLB_ENTRIES);
 
+  // Code-page cache for instruction fetch: the virtual page (or -1) and physical
+  // base of the page currently executing, so fetch8/fetch32 skip translation
+  // while PC stays in the page. Invalidated with the TLB and on mode changes.
+  private fetchVpn = -1;
+  private fetchBase = 0;
+
   // Optional deterministic trace hooks (off by default; the Tracer wires them).
   // onTrace fires once per executed instruction; onTrap fires for every reason
   // run() returns to the host (syscall, fault, page fault, IRQ, halt, timer).
@@ -253,6 +259,7 @@ export class CPU {
 
   private flushTlb(): void {
     this.tlbTag.fill(-1);
+    this.fetchVpn = -1;
   }
 
   private rd8(v: number): number {
@@ -333,12 +340,41 @@ export class CPU {
   // --- fetch (advances PC) ---
 
   private fetch8(): number {
-    return this.rd8(this.pc++);
+    const pc = this.pc;
+    if (pc >>> 12 === this.fetchVpn) {
+      this.pc = pc + 1;
+      return this.phys.bytes[this.fetchBase + (pc & 0xfff)]!;
+    }
+    return this.fetchByteSlow(pc);
   }
   private fetch32(): number {
-    const v = this.rd32(this.pc);
-    this.pc += WORD;
+    const pc = this.pc;
+    const off = pc & 0xfff;
+    if (off <= 0xffc && pc >>> 12 === this.fetchVpn) {
+      const b = this.phys.bytes;
+      const p = this.fetchBase + off;
+      this.pc = pc + WORD;
+      return (b[p]! | (b[p + 1]! << 8) | (b[p + 2]! << 16) | (b[p + 3]! << 24)) >>> 0;
+    }
+    const v = this.rd32(pc); // cross-page or cold operand: go through the TLB path
+    this.pc = pc + WORD;
     return v;
+  }
+  // fetch8 miss: refill the code-page cache when paging maps a whole in-range
+  // frame, else fall back to the checked byte read (boot/non-paging, edge frames).
+  private fetchByteSlow(pc: number): number {
+    if (this.pagingEnabled) {
+      const p = this.xlateN(pc, 1, false);
+      const base = p - (pc & 0xfff);
+      if (base >= 0 && base + PAGE_SIZE <= this.phys.size) {
+        this.fetchVpn = pc >>> 12;
+        this.fetchBase = base;
+        this.pc = pc + 1;
+        return this.phys.bytes[p]!;
+      }
+    }
+    this.pc = pc + 1;
+    return this.rd8(pc);
   }
 
   // --- flags / stack ---
@@ -537,6 +573,7 @@ export class CPU {
     }
     this.flags &= ~FLAG.IF; // mask interrupts on handler entry
     this.pc = handler;
+    this.fetchVpn = -1; // mode changed to KERNEL: re-validate the code page
     return 'guest';
   }
 
@@ -769,6 +806,7 @@ export class CPU {
         this.flags = flags;
         this.mode = mode === MODE.USER ? MODE.USER : MODE.KERNEL;
         this.sp = sp; // restore the (user or nested-kernel) stack pointer
+        this.fetchVpn = -1; // mode may have changed: re-validate the code page
         break;
       }
       case 'LIDT':
