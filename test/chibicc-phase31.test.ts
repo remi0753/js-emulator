@@ -118,6 +118,20 @@ test('chibicc compiles the canonical return-42 program', () => {
   assert.match(asm, /RET/);
 });
 
+test('chibicc decodes control-character escapes to their ASCII values', () => {
+  // Regression: \v, \f, \a, \b were passed through as the literal letter, so
+  // '\v' became 'v' (118) instead of 11. That corrupted the guest libc, whose
+  // isspace() compares against '\v'/'\f', making the C tokenizer treat 'v'/'f'
+  // as whitespace and skip the leading letter of e.g. `void *p;`.
+  assert.match(compile("int main(void) { return '\\a'; }"), /MOV R0, 7\b/);
+  assert.match(compile("int main(void) { return '\\b'; }"), /MOV R0, 8\b/);
+  assert.match(compile("int main(void) { return '\\v'; }"), /MOV R0, 11\b/);
+  assert.match(compile("int main(void) { return '\\f'; }"), /MOV R0, 12\b/);
+  // Existing escapes keep their values.
+  assert.match(compile("int main(void) { return '\\n'; }"), /MOV R0, 10\b/);
+  assert.match(compile("int main(void) { return '\\t'; }"), /MOV R0, 9\b/);
+});
+
 test('chibicc lowers a unit into an object with the right symbols', () => {
   const obj = compileObject('int g = 5;\nint add(int a, int b) { return a + b; }', {
     name: 'unit.o',

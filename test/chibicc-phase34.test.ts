@@ -185,6 +185,23 @@ test('chibicc Phase 34 runs guest cc and emits assembly inside the OS', () => {
   assert.match(out, / {2}ADD R0, R[17]\n/, `missing generated addition in:\n${out}`);
 });
 
+test('chibicc Phase 34 guest cc tokenizes void* declarations', () => {
+  // Regression: a miscompiled guest libc isspace() (caused by '\v'/'\f' escapes
+  // decoding to the letters 'v'/'f') made the C tokenizer treat 'v' as
+  // whitespace and skip it, so `void *p;` parsed as `oid *p;` and failed.
+  const disk = buildGuestDiskImage({ fsBlocks: GUEST_DEVELOPMENT_FS_BLOCKS });
+  const fs = installFs(disk);
+  installChibiccToolchain(fs);
+  fs.writeFile(
+    '/voidptr.c',
+    new TextEncoder().encode('int main(void) {\n  void *p;\n  p = 0;\n  return 0;\n}\n'),
+  );
+
+  const out = bootAndRun(disk, 'cc -S -o /tmp/v.s /voidptr.c\ncat /tmp/v.s', 300_000_000);
+  assert.ok(out.includes('main:\n'), `void* declaration failed to compile:\n${out}`);
+  assert.ok(!/expected|error/i.test(out), `unexpected diagnostic in:\n${out}`);
+});
+
 test('chibicc Phase 34 runs guest cc, links an executable, and runs it', () => {
   const disk = buildGuestDiskImage({ fsBlocks: GUEST_DEVELOPMENT_FS_BLOCKS });
   const fs = installFs(disk);

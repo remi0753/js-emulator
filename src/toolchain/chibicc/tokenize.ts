@@ -154,9 +154,14 @@ function readEscape(src: string, i: number, line: number): { value: number; next
   const c = src[i + 1];
   if (c === undefined) throw new TokenizeError('unterminated escape sequence', line);
   const simple: Record<string, number> = {
-    n: 10,
+    a: 7,
+    b: 8,
     t: 9,
+    n: 10,
+    v: 11,
+    f: 12,
     r: 13,
+    e: 27, // [GNU] ASCII escape character
     '0': 0,
     '\\': 92,
     "'": 39,

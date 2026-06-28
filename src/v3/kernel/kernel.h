@@ -323,6 +323,7 @@ int tty_setwinsize(int caller, int source);
 
 // --- memory.c ---
 extern int free_list;
+extern int frame_next;
 extern int kernel_pt;
 void zero_page(int addr);
 void copy_page(int src, int dst);
@@ -344,6 +345,7 @@ int copyinstr(int proc, int kdst, int usrc, int max);
 void free_frame(int frame);
 void retain_frame(int frame);
 int alloc_frame(void);
+int frame_available(void);
 int free_frame_count(void);
 void pmm_init(void);
 void build_kernel_pt(void);

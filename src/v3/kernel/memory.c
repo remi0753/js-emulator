@@ -3,6 +3,11 @@
 #include "kernel.h"
 
 int free_list;
+// Bump pointer into the never-yet-allocated tail of the frame pool. Frames are
+// handed out by bumping this up; only frames that have been freed land on
+// `free_list`. This keeps boot O(1): we never walk the whole pool to thread an
+// initial free list, which matters once the pool is large.
+int frame_next;
 int kernel_pt;
 int frame_refs[CFG_PHYS_FRAMES];
 struct page_cache_entry page_cache[CFG_PAGE_CACHE_SIZE];
@@ -171,12 +176,16 @@ void free_frame_raw(int frame) {
 int alloc_frame(void) {
   int frame;
   int *p;
-  if (free_list == 0) {
+  if (free_list != 0) {
+    frame = free_list;
+    p = frame;
+    free_list = p[0];
+  } else if (frame_next < CFG_FRAME_POOL_END) {
+    frame = frame_next;
+    frame_next = frame_next + 4096;
+  } else {
     panic("out of physical frames");
   }
-  frame = free_list;
-  p = frame;
-  free_list = p[0];
   frame_refs[frame / 4096] = 1;
   return frame;
 }
@@ -194,11 +203,20 @@ void free_frame(int frame) {
   }
 }
 
+// Cheap "can alloc_frame() succeed?" predicate. A frame is available if the
+// free list is non-empty or the bump pointer has not reached the pool end.
+// Callers used to test `free_list == 0` directly, which is wrong now that the
+// pool is handed out lazily by bumping rather than pre-threaded onto free_list.
+int frame_available(void) {
+  return free_list != 0 || frame_next < CFG_FRAME_POOL_END;
+}
+
 int free_frame_count(void) {
   int n;
   int frame;
   int *p;
-  n = 0;
+  // Available = the un-bumped tail plus everything returned to the free list.
+  n = (CFG_FRAME_POOL_END - frame_next) / 4096;
   frame = free_list;
   while (frame != 0) {
     n = n + 1;
@@ -209,9 +227,13 @@ int free_frame_count(void) {
 }
 
 void pmm_init(void) {
-  int f;
   int i;
+  // The loader does not zero BSS, so frame_refs[]/page_cache[] must be cleared
+  // explicitly. Unlike the old allocator we do NOT thread an initial free list
+  // through every pool frame: the pool starts fully un-bumped and alloc_frame()
+  // carves frames off the front on demand, keeping boot cheap as the pool grows.
   free_list = 0;
+  frame_next = CFG_FRAME_POOL_BASE;
   i = 0;
   while (i < CFG_PHYS_FRAMES) {
     frame_refs[i] = 0;
@@ -221,11 +243,6 @@ void pmm_init(void) {
   while (i < CFG_PAGE_CACHE_SIZE) {
     page_cache[i].used = 0;
     i = i + 1;
-  }
-  f = CFG_FRAME_POOL_END - 4096;
-  while (f >= CFG_FRAME_POOL_BASE) {
-    free_frame_raw(f);
-    f = f - 4096;
   }
 }
 
@@ -579,7 +596,7 @@ int page_cache_get(int file, int offset) {
   slot = page_cache_find(file, offset);
   if (slot >= 0) return slot;
   slot = page_cache_alloc_slot();
-  if (slot < 0 || free_list == 0) return -1;
+  if (slot < 0 || frame_available() == 0) return -1;
   frame = alloc_frame();
   zero_page(frame);
   size = file_mmap_size_object(file);
@@ -1007,7 +1024,7 @@ int vm_handle_page_fault(int proc, int address, int error) {
       return -1;
     }
     if ((pte & CFG_PTE_COW) != 0) {
-      if (free_list == 0) return -1;
+      if (frame_available() == 0) return -1;
       old_frame = pte & 0xfffff000;
       frame = alloc_frame();
       copy_page(old_frame, frame);
@@ -1052,7 +1069,7 @@ int vm_handle_page_fault(int proc, int address, int error) {
     return -1;
   }
   if ((flags & CFG_MAP_ANONYMOUS) != 0) {
-    if (free_list == 0) return -1;
+    if (frame_available() == 0) return -1;
     frame = alloc_frame();
     zero_page(frame);
     if ((prot & CFG_PROT_WRITE) != 0) {

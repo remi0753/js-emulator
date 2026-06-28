@@ -257,7 +257,7 @@ int spawn(int idx, int path) {
   int pd;
   int entry;
   int result;
-  if (free_list == 0) {
+  if (frame_available() == 0) {
     return -CFG_ENOMEM;
   }
   pd = new_address_space();
