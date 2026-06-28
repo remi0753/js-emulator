@@ -583,32 +583,67 @@ export class CPU {
 
   private step(): RunResult | undefined {
     const ip = this.pc; // instruction address (for the trace), before fetch advances pc
-    const opcode = this.fetch8();
-    const entry = OPCODES[opcode];
-    if (!entry) throw new CpuFault('illegal-opcode', `illegal opcode: 0x${opcode.toString(16)}`);
-    const trace = this.onTrace;
-    if (trace) trace(ip, entry.mnemonic);
-
-    // Trap if a privileged instruction is executed in USER mode.
-    if (this.mode === MODE.USER && entry.privileged) {
-      throw new CpuFault('privileged', `privileged instruction in USER mode: ${entry.mnemonic}`);
-    }
-
-    // Read operands in the order given by the spec table. Instructions have at
-    // most two operands, so keep them in locals instead of allocating per step.
+    let opcode: number;
     let op0 = 0;
     let op1 = 0;
-    if (entry.arg0 === ARG_REG) {
-      op0 = this.fetch8();
-      if (op0 >= NUM_REGS) throw new CpuFault('illegal', `invalid register number: ${op0}`);
-    } else if (entry.arg0 === ARG_WORD) {
-      op0 = this.fetch32();
-    }
-    if (entry.arg1 === ARG_REG) {
-      op1 = this.fetch8();
-      if (op1 >= NUM_REGS) throw new CpuFault('illegal', `invalid register number: ${op1}`);
-    } else if (entry.arg1 === ARG_WORD) {
-      op1 = this.fetch32();
+
+    // Fast path: the whole instruction (opcode + up to two operands, <= 9 bytes)
+    // lies within the cached code page, so decode it straight from phys.bytes with
+    // no per-byte fetch call. The page is mode-validated when it was cached (see
+    // fetchByteSlow / flushTlb), so a hit needs no re-check. Anything that could
+    // cross a page boundary takes the checked-fetch path below.
+    const off = ip & 0xfff;
+    if (ip >>> 12 === this.fetchVpn && off <= 0xff7) {
+      const b = this.phys.bytes;
+      const start = this.fetchBase + off;
+      let c = start;
+      opcode = b[c++]!;
+      const entry = OPCODES[opcode];
+      if (entry === undefined) {
+        throw new CpuFault('illegal-opcode', `illegal opcode: 0x${opcode.toString(16)}`);
+      }
+      if (this.onTrace) this.onTrace(ip, entry.mnemonic);
+      if (this.mode === MODE.USER && entry.privileged) {
+        throw new CpuFault('privileged', `privileged instruction in USER mode: ${entry.mnemonic}`);
+      }
+      if (entry.arg0 === ARG_REG) {
+        op0 = b[c++]!;
+        if (op0 >= NUM_REGS) throw new CpuFault('illegal', `invalid register number: ${op0}`);
+      } else if (entry.arg0 === ARG_WORD) {
+        op0 = (b[c]! | (b[c + 1]! << 8) | (b[c + 2]! << 16) | (b[c + 3]! << 24)) >>> 0;
+        c += 4;
+      }
+      if (entry.arg1 === ARG_REG) {
+        op1 = b[c++]!;
+        if (op1 >= NUM_REGS) throw new CpuFault('illegal', `invalid register number: ${op1}`);
+      } else if (entry.arg1 === ARG_WORD) {
+        op1 = (b[c]! | (b[c + 1]! << 8) | (b[c + 2]! << 16) | (b[c + 3]! << 24)) >>> 0;
+        c += 4;
+      }
+      this.pc = ip + (c - start);
+    } else {
+      opcode = this.fetch8();
+      const entry = OPCODES[opcode];
+      if (entry === undefined) {
+        throw new CpuFault('illegal-opcode', `illegal opcode: 0x${opcode.toString(16)}`);
+      }
+      if (this.onTrace) this.onTrace(ip, entry.mnemonic);
+      if (this.mode === MODE.USER && entry.privileged) {
+        throw new CpuFault('privileged', `privileged instruction in USER mode: ${entry.mnemonic}`);
+      }
+      // Read operands in the order given by the spec table.
+      if (entry.arg0 === ARG_REG) {
+        op0 = this.fetch8();
+        if (op0 >= NUM_REGS) throw new CpuFault('illegal', `invalid register number: ${op0}`);
+      } else if (entry.arg0 === ARG_WORD) {
+        op0 = this.fetch32();
+      }
+      if (entry.arg1 === ARG_REG) {
+        op1 = this.fetch8();
+        if (op1 >= NUM_REGS) throw new CpuFault('illegal', `invalid register number: ${op1}`);
+      } else if (entry.arg1 === ARG_WORD) {
+        op1 = this.fetch32();
+      }
     }
 
     const r = this.regs;
