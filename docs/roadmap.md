@@ -1122,6 +1122,17 @@ chibicc tokenizer / preprocessor / parser / type checker
   Done when the guest compiler compiles and runs small C programs inside the OS,
   without relying on host-side compilation after boot.
 
+  Progress: the vendored C-source chibicc frontend now cross-compiles in full
+  with the TS bootstrap frontend — every translation unit (tokenize, preprocess,
+  parse, type, hashmap, strings, unicode) builds to a custom32 object. Closing
+  the remaining frontend gaps got there: flexible array length inference
+  (`T x[] = {...}`, designated and string forms), the predefined `__FILE__` /
+  `__LINE__` macros, the comma operator in `expr()`, adjacent string-literal
+  concatenation, and `<time.h>` / `st_mtime` compat shims for the date/time
+  builtins. Covered by `test/chibicc-phase34.test.ts`
+  (`compileChibiccFrontend()`). Next: port `codegen.c` (the custom32 backend),
+  write the `main.c` driver, then guest-ify as/ld for end-to-end boot runs.
+
 - **Phase 35** ⬜ bootstrap the compiler and climb real packages.
 
   Use a conventional three-stage bootstrap:

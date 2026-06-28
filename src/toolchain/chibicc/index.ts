@@ -51,7 +51,9 @@ function resolveIncludeWithBuiltins(
 
 // Parse and type-check a translation unit into a typed program.
 function frontend(source: string, options: CompileOptions = {}): Program {
-  const program = parse(preprocess(source, resolveIncludeWithBuiltins(options.resolveInclude)));
+  const program = parse(
+    preprocess(source, resolveIncludeWithBuiltins(options.resolveInclude), options.name),
+  );
   for (const obj of program.objects) {
     if (obj.isFunction && obj.bodyNode) addType(obj.bodyNode);
   }

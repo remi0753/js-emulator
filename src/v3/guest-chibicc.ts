@@ -83,6 +83,27 @@ const FRONTEND_UNITS = [
   'upstream/type.c',
 ] as const;
 
+// Every vendored chibicc frontend translation unit (codegen.c and main.c are
+// replaced by the guest backend and driver). All of these cross-compile with
+// the TS bootstrap frontend; linking the whole compiler additionally needs the
+// ported codegen.c and a driver (Phase 34, in progress).
+const ALL_FRONTEND_UNITS = [
+  'upstream/tokenize.c',
+  'upstream/preprocess.c',
+  'upstream/parse.c',
+  'upstream/type.c',
+  'upstream/hashmap.c',
+  'upstream/strings.c',
+  'upstream/unicode.c',
+] as const;
+
+// Compile every vendored frontend translation unit to a relocatable object,
+// proving the real chibicc C frontend cross-compiles under the bootstrap
+// compiler. Throws if any unit fails to compile.
+export function compileChibiccFrontend(): ObjectFile[] {
+  return ALL_FRONTEND_UNITS.map(compileCc);
+}
+
 // Build a guest executable from a list of compiler source files plus the guest
 // libc, startup, and runtime helpers.
 function linkCompilerProgram(units: readonly string[]): Uint8Array {

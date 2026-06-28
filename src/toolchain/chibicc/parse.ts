@@ -17,6 +17,7 @@ import type { Token } from './tokenize.ts';
 import {
   addType,
   arrayOf,
+  arrayOfIncomplete,
   elementType,
   funcType,
   is64,
@@ -187,6 +188,10 @@ interface Init {
   children: Init[] | null;
   // For unions, the index of the member selected by the initializer.
   unionActive?: number;
+  // A top-level incomplete array (`T x[] = {...}`) whose length is not known
+  // until its initializer is counted. Resolved to a concrete array in arrayInit
+  // / stringInit before any children are allocated.
+  isFlexible?: boolean;
 }
 
 interface DeclSpec {
@@ -613,6 +618,11 @@ class Parser {
   private typeSuffix(base: Type): Type {
     if (this.equal('(')) return this.funcParams(base);
     if (this.consume('[')) {
+      // `T x[]` — an incomplete array whose length is inferred from its
+      // initializer (chibicc's array_of(ty, -1)).
+      if (this.consume(']')) {
+        return arrayOfIncomplete(this.typeSuffix(base));
+      }
       let len: number | undefined;
       let vlaLen: Node | undefined;
       if (this.peek().kind === 'num') {
@@ -762,6 +772,7 @@ class Parser {
     // definition that lands in BSS.
     if (!spec.isExtern && this.consume('=')) {
       const init = this.globalInitializer(ty);
+      obj.ty = init.ty; // resolved length for `T x[] = {...}`
       obj.initData = init.data;
       if (init.relocs.length > 0) obj.initRelocs = init.relocs;
     }
@@ -771,16 +782,17 @@ class Parser {
 
   // Constant initializer for a global: build the Init tree, then lower it to
   // bytes plus symbol relocations (for pointer/address initializers).
-  private globalInitializer(ty: Type): { data: Uint8Array; relocs: GReloc[] } {
+  private globalInitializer(ty: Type): { ty: Type; data: Uint8Array; relocs: GReloc[] } {
     const init = this.initializer(ty);
-    const data = new Uint8Array(Math.max(1, ty.size));
+    const data = new Uint8Array(Math.max(1, init.ty.size));
     const relocs: GReloc[] = [];
     this.writeGlobalInit(data, relocs, 0, init);
-    return { data, relocs };
+    return { ty: init.ty, data, relocs };
   }
 
   private localInitializer(obj: Obj): Node[] {
     const init = this.initializer(obj.ty);
+    obj.ty = init.ty; // resolved length for `T x[] = {...}`; sized at assignOffsets
     const base: Node = { kind: 'var', line: this.peek().line, variable: obj };
     const out: Node[] = [];
     this.lowerLocalInit(base, init, out);
@@ -792,13 +804,18 @@ class Parser {
   // Parse an initializer for `ty` into an Init tree. Aggregates allocate a child
   // Init per element/member; absent children stay expr-less and lower to zero.
   private initializer(ty: Type): Init {
-    const init = this.newInit(ty);
+    const init = this.newInit(ty, true);
     this.initializer2(init);
     return init;
   }
 
-  private newInit(ty: Type): Init {
+  private newInit(ty: Type, isFlexible = false): Init {
     if (ty.kind === 'array') {
+      // A top-level incomplete array stays child-less until its initializer is
+      // counted; nested arrays are never flexible.
+      if (isFlexible && ty.isFlexible) {
+        return { ty, expr: null, children: null, isFlexible: true };
+      }
       const elem = elementType(ty);
       const len = ty.arrayLen ?? 0;
       return { ty, expr: null, children: Array.from({ length: len }, () => this.newInit(elem)) };
@@ -839,6 +856,8 @@ class Parser {
   }
 
   private stringInit(init: Init): void {
+    // `char x[] = "..."` infers its length (including the NUL) from the literal.
+    if (init.isFlexible) this.resolveFlexible(init, this.peek().str.length);
     const str = this.peek().str;
     const line = this.peek().line;
     this.pos++;
@@ -850,6 +869,8 @@ class Parser {
   }
 
   private arrayInit(init: Init): void {
+    // `T x[] = {...}` infers its length by counting the brace list first.
+    if (init.isFlexible) this.resolveFlexible(init, this.countArrayInit(elementType(init.ty)));
     this.expect('{');
     const children = init.children ?? [];
     for (let i = 0; !this.consumeEnd(); ) {
@@ -867,6 +888,42 @@ class Parser {
       else this.skipInitializer();
       i++;
     }
+  }
+
+  // Replace a flexible-array Init with a concrete `arrayOf` of the inferred
+  // length, allocating its children. Mutates in place so the owning variable's
+  // type (updated by the initializer caller) reflects the resolved size.
+  private resolveFlexible(init: Init, len: number): void {
+    const fresh = this.newInit(arrayOf(elementType(init.ty), len));
+    init.ty = fresh.ty;
+    init.children = fresh.children;
+    init.isFlexible = false;
+  }
+
+  // Count the elements of a brace-enclosed array initializer to size an
+  // incomplete array, then rewind. Mirrors chibicc's count_array_init_elements:
+  // each element is parsed into a throwaway Init so designators and nested
+  // aggregates advance correctly.
+  private countArrayInit(elemTy: Type): number {
+    const start = this.pos;
+    this.expect('{');
+    let i = 0;
+    let max = 0;
+    for (let first = true; !this.consumeEnd(); first = false) {
+      if (!first) this.expect(',');
+      if (this.equal('[')) {
+        this.pos++;
+        i = this.constIndex();
+        this.expect(']');
+        this.designationTail(this.newInit(elemTy));
+      } else {
+        this.initializer2(this.newInit(elemTy));
+      }
+      i++;
+      if (i > max) max = i;
+    }
+    this.pos = start;
+    return max;
   }
 
   private structInit(init: Init): void {
@@ -1143,6 +1200,7 @@ class Parser {
         const obj = this.newStaticLocal(name, ty);
         if (this.consume('=')) {
           const init = this.globalInitializer(ty);
+          obj.ty = init.ty; // resolved length for `static T x[] = {...}`
           obj.initData = init.data;
           if (init.relocs.length > 0) obj.initRelocs = init.relocs;
         }
@@ -1310,8 +1368,18 @@ class Parser {
 
   // --- expressions ---------------------------------------------------------
 
+  // expr = assign ("," expr)? — the comma operator evaluates the left operand
+  // for its side effects, discards it, and yields the right. Argument and
+  // initializer lists parse elements with assign(), so their commas are
+  // separators and never reach here.
   private expr(): Node {
-    return this.assign();
+    const node = this.assign();
+    if (this.equal(',')) {
+      const line = this.peek().line;
+      this.pos++;
+      return { kind: 'comma', line, lhs: node, rhs: this.expr() };
+    }
+    return node;
   }
 
   private assign(): Node {

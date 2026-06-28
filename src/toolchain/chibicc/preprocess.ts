@@ -56,7 +56,7 @@ function evalIfExpression(source: string, macros: MacroTable, line: number): num
       macros.has(parenName ?? bareName ?? '') ? '1' : '0',
   );
   const raw = tokenize(normalized);
-  const expanded = expand(raw, macros);
+  const expanded = expand(raw, macros, '<expr>');
   let pos = 0;
 
   const peek = (): Token => expanded[Math.min(pos, expanded.length - 1)]!;
@@ -444,14 +444,41 @@ function substituteMacro(macro: Macro, args: Token[][], line: number): Token[] {
 // Substitute object-like and simple function-like macros in the token stream. A
 // bounded expansion depth guards against self-referential macros without a full
 // hide-set.
-function expand(tokens: Token[], macros: MacroTable): Token[] {
-  if (macros.size === 0) return tokens;
+// Build a string-literal token carrying `text` (with a trailing NUL), matching
+// what the tokenizer produces for a `"..."` literal.
+function stringToken(text: string, line: number): Token {
+  const bytes = [...text].map((c) => c.codePointAt(0)! & 0xff);
+  bytes.push(0);
+  const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return { kind: 'str', text: `"${escaped}"`, line, value: 0, str: Uint8Array.from(bytes) };
+}
+
+function expand(tokens: Token[], macros: MacroTable, fileName: string): Token[] {
   let work = tokens;
   for (let pass = 0; pass < 16; pass++) {
     let changed = false;
     const next: Token[] = [];
     for (let i = 0; i < work.length; i++) {
       const tok = work[i]!;
+      // Built-in dynamic macros: __LINE__ and __FILE__ expand based on the
+      // location of the token (chibicc's add_builtin). __FILE__ resolves to the
+      // translation-unit name; per-header granularity is not tracked.
+      if (tok.kind === 'ident' && tok.text === '__LINE__') {
+        next.push({
+          kind: 'num',
+          text: String(tok.line),
+          line: tok.line,
+          value: tok.line,
+          str: new Uint8Array(0),
+        });
+        changed = true;
+        continue;
+      }
+      if (tok.kind === 'ident' && tok.text === '__FILE__') {
+        next.push(stringToken(fileName, tok.line));
+        changed = true;
+        continue;
+      }
       const macro = tok.kind === 'ident' ? macros.get(tok.text) : undefined;
       if (macro) {
         if (macro.params) {
@@ -479,7 +506,30 @@ function expand(tokens: Token[], macros: MacroTable): Token[] {
 // Run the preprocessor: directive extraction (including `#include`),
 // tokenization, and macro expansion. `resolver` supplies header text for
 // `#include`; without it, `#include` is rejected.
-export function preprocess(source: string, resolver?: IncludeResolver): Token[] {
+export function preprocess(
+  source: string,
+  resolver?: IncludeResolver,
+  fileName = '<source>',
+): Token[] {
   const { text, macros } = scanDirectives(source, resolver);
-  return expand(tokenize(text), macros);
+  return joinAdjacentStrings(expand(tokenize(text), macros, fileName));
+}
+
+// Concatenate adjacent string literals into a single token (C11 6.4.5p5). Runs
+// after macro expansion so stringized / macro-produced literals also join.
+function joinAdjacentStrings(tokens: Token[]): Token[] {
+  const out: Token[] = [];
+  for (const tok of tokens) {
+    const prev = out.at(-1);
+    if (tok.kind === 'str' && prev?.kind === 'str') {
+      // Drop the previous literal's NUL, append the next literal's bytes.
+      const merged = new Uint8Array(prev.str.length - 1 + tok.str.length);
+      merged.set(prev.str.subarray(0, prev.str.length - 1), 0);
+      merged.set(tok.str, prev.str.length - 1);
+      out[out.length - 1] = { ...prev, str: merged, text: prev.text + tok.text };
+      continue;
+    }
+    out.push(tok);
+  }
+  return out;
 }

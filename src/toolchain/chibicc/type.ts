@@ -42,6 +42,9 @@ export interface Type {
   base?: Type;
   // Number of elements for `array`.
   arrayLen?: number;
+  // An array of unknown length (`T x[]`), whose size is inferred from its
+  // initializer. Resolved to a concrete `arrayOf` before reaching codegen.
+  isFlexible?: boolean;
   isVLA?: boolean;
   vlaLen?: Node;
   // Return and parameter types for `func`.
@@ -74,6 +77,13 @@ export function pointerTo(base: Type): Type {
 
 export function arrayOf(base: Type, len: number): Type {
   return { kind: 'array', size: base.size * len, align: base.align, base, arrayLen: len };
+}
+
+// An incomplete array `T x[]` with no specified length. The length is filled in
+// from the initializer (see the parser's flexible-initializer handling); until
+// then `size` is -1 to mark it unsized.
+export function arrayOfIncomplete(base: Type): Type {
+  return { kind: 'array', size: -1, align: base.align, base, isFlexible: true };
 }
 
 export function vlaOf(base: Type, len: Node): Type {
