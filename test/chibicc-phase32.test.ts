@@ -5,8 +5,8 @@ import { Fs } from '../src/storage/fs.ts';
 import { PortBlockDevice } from '../src/storage/port-block-device.ts';
 import { compileObject as bootstrapCompileObject, crt0Object } from '../src/toolchain/cc.ts';
 import { compile, compileObject } from '../src/toolchain/chibicc/index.ts';
-import { floatRuntimeArchive, floatRuntimeObject } from '../src/toolchain/chibicc/runtimeFloat.ts';
 import { i64RuntimeObject } from '../src/toolchain/chibicc/runtime64.ts';
+import { floatRuntimeArchive, floatRuntimeObject } from '../src/toolchain/chibicc/runtimeFloat.ts';
 import { linkGuestExecutable } from '../src/v3/guest-cc.ts';
 import {
   buildGuestDiskImage,

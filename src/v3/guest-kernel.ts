@@ -7,18 +7,14 @@ import { Fs } from '../storage/fs.ts';
 import { PortBlockDevice } from '../storage/port-block-device.ts';
 import { compileObject, crt0Object, kernelCrt0Object } from '../toolchain/cc.ts';
 import type { IncludeResolver } from '../toolchain/chibicc/index.ts';
-import { floatRuntimeArchive } from '../toolchain/chibicc/runtimeFloat.ts';
 import { i64RuntimeObject } from '../toolchain/chibicc/runtime64.ts';
+import { floatRuntimeArchive } from '../toolchain/chibicc/runtimeFloat.ts';
 import { type KernelImage, linkKernelImage } from '../toolchain/object-linker.ts';
 import { BlockDisk } from '../vm/custom32/devices/disk.ts';
 import { PORT } from '../vm/custom32/platform.ts';
 import { PortBus } from '../vm/custom32/ports.ts';
+import { type Defines, GUEST_KERNEL_DEFINES, GUEST_KERNEL_LAYOUT } from './config.ts';
 import { linkGuestExecutable } from './guest-cc.ts';
-import {
-  type Defines,
-  GUEST_KERNEL_DEFINES,
-  GUEST_KERNEL_LAYOUT,
-} from './config.ts';
 
 export { GUEST_EXECUTABLE_MAGIC, GUEST_KERNEL_LAYOUT } from './config.ts';
 
@@ -66,7 +62,11 @@ function resolveGuestInclude(dir: 'userland' | 'kernel'): IncludeResolver {
     try {
       return {
         path: `${dir}/${name}`,
-        text: substituteDefines(sourceFile(`${dir}/${name}`), GUEST_KERNEL_DEFINES, `${dir}/${name}`),
+        text: substituteDefines(
+          sourceFile(`${dir}/${name}`),
+          GUEST_KERNEL_DEFINES,
+          `${dir}/${name}`,
+        ),
       };
     } catch {
       return undefined;
@@ -78,7 +78,11 @@ const resolveUserlandInclude = resolveGuestInclude('userland');
 const resolveKernelInclude = resolveGuestInclude('kernel');
 
 function kernelSource(subpath: string): string {
-  return substituteDefines(sourceFile(`kernel/${subpath}`), GUEST_KERNEL_DEFINES, `kernel/${subpath}`);
+  return substituteDefines(
+    sourceFile(`kernel/${subpath}`),
+    GUEST_KERNEL_DEFINES,
+    `kernel/${subpath}`,
+  );
 }
 
 function compileUserlandObject(source: string, name: string): ObjectFile {
@@ -214,7 +218,10 @@ function compileKernelFile(subpath: string): ObjectFile {
 }
 
 export function buildGuestKernelImage(): KernelImage {
-  const image = linkKernelImage([kernelCrt0Object(8192), ...KERNEL_SOURCE_FILES.map(compileKernelFile)]);
+  const image = linkKernelImage([
+    kernelCrt0Object(8192),
+    ...KERNEL_SOURCE_FILES.map(compileKernelFile),
+  ]);
   if (image.flat.length > GUEST_KERNEL_LAYOUT.idt) {
     throw new Error(
       `guest kernel image overlaps reserved IDT/page-table region: image end 0x${image.flat.length.toString(16)}, IDT 0x${GUEST_KERNEL_LAYOUT.idt.toString(16)}`,

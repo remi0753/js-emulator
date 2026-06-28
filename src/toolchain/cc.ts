@@ -10,8 +10,8 @@ import { encodeExecutable } from '../formats/executable.ts';
 import type { ObjectFile } from '../formats/object.ts';
 import { assembleObject } from './as.ts';
 import {
-  compileObject as chibiccCompileObject,
   type CompileOptions as ChibiccCompileOptions,
+  compileObject as chibiccCompileObject,
 } from './chibicc/index.ts';
 import { flattenGuestExecutable, linkObjects } from './object-linker.ts';
 

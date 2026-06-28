@@ -260,8 +260,7 @@ test('the linker emits page-aligned segments for raw JEX executables', () => {
   assert.equal(decoded.segments[0]!.vaddr % PAGE_SIZE, 0);
   assert.equal(decoded.segments[1]!.vaddr % PAGE_SIZE, 0);
   assert.ok(
-    decoded.segments[1]!.vaddr >=
-      decoded.segments[0]!.vaddr + decoded.segments[0]!.memSize,
+    decoded.segments[1]!.vaddr >= decoded.segments[0]!.vaddr + decoded.segments[0]!.memSize,
   );
 });
 

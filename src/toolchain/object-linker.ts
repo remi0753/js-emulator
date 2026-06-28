@@ -251,7 +251,14 @@ function gcText(objects: ObjectFile[], entryName: string): ObjectFile[] {
     const obj = objects[objectIndex]!;
     for (const reloc of obj.relocs) {
       if (reloc.section !== 'data') continue;
-      addReferencedBlock(objects, blocksByObject, byGlobalName, objectIndex, reloc.symbol, addBlock);
+      addReferencedBlock(
+        objects,
+        blocksByObject,
+        byGlobalName,
+        objectIndex,
+        reloc.symbol,
+        addBlock,
+      );
     }
   }
 
@@ -290,9 +297,7 @@ function textBlocks(obj: ObjectFile, objectIndex: number): TextBlock[] {
   for (let i = 0; i < starts.length; i++) {
     const start = starts[i]!.value;
     const end = i + 1 < starts.length ? starts[i + 1]!.value : obj.text.length;
-    const names = new Set(
-      starts.filter((sym) => sym.value === start).map((sym) => sym.name),
-    );
+    const names = new Set(starts.filter((sym) => sym.value === start).map((sym) => sym.name));
     if (blocks.length > 0 && blocks[blocks.length - 1]!.start === start) continue;
     blocks.push({ objectIndex, blockIndex: blocks.length, start, end, names });
   }
@@ -324,7 +329,8 @@ function pruneObjectText(obj: ObjectFile, keep: TextBlock[]): ObjectFile {
   const offsetMap = new Map<number, number>();
   let textSize = 0;
   for (const range of ranges) {
-    for (let old = range.start; old < range.end; old++) offsetMap.set(old, textSize + old - range.start);
+    for (let old = range.start; old < range.end; old++)
+      offsetMap.set(old, textSize + old - range.start);
     textSize += range.end - range.start;
   }
   const text = new Uint8Array(textSize);

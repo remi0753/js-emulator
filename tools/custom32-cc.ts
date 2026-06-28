@@ -33,8 +33,8 @@ import {
   type LinkFormat,
   linkExecutableImage,
 } from '../src/toolchain/cc.ts';
-import { floatRuntimeArchive } from '../src/toolchain/chibicc/runtimeFloat.ts';
 import { i64RuntimeObject } from '../src/toolchain/chibicc/runtime64.ts';
+import { floatRuntimeArchive } from '../src/toolchain/chibicc/runtimeFloat.ts';
 import { installExecutable, linkGuestExecutable } from '../src/v3/guest-cc.ts';
 
 function fail(message: string): never {
