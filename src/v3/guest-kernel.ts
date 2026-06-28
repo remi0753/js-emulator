@@ -4,15 +4,13 @@ import { encodeBootBlock, makeBootBlock } from '../formats/bootblock.ts';
 import type { ObjectFile } from '../formats/object.ts';
 import { BLOCK_SIZE } from '../storage/block.ts';
 import { Fs } from '../storage/fs.ts';
-import { PortBlockDevice } from '../storage/port-block-device.ts';
+import { DirectBlockDevice } from '../storage/direct-block-device.ts';
 import { compileObject, crt0Object, kernelCrt0Object } from '../toolchain/cc.ts';
 import type { IncludeResolver } from '../toolchain/chibicc/index.ts';
 import { i64RuntimeObject } from '../toolchain/chibicc/runtime64.ts';
 import { floatRuntimeArchive } from '../toolchain/chibicc/runtimeFloat.ts';
 import { type KernelImage, linkKernelImage } from '../toolchain/object-linker.ts';
 import { BlockDisk } from '../vm/custom32/devices/disk.ts';
-import { PORT } from '../vm/custom32/platform.ts';
-import { PortBus } from '../vm/custom32/ports.ts';
 import { type Defines, GUEST_KERNEL_DEFINES, GUEST_KERNEL_LAYOUT } from './config.ts';
 import { linkGuestExecutable } from './guest-cc.ts';
 
@@ -130,12 +128,7 @@ export const GUEST_DEVELOPMENT_FS_BLOCKS = 32768;
 
 export function buildGuestDiskImage(options: GuestDiskImageOptions = {}): Uint8Array {
   const fsDisk = BlockDisk.blank(options.fsBlocks ?? GUEST_DEFAULT_FS_BLOCKS);
-  const ports = new PortBus();
-  ports.register(PORT.DISK_DATA, 1, fsDisk);
-  ports.register(PORT.DISK_POS, 1, fsDisk);
-  ports.register(PORT.DISK_SECTORS, 1, fsDisk);
-
-  const driver = new PortBlockDevice(ports);
+  const driver = new DirectBlockDevice(fsDisk.data);
   const fs = new Fs(driver);
   fs.mkfs();
   fs.mkdir('/dev');
