@@ -612,191 +612,191 @@ export class CPU {
     }
 
     const r = this.regs;
-    switch (entry.mnemonic) {
-      case 'NOP':
+    switch (opcode) {
+      case 0x00: /* NOP */
         break;
-      case 'MOV':
+      case 0x01: /* MOV */
         r[op0] = op1 >>> 0;
         break;
-      case 'MOVR':
+      case 0x02: /* MOVR */
         r[op0] = r[op1]!;
         break;
-      case 'LOAD':
+      case 0x03: /* LOAD */
         r[op0] = this.rd32(op1);
         break;
-      case 'STORE':
+      case 0x04: /* STORE */
         this.wr32(op1, r[op0]!);
         break;
-      case 'LOADR':
+      case 0x05: /* LOADR */
         r[op0] = this.rd32(r[op1]!);
         break;
-      case 'STORER':
+      case 0x06: /* STORER */
         this.wr32(r[op0]!, r[op1]!);
         break;
-      case 'LB':
+      case 0x07: /* LB */
         r[op0] = this.rd8(r[op1]!);
         break;
-      case 'SB':
+      case 0x08: /* SB */
         this.wr8(r[op0]!, r[op1]! & 0xff);
         break;
-      case 'LBS': {
+      case 0x09: /* LBS */ {
         const v = this.rd8(r[op1]!);
         r[op0] = (v & 0x80) !== 0 ? (v | 0xffffff00) >>> 0 : v;
         break;
       }
-      case 'LH':
+      case 0x0a: /* LH */
         r[op0] = this.rd16(r[op1]!);
         break;
-      case 'LHS': {
+      case 0x0b: /* LHS */ {
         const v = this.rd16(r[op1]!);
         r[op0] = (v & 0x8000) !== 0 ? (v | 0xffff0000) >>> 0 : v;
         break;
       }
-      case 'SH':
+      case 0x0c: /* SH */
         this.wr16(r[op0]!, r[op1]! & 0xffff);
         break;
 
-      case 'ADD': {
+      case 0x10: /* ADD */ {
         const a = r[op0]!;
         const b = r[op1]!;
         r[op0] = this.setAddFlags(a, b, a + b);
         break;
       }
-      case 'SUB': {
+      case 0x11: /* SUB */ {
         const a = r[op0]!;
         const b = r[op1]!;
         r[op0] = this.setSubFlags(a, b, a - b);
         break;
       }
-      case 'MUL':
+      case 0x12: /* MUL */
         r[op0] = this.setZS(Math.imul(r[op0]!, r[op1]!));
         break;
-      case 'DIV': {
+      case 0x13: /* DIV */ {
         const b = r[op1]!;
         if (b === 0) throw new CpuFault('divide-by-zero', 'divide by zero');
         r[op0] = this.setZS(Math.floor(r[op0]! / b));
         break;
       }
-      case 'MOD': {
+      case 0x14: /* MOD */ {
         const b = r[op1]!;
         if (b === 0) throw new CpuFault('divide-by-zero', 'divide by zero (MOD)');
         r[op0] = this.setZS(r[op0]! % b);
         break;
       }
-      case 'IDIV': {
+      case 0x1e: /* IDIV */ {
         const b = r[op1]! | 0;
         if (b === 0) throw new CpuFault('divide-by-zero', 'divide by zero');
         r[op0] = this.setZS(Math.trunc((r[op0]! | 0) / b));
         break;
       }
-      case 'IMOD': {
+      case 0x1f: /* IMOD */ {
         const b = r[op1]! | 0;
         if (b === 0) throw new CpuFault('divide-by-zero', 'divide by zero (IMOD)');
         r[op0] = this.setZS((r[op0]! | 0) % b);
         break;
       }
-      case 'AND':
+      case 0x15: /* AND */
         r[op0] = this.setZS(r[op0]! & r[op1]!);
         break;
-      case 'OR':
+      case 0x16: /* OR */
         r[op0] = this.setZS(r[op0]! | r[op1]!);
         break;
-      case 'XOR':
+      case 0x17: /* XOR */
         r[op0] = this.setZS(r[op0]! ^ r[op1]!);
         break;
-      case 'NOT':
+      case 0x18: /* NOT */
         r[op0] = this.setZS(~r[op0]!);
         break;
-      case 'SHL':
+      case 0x19: /* SHL */
         r[op0] = this.setZS(r[op0]! << (r[op1]! & 31));
         break;
-      case 'SHR':
+      case 0x1a: /* SHR */
         r[op0] = this.setZS(r[op0]! >>> (r[op1]! & 31));
         break;
-      case 'SAR':
+      case 0x2e: /* SAR */
         r[op0] = this.setZS((r[op0]! | 0) >> (r[op1]! & 31));
         break;
-      case 'INC':
+      case 0x1b: /* INC */
         r[op0] = this.setAddFlags(r[op0]!, 1, r[op0]! + 1);
         break;
-      case 'DEC':
+      case 0x1c: /* DEC */
         r[op0] = this.setSubFlags(r[op0]!, 1, r[op0]! - 1);
         break;
-      case 'CMP': {
+      case 0x1d: /* CMP */ {
         const a = r[op0]!;
         const b = r[op1]!;
         this.setSubFlags(a, b, a - b);
         break;
       }
 
-      case 'JMP':
+      case 0x20: /* JMP */
         this.pc = op0;
         break;
-      case 'JZ':
+      case 0x21: /* JZ */
         if ((this.flags & FLAG.ZF) !== 0) this.pc = op0;
         break;
-      case 'JNZ':
+      case 0x22: /* JNZ */
         if ((this.flags & FLAG.ZF) === 0) this.pc = op0;
         break;
-      case 'JG':
+      case 0x23: /* JG */
         if ((this.flags & FLAG.ZF) === 0 && !this.signedLess()) this.pc = op0;
         break;
-      case 'JGE':
+      case 0x24: /* JGE */
         if (!this.signedLess()) this.pc = op0;
         break;
-      case 'JL':
+      case 0x25: /* JL */
         if (this.signedLess()) this.pc = op0;
         break;
-      case 'JLE':
+      case 0x26: /* JLE */
         if (this.signedLess() || (this.flags & FLAG.ZF) !== 0) this.pc = op0;
         break;
-      case 'CALL':
+      case 0x27: /* CALL */
         this.push(this.pc);
         this.pc = op0;
         break;
-      case 'CALLR':
+      case 0x29: /* CALLR */
         this.push(this.pc);
         this.pc = r[op0]! >>> 0;
         break;
-      case 'JA':
+      case 0x2a: /* JA */
         if ((this.flags & (FLAG.CF | FLAG.ZF)) === 0) this.pc = op0;
         break;
-      case 'JAE':
+      case 0x2b: /* JAE */
         if ((this.flags & FLAG.CF) === 0) this.pc = op0;
         break;
-      case 'JB':
+      case 0x2c: /* JB */
         if ((this.flags & FLAG.CF) !== 0) this.pc = op0;
         break;
-      case 'JBE':
+      case 0x2d: /* JBE */
         if ((this.flags & (FLAG.CF | FLAG.ZF)) !== 0) this.pc = op0;
         break;
-      case 'RET':
+      case 0x28: /* RET */
         this.pc = this.pop();
         break;
 
-      case 'PUSH':
+      case 0x30: /* PUSH */
         this.push(r[op0]!);
         break;
-      case 'POP':
+      case 0x31: /* POP */
         r[op0] = this.pop();
         break;
 
       // --- system ---
-      case 'INT':
+      case 0x40: /* INT */
         return { reason: 'syscall', num: op0 >>> 0 };
-      case 'EI':
+      case 0x41: /* EI */
         this.flags |= FLAG.IF;
         break;
-      case 'DI':
+      case 0x42: /* DI */
         this.flags &= ~FLAG.IF;
         break;
-      case 'IN': // rd = port[rp]
+      case 0x43: /* IN */ // rd = port[rp]
         r[op0] = this.ports.in(r[op1]!) >>> 0;
         break;
-      case 'OUT': // port[rp] = rs   (operands: rp, rs)
+      case 0x44: /* OUT */ // port[rp] = rs   (operands: rp, rs)
         this.ports.out(r[op0]!, r[op1]!);
         break;
-      case 'IRET': {
+      case 0x45: /* IRET */ {
         // Pop the trap frame pushed by deliver() (all reads while still KERNEL).
         const pc = this.pop();
         const mode = this.pop();
@@ -809,38 +809,38 @@ export class CPU {
         this.fetchVpn = -1; // mode may have changed: re-validate the code page
         break;
       }
-      case 'LIDT':
+      case 0x46: /* LIDT */
         this.idtr = r[op0]! >>> 0;
         break;
-      case 'LKSP':
+      case 0x47: /* LKSP */
         this.ksp = r[op0]! >>> 0;
         break;
-      case 'RDPFLA':
+      case 0x48: /* RDPFLA */
         r[op0] = this.pfla >>> 0;
         break;
-      case 'RDERR':
+      case 0x49: /* RDERR */
         r[op0] = this.errorCode >>> 0;
         break;
-      case 'STMR': {
+      case 0x4a: /* STMR */ {
         const n = r[op0]! >>> 0;
         this.timerInterval = n;
         this.timerCount = n;
         if (n === 0) this.cancelPendingIrq(TIMER_IRQ);
         break;
       }
-      case 'LPTBR':
+      case 0x4b: /* LPTBR */
         this.ptbr = r[op0]! >>> 0;
         this.flushTlb();
         break;
-      case 'PGON':
+      case 0x4c: /* PGON */
         this.pagingEnabled = true;
         this.flushTlb();
         break;
-      case 'PGOFF':
+      case 0x4d: /* PGOFF */
         this.pagingEnabled = false;
         this.flushTlb();
         break;
-      case 'HLT':
+      case 0xff: /* HLT */
         return { reason: 'halt' };
     }
     return undefined;
