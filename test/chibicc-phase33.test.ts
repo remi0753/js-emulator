@@ -32,8 +32,13 @@ int main(void) {
   char *end;
   char *heap;
   FILE *tmp;
+  FILE *bad_stream;
   char path[32];
+  char bad_template[8];
+  char append_buffer[8];
+  char no_digits[8];
   char ch;
+  long long wide;
   int i;
   int fd;
   struct stat st;
@@ -42,6 +47,13 @@ int main(void) {
   if (snprintf(formatted, 64, "fmt:%s:%d:%x:%c:%%", "ok", -7, 255, 'Z') != 16) return 2;
   if (strcmp(formatted, "fmt:ok:-7:ff:Z:%") != 0) return 3;
   if (strtol("  -0x10z", &end, 0) != -16 || *end != 'z') return 4;
+  wide = 4294967296LL + 5;
+  if (snprintf(formatted, 64, "wide:%lld:%llx:%d", wide, wide, 77) != 28) return 21;
+  if (strcmp(formatted, "wide:4294967301:100000005:77") != 0) return 22;
+  strcpy(no_digits, "   xyz");
+  if (strtol(no_digits, &end, 0) != 0 || end != no_digits) return 23;
+  strcpy(no_digits, "-");
+  if (strtol(no_digits, &end, 0) != 0 || end != no_digits) return 24;
   if (!isalpha('Q') || !isdigit('7') || !isspace('\\n') ||
       toupper('q') != 'Q' || tolower('Q') != 'q') return 5;
 
@@ -69,9 +81,10 @@ int main(void) {
   fclose(tmp);
   free(heap);
 
-  strcpy(path, "/tmp/phase33-template");
+  strcpy(path, "/tmp/p33XXXXXX");
   fd = mkstemp(path);
   if (fd < 0) return 13;
+  if (strncmp(path, "/tmp/p33", 8) != 0 || strlen(path) != 14) return 25;
   if (write(fd, "OBJ", 3) != 3) return 14;
   if (lseek(fd, 0, SEEK_SET) != 0) return 15;
   if (read(fd, formatted, 3) != 3) return 16;
@@ -81,6 +94,32 @@ int main(void) {
   if (stat(path, &st) < 0 || st.size != 3) return 18;
   if (remove(path) < 0) return 19;
   if (stat(path, &st) != -1 || errno != ENOENT) return 20;
+  strcpy(bad_template, "bad");
+  if (mkstemp(bad_template) != -1 || errno != EINVAL) return 26;
+
+  fd = open("/tmp/append", O_WRONLY | O_CREAT | O_TRUNC);
+  if (fd < 0) return 27;
+  if (write(fd, "ABC", 3) != 3) return 28;
+  close(fd);
+  fd = open("/tmp/append", O_WRONLY | O_APPEND);
+  if (fd < 0) return 29;
+  if (lseek(fd, 0, SEEK_SET) != 0) return 30;
+  if (write(fd, "Z", 1) != 1) return 31;
+  close(fd);
+  fd = open("/tmp/append", O_RDONLY);
+  if (fd < 0) return 32;
+  if (read(fd, append_buffer, 4) != 4) return 33;
+  append_buffer[4] = 0;
+  close(fd);
+  remove("/tmp/append");
+  if (strcmp(append_buffer, "ABCZ") != 0) return 34;
+
+  bad_stream = fdopen(-1, "r");
+  if (bad_stream == 0) return 35;
+  clearerr(bad_stream);
+  if (fgetc(bad_stream) != EOF) return 36;
+  if (ferror(bad_stream) == 0 || feof(bad_stream) != 0) return 37;
+  fclose(bad_stream);
 
   printf("phase33 %s %d %x\\n", "ok", 123, 48879);
   return 0;

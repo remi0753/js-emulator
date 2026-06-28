@@ -720,10 +720,17 @@ unsigned int strtoul(char *text, char **endptr, int base) {
   int i;
   int sign;
   int digit;
+  int digits;
   unsigned int value;
   i = 0;
   sign = 1;
+  digits = 0;
   value = 0;
+  if (base != 0 && (base < 2 || base > 36)) {
+    errno = CFG_EINVAL;
+    if (endptr != 0) *endptr = text;
+    return 0;
+  }
   while (isspace(text[i])) i = i + 1;
   if (text[i] == '+') i = i + 1;
   else if (text[i] == '-') {
@@ -731,12 +738,12 @@ unsigned int strtoul(char *text, char **endptr, int base) {
     i = i + 1;
   }
   if ((base == 0 || base == 16) && text[i] == '0' &&
-      (text[i + 1] == 'x' || text[i + 1] == 'X')) {
+      (text[i + 1] == 'x' || text[i + 1] == 'X') &&
+      digit_value(text[i + 2]) >= 0 && digit_value(text[i + 2]) < 16) {
     base = 16;
     i = i + 2;
   } else if (base == 0 && text[i] == '0') {
     base = 8;
-    i = i + 1;
   } else if (base == 0) {
     base = 10;
   }
@@ -745,6 +752,11 @@ unsigned int strtoul(char *text, char **endptr, int base) {
     if (digit < 0 || digit >= base) break;
     value = value * base + digit;
     i = i + 1;
+    digits = digits + 1;
+  }
+  if (digits == 0) {
+    if (endptr != 0) *endptr = text;
+    return 0;
   }
   if (endptr != 0) *endptr = text + i;
   if (sign < 0) return 0 - value;
@@ -774,8 +786,8 @@ FILE *fopen(char *path, char *mode) {
   int flags;
   int fd;
   flags = 0;
-  if (mode[0] == 'w') flags = 0x601;
-  else if (mode[0] == 'a') flags = 0x201;
+  if (mode[0] == 'w') flags = O_WRONLY | O_CREAT | O_TRUNC;
+  else if (mode[0] == 'a') flags = O_WRONLY | O_CREAT | O_APPEND;
   fd = open(path, flags);
   if (fd < 0) return 0;
   if (mode[0] == 'a') lseek(fd, 0, 2);
@@ -875,11 +887,15 @@ int fwrite(void *buffer, int size, int count, FILE *stream) {
 
 int fgetc(FILE *stream) {
   char c;
-  if (read(stream->fd, &c, 1) != 1) {
+  int n;
+  n = read(stream->fd, &c, 1);
+  if (n == 1) return c;
+  if (n == 0) {
     stream->eof = 1;
     return -1;
   }
-  return c;
+  stream->error = 1;
+  return -1;
 }
 
 int fputc(int character, FILE *stream) {
@@ -972,12 +988,46 @@ void format_uint(struct format_sink *sink, unsigned int value, int base, int upp
   }
 }
 
+void format_ull(struct format_sink *sink, unsigned long long value, int base, int upper) {
+  char digits[64];
+  int n;
+  int digit;
+  if (value == 0ull) {
+    format_putc(sink, '0');
+    return;
+  }
+  n = 0;
+  while (value != 0ull) {
+    digit = value % base;
+    if (digit < 10) digits[n] = '0' + digit;
+    else if (upper != 0) digits[n] = 'A' + digit - 10;
+    else digits[n] = 'a' + digit - 10;
+    value = value / base;
+    n = n + 1;
+  }
+  while (n > 0) {
+    n = n - 1;
+    format_putc(sink, digits[n]);
+  }
+}
+
 void format_int(struct format_sink *sink, int value) {
   if (value < 0) {
     format_putc(sink, '-');
     format_uint(sink, 0 - value, 10, 0);
   } else {
     format_uint(sink, value, 10, 0);
+  }
+}
+
+void format_ll(struct format_sink *sink, long long value) {
+  unsigned long long magnitude;
+  if (value < 0ll) {
+    format_putc(sink, '-');
+    magnitude = 0ull - (unsigned long long)value;
+    format_ull(sink, magnitude, 10, 0);
+  } else {
+    format_ull(sink, value, 10, 0);
   }
 }
 
@@ -1002,16 +1052,28 @@ int vformat(struct format_sink *sink, char *format, va_list ap) {
     if (format[i] == 'l') {
       long_flag = 1;
       i = i + 1;
-      if (format[i] == 'l') i = i + 1;
+      if (format[i] == 'l') {
+        long_flag = 2;
+        i = i + 1;
+      }
     }
     spec = format[i];
     if (spec == 0) break;
     if (spec == 's') format_puts(sink, va_arg(ap, char *));
     else if (spec == 'c') format_putc(sink, va_arg(ap, int));
-    else if (spec == 'd' || spec == 'i') format_int(sink, va_arg(ap, int));
-    else if (spec == 'u') format_uint(sink, va_arg(ap, unsigned int), 10, 0);
-    else if (spec == 'x') format_uint(sink, va_arg(ap, unsigned int), 16, 0);
-    else if (spec == 'X') format_uint(sink, va_arg(ap, unsigned int), 16, 1);
+    else if (spec == 'd' || spec == 'i') {
+      if (long_flag == 2) format_ll(sink, va_arg(ap, long long));
+      else format_int(sink, va_arg(ap, int));
+    } else if (spec == 'u') {
+      if (long_flag == 2) format_ull(sink, va_arg(ap, unsigned long long), 10, 0);
+      else format_uint(sink, va_arg(ap, unsigned int), 10, 0);
+    } else if (spec == 'x') {
+      if (long_flag == 2) format_ull(sink, va_arg(ap, unsigned long long), 16, 0);
+      else format_uint(sink, va_arg(ap, unsigned int), 16, 0);
+    } else if (spec == 'X') {
+      if (long_flag == 2) format_ull(sink, va_arg(ap, unsigned long long), 16, 1);
+      else format_uint(sink, va_arg(ap, unsigned int), 16, 1);
+    }
     else if (spec == 'p') {
       format_puts(sink, "0x");
       format_uint(sink, va_arg(ap, unsigned int), 16, 0);
@@ -1107,16 +1169,44 @@ char *tmpnam(char *buffer) {
 
 int mkstemp(char *template) {
   int i;
+  int j;
+  int n;
+  int value;
   int fd;
   struct stat st;
+  char *digits;
+  digits = "0123456789abcdefghijklmnopqrstuvwxyz";
+  n = strlen(template);
+  if (n < 6) {
+    errno = CFG_EINVAL;
+    return -1;
+  }
+  j = n - 6;
+  while (j < n) {
+    if (template[j] != 'X') {
+      errno = CFG_EINVAL;
+      return -1;
+    }
+    j = j + 1;
+  }
   i = 0;
   while (i < 256) {
     tmp_sequence = tmp_sequence + 1;
-    snprintf(template, 32, "/tmp/ctmp%x", tmp_sequence);
-    if (stat(template, &st) < 0) {
-      fd = open(template, O_RDWR | O_CREAT | O_TRUNC);
-      if (fd >= 0) return fd;
+    value = tmp_sequence;
+    j = n - 1;
+    while (j >= n - 6) {
+      template[j] = digits[value % 36];
+      value = value / 36;
+      j = j - 1;
     }
+    if (stat(template, &st) == 0) {
+      i = i + 1;
+      continue;
+    }
+    if (errno != CFG_ENOENT) return -1;
+    fd = open(template, O_RDWR | O_CREAT);
+    if (fd >= 0) return fd;
+    if (errno != CFG_EEXIST) return -1;
     i = i + 1;
   }
   errno = CFG_EEXIST;
@@ -1126,6 +1216,7 @@ int mkstemp(char *template) {
 FILE *tmpfile(void) {
   char path[32];
   int fd;
+  strcpy(path, "/tmp/ctmpXXXXXX");
   fd = mkstemp(path);
   if (fd < 0) return 0;
   unlink(path);

@@ -120,6 +120,7 @@
 #define CFG_NSYS 62
 #define CFG_NTMPNODE 16
 #define CFG_O_ACCMODE 3
+#define CFG_O_APPEND 0x1000
 #define CFG_O_CREATE 512
 #define CFG_O_NONBLOCK 2048
 #define CFG_O_RDWR 2

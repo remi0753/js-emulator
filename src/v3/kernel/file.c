@@ -44,6 +44,7 @@ int vnode_read_op(int file_addr, int caller, int buf, int len) {
 int vnode_write_op(int file_addr, int caller, int buf, int len) {
   struct file *file;
   struct open_file *open;
+  struct guest_stat value;
   int wrote;
   file = file_addr;
   open = &open_file_table[file->object];
@@ -51,6 +52,10 @@ int vnode_write_op(int file_addr, int caller, int buf, int len) {
     return -CFG_EISDIR;
   }
   page_cache_flush_object(file->object);
+  if ((open->status_flags & CFG_O_APPEND) != 0) {
+    vnode_stat(&open->vnode, &value);
+    open->offset = value.size;
+  }
   wrote = vnode_write(&open->vnode, caller, open->offset, len, buf);
   if (wrote > 0) {
     page_cache_update_object(file->object, open->offset, wrote, buf, caller);

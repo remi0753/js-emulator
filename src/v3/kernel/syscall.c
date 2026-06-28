@@ -179,7 +179,7 @@ int sys_fcntl(int caller, int fd, int command, int argument) {
   if (command == CFG_F_SETFL) {
     file_set_status_flags(&proc_table[caller].files[fd],
       (file_get_status_flags(&proc_table[caller].files[fd]) & CFG_O_ACCMODE) |
-      (argument & CFG_O_NONBLOCK));
+      (argument & (CFG_O_NONBLOCK | CFG_O_APPEND)));
     return 0;
   }
   return -CFG_EINVAL;
