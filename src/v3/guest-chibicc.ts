@@ -104,6 +104,14 @@ export function compileChibiccFrontend(): ObjectFile[] {
   return ALL_FRONTEND_UNITS.map(compileCc);
 }
 
+// Compile the local custom32 backend (`cc-c/codegen.c`, a C port of the
+// maintained `src/toolchain/chibicc/codegen.ts`) to a relocatable object. This
+// is the target-specific half of the guest compiler, standing in for upstream's
+// x86-64 codegen.c. Throws if it fails to compile.
+export function compileGuestBackend(): ObjectFile {
+  return compileCc('codegen.c');
+}
+
 // Build a guest executable from a list of compiler source files plus the guest
 // libc, startup, and runtime helpers.
 function linkCompilerProgram(units: readonly string[]): Uint8Array {

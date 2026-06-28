@@ -1130,8 +1130,19 @@ chibicc tokenizer / preprocessor / parser / type checker
   `__LINE__` macros, the comma operator in `expr()`, adjacent string-literal
   concatenation, and `<time.h>` / `st_mtime` compat shims for the date/time
   builtins. Covered by `test/chibicc-phase34.test.ts`
-  (`compileChibiccFrontend()`). Next: port `codegen.c` (the custom32 backend),
-  write the `main.c` driver, then guest-ify as/ld for end-to-end boot runs.
+  (`compileChibiccFrontend()`).
+
+  The custom32 backend `cc-c/codegen.c` is now written too: a C port of the
+  maintained `src/toolchain/chibicc/codegen.ts` that walks upstream's
+  Node/Obj/Type model and assigns its own local frame offsets (standing in for
+  upstream's x86-64 codegen.c). It covers the integer / pointer / struct /
+  control-flow / 64-bit core the frontend itself uses; floating point,
+  VLAs/alloca, and atomics are deferred slices that currently raise a codegen
+  error. It cross-compiles to a custom32 object under the bootstrap frontend
+  (`compileGuestBackend()`, exercised in `test/chibicc-phase34.test.ts`). Next:
+  write the `main.c` driver, then guest-ify as/ld for end-to-end boot runs —
+  end-to-end guest execution also waits on variadic-function support (the
+  frontend's `error`/`format` use it), a cross-compiler ABI change.
 
 - **Phase 35** ⬜ bootstrap the compiler and climb real packages.
 

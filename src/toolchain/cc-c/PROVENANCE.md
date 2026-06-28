@@ -24,14 +24,18 @@ include/         freestanding compat headers so the frontend preprocesses under
                  strings, sys/*, time)
 ccsupport.{h,c}  small libc gap-fillers the guest libc lacks (strndup, ispunct,
                  strcasecmp/strncasecmp, strerror)
-codegen.c        custom32 backend — LOCAL, replaces upstream codegen.c (x86-64)  [TODO]
+codegen.c        custom32 backend — LOCAL, replaces upstream codegen.c (x86-64)
 main.c           freestanding driver: read .c from FS, emit custom32 asm  [TODO]
 probe.c          de-risking probe: tokenize an in-memory string with the real
                  chibicc tokenizer and report counts
 ```
 
 `codegen.c` (the only substantial authored piece) is ported from the TS port's
-`codegen.ts`. `main.c`/glob/subprocess `as`/`ld` from upstream's driver are
+`codegen.ts`, but walks upstream's Node/Obj/Type model and assigns local frame
+offsets itself (as upstream's codegen.c does). It covers the integer / pointer /
+struct / control-flow / 64-bit core the frontend itself uses; floating point,
+VLAs/alloca, and atomics are the next backend slices and currently raise a
+codegen error. `main.c`/glob/subprocess `as`/`ld` from upstream's driver are
 replaced because the guest emits assembly directly rather than shelling out.
 
 ## Vendored revision

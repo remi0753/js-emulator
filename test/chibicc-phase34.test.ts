@@ -6,7 +6,7 @@ import { PortBlockDevice } from '../src/storage/port-block-device.ts';
 import { crt0Object } from '../src/toolchain/cc.ts';
 import { compile, compileObject } from '../src/toolchain/chibicc/index.ts';
 import { linkGuestExecutable } from '../src/v3/guest-cc.ts';
-import { compileChibiccFrontend } from '../src/v3/guest-chibicc.ts';
+import { compileChibiccFrontend, compileGuestBackend } from '../src/v3/guest-chibicc.ts';
 import {
   buildGuestDiskImage,
   buildGuestKernelImage,
@@ -136,6 +136,17 @@ test('chibicc Phase 34 cross-compiles the full vendored chibicc frontend', () =>
   // tokenize, preprocess, parse, type, hashmap, strings, unicode.
   assert.equal(objects.length, 7);
   for (const obj of objects) assert.ok(obj.text.length > 0 || obj.data.length > 0);
+});
+
+test('chibicc Phase 34 cross-compiles the custom32 backend (codegen.c)', () => {
+  // The local backend ported from codegen.ts cross-compiles to a relocatable
+  // object under the bootstrap frontend, alongside the vendored frontend units.
+  const backend = compileGuestBackend();
+  assert.ok(backend.text.length > 0, 'codegen.c should emit text');
+  // It defines the public entry points the driver and frontend expect.
+  const symbols = new Set(backend.symbols.map((s) => s.name));
+  assert.ok(symbols.has('codegen'), 'codegen.c must export codegen()');
+  assert.ok(symbols.has('align_to'), 'codegen.c must export align_to()');
 });
 
 test('chibicc Phase 34 frontend gaps run in the guest', () => {
