@@ -5,7 +5,21 @@
       "compilerPath": "/usr/bin/clang",
       "cStandard": "c11",
       "intelliSenseMode": "macos-clang-arm64",
-      "includePath": ["${workspaceFolder}/src/v3", "${workspaceFolder}/src/v3/kernel"],
+      "compilerArgs": [
+        "-ffreestanding",
+        "-Wno-implicit-function-declaration",
+        "-Wno-int-conversion",
+        "-Wno-incompatible-pointer-types",
+        "-Wno-deprecated-non-prototype"
+      ],
+      "includePath": [
+        "${workspaceFolder}/src/toolchain/cc-c",
+        "${workspaceFolder}/src/toolchain/cc-c/upstream",
+        "${workspaceFolder}/src/toolchain/cc-c/include",
+        "${workspaceFolder}/src/v3/userland",
+        "${workspaceFolder}/src/v3",
+        "${workspaceFolder}/src/v3/kernel"
+      ],
       "forcedInclude": ["${workspaceFolder}/src/v3/generated-config.h"]
     }
   ],
