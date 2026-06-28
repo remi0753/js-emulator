@@ -13,6 +13,7 @@
 // the CPU falls back to the model-A behaviour of returning to the host.
 
 import {
+  type ArgKind,
   FLAG,
   IDT_ENTRY_SIZE,
   IDT_PRESENT,
@@ -32,6 +33,36 @@ export const NUM_REGS = 8;
 
 export const MODE = { KERNEL: 0, USER: 1 } as const;
 export type Mode = (typeof MODE)[keyof typeof MODE];
+
+const ARG_NONE = 0;
+const ARG_REG = 1;
+const ARG_WORD = 2;
+
+interface DecodedOpcode {
+  mnemonic: Mnemonic;
+  arg0: typeof ARG_NONE | typeof ARG_REG | typeof ARG_WORD;
+  arg1: typeof ARG_NONE | typeof ARG_REG | typeof ARG_WORD;
+  privileged: boolean;
+}
+
+const OPCODES: (DecodedOpcode | undefined)[] = (() => {
+  const table: (DecodedOpcode | undefined)[] = [];
+  for (const [opcode, entry] of OPCODE_TABLE) {
+    const [arg0, arg1] = entry.args;
+    table[opcode] = {
+      mnemonic: entry.mnemonic,
+      arg0: decodeArgKind(arg0),
+      arg1: decodeArgKind(arg1),
+      privileged: PRIVILEGED.has(entry.mnemonic),
+    };
+  }
+  return table;
+})();
+
+function decodeArgKind(kind: ArgKind | undefined): typeof ARG_NONE | typeof ARG_REG | typeof ARG_WORD {
+  if (kind === undefined) return ARG_NONE;
+  return kind === 'reg' ? ARG_REG : ARG_WORD;
+}
 
 export type FaultKind =
   | 'illegal-opcode'
@@ -103,7 +134,8 @@ export class CPU {
   readonly mmu: Mmu;
   readonly phys: PhysicalMemory;
   readonly ports: PortBus;
-  private pendingIrqs = new Set<number>();
+  private pendingIrqMask = 0;
+  private pendingIrqOrder: number[] = [];
 
   // Optional deterministic trace hooks (off by default; the Tracer wires them).
   // onTrace fires once per executed instruction; onTrap fires for every reason
@@ -142,7 +174,10 @@ export class CPU {
   // Interrupt request from a device. run() returns at the next instruction
   // boundary if IF is set.
   raiseIrq(line: number): void {
-    this.pendingIrqs.add(line);
+    const bit = 1 << line;
+    if ((this.pendingIrqMask & bit) !== 0) return;
+    this.pendingIrqMask |= bit;
+    this.pendingIrqOrder.push(line);
   }
 
   // Assert the power-off line (a power device calls this). run() stops at the
@@ -154,7 +189,8 @@ export class CPU {
   // Clear CPU-local transient hardware state that is not part of a process trap
   // frame. Used by Machine.reset(), not by scheduler context switches.
   resetTransientState(): void {
-    this.pendingIrqs.clear();
+    this.pendingIrqMask = 0;
+    this.pendingIrqOrder.length = 0;
     this.pfla = 0;
     this.idtr = 0;
     this.ksp = 0;
@@ -167,8 +203,12 @@ export class CPU {
   // --- memory access with address translation ---
 
   private xlate(vaddr: number, write: boolean): number {
+    return this.xlateN(vaddr, 1, write);
+  }
+
+  private xlateN(vaddr: number, bytes: number, write: boolean): number {
     if (!this.pagingEnabled) {
-      if (vaddr < 0 || vaddr + 1 > this.phys.size) {
+      if (vaddr < 0 || vaddr + bytes > this.phys.size) {
         throw new CpuFault('phys-range', `physical out of range: 0x${vaddr.toString(16)}`);
       }
       return vaddr;
@@ -183,12 +223,24 @@ export class CPU {
   }
 
   private rd8(v: number): number {
-    return this.phys.read8(this.xlate(v, false));
+    const p = this.xlateN(v, 1, false);
+    if (p >= this.phys.size) throw new RangeError(`physical memory out of range: 0x${p.toString(16)} (+1)`);
+    return this.phys.bytes[p]!;
   }
   private wr8(v: number, x: number): void {
-    this.phys.write8(this.xlate(v, true), x);
+    const p = this.xlateN(v, 1, true);
+    if (p >= this.phys.size) throw new RangeError(`physical memory out of range: 0x${p.toString(16)} (+1)`);
+    this.phys.bytes[p] = x & 0xff;
   }
   private rd32(v: number): number {
+    if ((v & 0xfff) <= 0xffc) {
+      const p = this.xlateN(v, 4, false);
+      if (p + 4 > this.phys.size) {
+        throw new RangeError(`physical memory out of range: 0x${p.toString(16)} (+4)`);
+      }
+      const b = this.phys.bytes;
+      return (b[p]! | (b[p + 1]! << 8) | (b[p + 2]! << 16) | (b[p + 3]! << 24)) >>> 0;
+    }
     const b0 = this.rd8(v);
     const b1 = this.rd8(v + 1);
     const b2 = this.rd8(v + 2);
@@ -196,11 +248,32 @@ export class CPU {
     return (b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)) >>> 0;
   }
   private rd16(v: number): number {
+    if ((v & 0xfff) <= 0xffe) {
+      const p = this.xlateN(v, 2, false);
+      if (p + 2 > this.phys.size) {
+        throw new RangeError(`physical memory out of range: 0x${p.toString(16)} (+2)`);
+      }
+      const b = this.phys.bytes;
+      return (b[p]! | (b[p + 1]! << 8)) >>> 0;
+    }
     const b0 = this.rd8(v);
     const b1 = this.rd8(v + 1);
     return (b0 | (b1 << 8)) >>> 0;
   }
   private wr32(v: number, x: number): void {
+    if ((v & 0xfff) <= 0xffc) {
+      const p = this.xlateN(v, 4, true);
+      if (p + 4 > this.phys.size) {
+        throw new RangeError(`physical memory out of range: 0x${p.toString(16)} (+4)`);
+      }
+      const u = x >>> 0;
+      const b = this.phys.bytes;
+      b[p] = u & 0xff;
+      b[p + 1] = (u >>> 8) & 0xff;
+      b[p + 2] = (u >>> 16) & 0xff;
+      b[p + 3] = (u >>> 24) & 0xff;
+      return;
+    }
     const u = x >>> 0;
     this.wr8(v, u & 0xff);
     this.wr8(v + 1, (u >>> 8) & 0xff);
@@ -208,6 +281,17 @@ export class CPU {
     this.wr8(v + 3, (u >>> 24) & 0xff);
   }
   private wr16(v: number, x: number): void {
+    if ((v & 0xfff) <= 0xffe) {
+      const p = this.xlateN(v, 2, true);
+      if (p + 2 > this.phys.size) {
+        throw new RangeError(`physical memory out of range: 0x${p.toString(16)} (+2)`);
+      }
+      const u = x >>> 0;
+      const b = this.phys.bytes;
+      b[p] = u & 0xff;
+      b[p + 1] = (u >>> 8) & 0xff;
+      return;
+    }
     const u = x >>> 0;
     this.wr8(v, u & 0xff);
     this.wr8(v + 1, (u >>> 8) & 0xff);
@@ -228,31 +312,35 @@ export class CPU {
 
   private setZS(result: number): number {
     const r = result >>> 0;
-    this.setFlag(FLAG.ZF, r === 0);
-    this.setFlag(FLAG.SF, (r & 0x80000000) !== 0);
+    let flags = this.flags & ~(FLAG.ZF | FLAG.SF);
+    if (r === 0) flags |= FLAG.ZF;
+    if ((r & 0x80000000) !== 0) flags |= FLAG.SF;
+    this.flags = flags;
     return r;
   }
   private setAddFlags(a: number, b: number, result: number): number {
-    const r = this.setZS(result);
-    this.setFlag(FLAG.CF, (a >>> 0) + (b >>> 0) > 0xffffffff);
-    this.setFlag(FLAG.OF, (~(a ^ b) & (a ^ r) & 0x80000000) !== 0);
+    const r = result >>> 0;
+    let flags = this.flags & ~(FLAG.ZF | FLAG.SF | FLAG.CF | FLAG.OF);
+    if (r === 0) flags |= FLAG.ZF;
+    if ((r & 0x80000000) !== 0) flags |= FLAG.SF;
+    if ((a >>> 0) + (b >>> 0) > 0xffffffff) flags |= FLAG.CF;
+    if ((~(a ^ b) & (a ^ r) & 0x80000000) !== 0) flags |= FLAG.OF;
+    this.flags = flags;
     return r;
   }
   private setSubFlags(a: number, b: number, result: number): number {
-    const r = this.setZS(result);
-    this.setFlag(FLAG.CF, a >>> 0 < b >>> 0);
-    this.setFlag(FLAG.OF, ((a ^ b) & (a ^ r) & 0x80000000) !== 0);
+    const r = result >>> 0;
+    let flags = this.flags & ~(FLAG.ZF | FLAG.SF | FLAG.CF | FLAG.OF);
+    if (r === 0) flags |= FLAG.ZF;
+    if ((r & 0x80000000) !== 0) flags |= FLAG.SF;
+    if ((a >>> 0) < (b >>> 0)) flags |= FLAG.CF;
+    if (((a ^ b) & (a ^ r) & 0x80000000) !== 0) flags |= FLAG.OF;
+    this.flags = flags;
     return r;
   }
-  private setFlag(bit: number, on: boolean): void {
-    if (on) this.flags |= bit;
-    else this.flags &= ~bit;
-  }
-  private getFlag(bit: number): boolean {
-    return (this.flags & bit) !== 0;
-  }
   private signedLess(): boolean {
-    return this.getFlag(FLAG.SF) !== this.getFlag(FLAG.OF);
+    const flags = this.flags;
+    return ((flags & FLAG.SF) !== 0) !== ((flags & FLAG.OF) !== 0);
   }
   private push(value: number): void {
     this.sp -= WORD;
@@ -280,7 +368,7 @@ export class CPU {
 
       // Check for an interrupt at the instruction boundary (only when IF is set).
       // The saved return address is the next instruction (this.pc).
-      if (this.pendingIrqs.size > 0 && this.getFlag(FLAG.IF)) {
+      if (this.pendingIrqMask !== 0 && (this.flags & FLAG.IF) !== 0) {
         const line = this.takePendingIrq();
         const deliver = this.deliver(TRAP.IRQ_BASE + line, this.pc, 0);
         if (deliver === 'host') return this.trap({ reason: 'irq', line });
@@ -346,10 +434,18 @@ export class CPU {
   }
 
   private takePendingIrq(): number {
-    const next = this.pendingIrqs.values().next();
-    if (next.done) throw new Error('takePendingIrq called with no pending IRQ');
-    this.pendingIrqs.delete(next.value);
-    return next.value;
+    const line = this.pendingIrqOrder.shift();
+    if (line === undefined) throw new Error('takePendingIrq called with no pending IRQ');
+    this.pendingIrqMask &= ~(1 << line);
+    return line;
+  }
+
+  private cancelPendingIrq(line: number): void {
+    const bit = 1 << line;
+    if ((this.pendingIrqMask & bit) === 0) return;
+    this.pendingIrqMask &= ~bit;
+    const index = this.pendingIrqOrder.indexOf(line);
+    if (index >= 0) this.pendingIrqOrder.splice(index, 1);
   }
 
   // Funnel every run() exit through the trap hook so the trace sees it.
@@ -405,7 +501,7 @@ export class CPU {
       }
       throw e;
     }
-    this.setFlag(FLAG.IF, false); // mask interrupts on handler entry
+    this.flags &= ~FLAG.IF; // mask interrupts on handler entry
     this.pc = handler;
     return 'guest';
   }
@@ -417,25 +513,31 @@ export class CPU {
   private step(): RunResult | undefined {
     const ip = this.pc; // instruction address (for the trace), before fetch advances pc
     const opcode = this.fetch8();
-    const entry = OPCODE_TABLE.get(opcode);
+    const entry = OPCODES[opcode];
     if (!entry) throw new CpuFault('illegal-opcode', `illegal opcode: 0x${opcode.toString(16)}`);
-    this.onTrace?.(ip, entry.mnemonic);
+    const trace = this.onTrace;
+    if (trace) trace(ip, entry.mnemonic);
 
     // Trap if a privileged instruction is executed in USER mode.
-    if (this.mode === MODE.USER && PRIVILEGED.has(entry.mnemonic)) {
+    if (this.mode === MODE.USER && entry.privileged) {
       throw new CpuFault('privileged', `privileged instruction in USER mode: ${entry.mnemonic}`);
     }
 
-    // Read operands in the order given by the spec table.
-    const ops: number[] = [];
-    for (const kind of entry.args) {
-      if (kind === 'reg') {
-        const r = this.fetch8();
-        if (r >= NUM_REGS) throw new CpuFault('illegal', `invalid register number: ${r}`);
-        ops.push(r);
-      } else {
-        ops.push(this.fetch32());
-      }
+    // Read operands in the order given by the spec table. Instructions have at
+    // most two operands, so keep them in locals instead of allocating per step.
+    let op0 = 0;
+    let op1 = 0;
+    if (entry.arg0 === ARG_REG) {
+      op0 = this.fetch8();
+      if (op0 >= NUM_REGS) throw new CpuFault('illegal', `invalid register number: ${op0}`);
+    } else if (entry.arg0 === ARG_WORD) {
+      op0 = this.fetch32();
+    }
+    if (entry.arg1 === ARG_REG) {
+      op1 = this.fetch8();
+      if (op1 >= NUM_REGS) throw new CpuFault('illegal', `invalid register number: ${op1}`);
+    } else if (entry.arg1 === ARG_WORD) {
+      op1 = this.fetch32();
     }
 
     const r = this.regs;
@@ -443,185 +545,185 @@ export class CPU {
       case 'NOP':
         break;
       case 'MOV':
-        r[ops[0]!] = ops[1]! >>> 0;
+        r[op0] = op1 >>> 0;
         break;
       case 'MOVR':
-        r[ops[0]!] = r[ops[1]!]!;
+        r[op0] = r[op1]!;
         break;
       case 'LOAD':
-        r[ops[0]!] = this.rd32(ops[1]!);
+        r[op0] = this.rd32(op1);
         break;
       case 'STORE':
-        this.wr32(ops[1]!, r[ops[0]!]!);
+        this.wr32(op1, r[op0]!);
         break;
       case 'LOADR':
-        r[ops[0]!] = this.rd32(r[ops[1]!]!);
+        r[op0] = this.rd32(r[op1]!);
         break;
       case 'STORER':
-        this.wr32(r[ops[0]!]!, r[ops[1]!]!);
+        this.wr32(r[op0]!, r[op1]!);
         break;
       case 'LB':
-        r[ops[0]!] = this.rd8(r[ops[1]!]!);
+        r[op0] = this.rd8(r[op1]!);
         break;
       case 'SB':
-        this.wr8(r[ops[0]!]!, r[ops[1]!]! & 0xff);
+        this.wr8(r[op0]!, r[op1]! & 0xff);
         break;
       case 'LBS': {
-        const v = this.rd8(r[ops[1]!]!);
-        r[ops[0]!] = (v & 0x80) !== 0 ? (v | 0xffffff00) >>> 0 : v;
+        const v = this.rd8(r[op1]!);
+        r[op0] = (v & 0x80) !== 0 ? (v | 0xffffff00) >>> 0 : v;
         break;
       }
       case 'LH':
-        r[ops[0]!] = this.rd16(r[ops[1]!]!);
+        r[op0] = this.rd16(r[op1]!);
         break;
       case 'LHS': {
-        const v = this.rd16(r[ops[1]!]!);
-        r[ops[0]!] = (v & 0x8000) !== 0 ? (v | 0xffff0000) >>> 0 : v;
+        const v = this.rd16(r[op1]!);
+        r[op0] = (v & 0x8000) !== 0 ? (v | 0xffff0000) >>> 0 : v;
         break;
       }
       case 'SH':
-        this.wr16(r[ops[0]!]!, r[ops[1]!]! & 0xffff);
+        this.wr16(r[op0]!, r[op1]! & 0xffff);
         break;
 
       case 'ADD': {
-        const a = r[ops[0]!]!;
-        const b = r[ops[1]!]!;
-        r[ops[0]!] = this.setAddFlags(a, b, a + b);
+        const a = r[op0]!;
+        const b = r[op1]!;
+        r[op0] = this.setAddFlags(a, b, a + b);
         break;
       }
       case 'SUB': {
-        const a = r[ops[0]!]!;
-        const b = r[ops[1]!]!;
-        r[ops[0]!] = this.setSubFlags(a, b, a - b);
+        const a = r[op0]!;
+        const b = r[op1]!;
+        r[op0] = this.setSubFlags(a, b, a - b);
         break;
       }
       case 'MUL':
-        r[ops[0]!] = this.setZS(Math.imul(r[ops[0]!]!, r[ops[1]!]!));
+        r[op0] = this.setZS(Math.imul(r[op0]!, r[op1]!));
         break;
       case 'DIV': {
-        const b = r[ops[1]!]!;
+        const b = r[op1]!;
         if (b === 0) throw new CpuFault('divide-by-zero', 'divide by zero');
-        r[ops[0]!] = this.setZS(Math.floor(r[ops[0]!]! / b));
+        r[op0] = this.setZS(Math.floor(r[op0]! / b));
         break;
       }
       case 'MOD': {
-        const b = r[ops[1]!]!;
+        const b = r[op1]!;
         if (b === 0) throw new CpuFault('divide-by-zero', 'divide by zero (MOD)');
-        r[ops[0]!] = this.setZS(r[ops[0]!]! % b);
+        r[op0] = this.setZS(r[op0]! % b);
         break;
       }
       case 'IDIV': {
-        const b = r[ops[1]!]! | 0;
+        const b = r[op1]! | 0;
         if (b === 0) throw new CpuFault('divide-by-zero', 'divide by zero');
-        r[ops[0]!] = this.setZS(Math.trunc((r[ops[0]!]! | 0) / b));
+        r[op0] = this.setZS(Math.trunc((r[op0]! | 0) / b));
         break;
       }
       case 'IMOD': {
-        const b = r[ops[1]!]! | 0;
+        const b = r[op1]! | 0;
         if (b === 0) throw new CpuFault('divide-by-zero', 'divide by zero (IMOD)');
-        r[ops[0]!] = this.setZS((r[ops[0]!]! | 0) % b);
+        r[op0] = this.setZS((r[op0]! | 0) % b);
         break;
       }
       case 'AND':
-        r[ops[0]!] = this.setZS(r[ops[0]!]! & r[ops[1]!]!);
+        r[op0] = this.setZS(r[op0]! & r[op1]!);
         break;
       case 'OR':
-        r[ops[0]!] = this.setZS(r[ops[0]!]! | r[ops[1]!]!);
+        r[op0] = this.setZS(r[op0]! | r[op1]!);
         break;
       case 'XOR':
-        r[ops[0]!] = this.setZS(r[ops[0]!]! ^ r[ops[1]!]!);
+        r[op0] = this.setZS(r[op0]! ^ r[op1]!);
         break;
       case 'NOT':
-        r[ops[0]!] = this.setZS(~r[ops[0]!]!);
+        r[op0] = this.setZS(~r[op0]!);
         break;
       case 'SHL':
-        r[ops[0]!] = this.setZS(r[ops[0]!]! << (r[ops[1]!]! & 31));
+        r[op0] = this.setZS(r[op0]! << (r[op1]! & 31));
         break;
       case 'SHR':
-        r[ops[0]!] = this.setZS(r[ops[0]!]! >>> (r[ops[1]!]! & 31));
+        r[op0] = this.setZS(r[op0]! >>> (r[op1]! & 31));
         break;
       case 'SAR':
-        r[ops[0]!] = this.setZS((r[ops[0]!]! | 0) >> (r[ops[1]!]! & 31));
+        r[op0] = this.setZS((r[op0]! | 0) >> (r[op1]! & 31));
         break;
       case 'INC':
-        r[ops[0]!] = this.setAddFlags(r[ops[0]!]!, 1, r[ops[0]!]! + 1);
+        r[op0] = this.setAddFlags(r[op0]!, 1, r[op0]! + 1);
         break;
       case 'DEC':
-        r[ops[0]!] = this.setSubFlags(r[ops[0]!]!, 1, r[ops[0]!]! - 1);
+        r[op0] = this.setSubFlags(r[op0]!, 1, r[op0]! - 1);
         break;
       case 'CMP': {
-        const a = r[ops[0]!]!;
-        const b = r[ops[1]!]!;
+        const a = r[op0]!;
+        const b = r[op1]!;
         this.setSubFlags(a, b, a - b);
         break;
       }
 
       case 'JMP':
-        this.pc = ops[0]!;
+        this.pc = op0;
         break;
       case 'JZ':
-        if (this.getFlag(FLAG.ZF)) this.pc = ops[0]!;
+        if ((this.flags & FLAG.ZF) !== 0) this.pc = op0;
         break;
       case 'JNZ':
-        if (!this.getFlag(FLAG.ZF)) this.pc = ops[0]!;
+        if ((this.flags & FLAG.ZF) === 0) this.pc = op0;
         break;
       case 'JG':
-        if (!this.getFlag(FLAG.ZF) && !this.signedLess()) this.pc = ops[0]!;
+        if ((this.flags & FLAG.ZF) === 0 && !this.signedLess()) this.pc = op0;
         break;
       case 'JGE':
-        if (!this.signedLess()) this.pc = ops[0]!;
+        if (!this.signedLess()) this.pc = op0;
         break;
       case 'JL':
-        if (this.signedLess()) this.pc = ops[0]!;
+        if (this.signedLess()) this.pc = op0;
         break;
       case 'JLE':
-        if (this.signedLess() || this.getFlag(FLAG.ZF)) this.pc = ops[0]!;
+        if (this.signedLess() || (this.flags & FLAG.ZF) !== 0) this.pc = op0;
         break;
       case 'CALL':
         this.push(this.pc);
-        this.pc = ops[0]!;
+        this.pc = op0;
         break;
       case 'CALLR':
         this.push(this.pc);
-        this.pc = r[ops[0]!]! >>> 0;
+        this.pc = r[op0]! >>> 0;
         break;
       case 'JA':
-        if (!this.getFlag(FLAG.CF) && !this.getFlag(FLAG.ZF)) this.pc = ops[0]!;
+        if ((this.flags & (FLAG.CF | FLAG.ZF)) === 0) this.pc = op0;
         break;
       case 'JAE':
-        if (!this.getFlag(FLAG.CF)) this.pc = ops[0]!;
+        if ((this.flags & FLAG.CF) === 0) this.pc = op0;
         break;
       case 'JB':
-        if (this.getFlag(FLAG.CF)) this.pc = ops[0]!;
+        if ((this.flags & FLAG.CF) !== 0) this.pc = op0;
         break;
       case 'JBE':
-        if (this.getFlag(FLAG.CF) || this.getFlag(FLAG.ZF)) this.pc = ops[0]!;
+        if ((this.flags & (FLAG.CF | FLAG.ZF)) !== 0) this.pc = op0;
         break;
       case 'RET':
         this.pc = this.pop();
         break;
 
       case 'PUSH':
-        this.push(r[ops[0]!]!);
+        this.push(r[op0]!);
         break;
       case 'POP':
-        r[ops[0]!] = this.pop();
+        r[op0] = this.pop();
         break;
 
       // --- system ---
       case 'INT':
-        return { reason: 'syscall', num: ops[0]! >>> 0 };
+        return { reason: 'syscall', num: op0 >>> 0 };
       case 'EI':
-        this.setFlag(FLAG.IF, true);
+        this.flags |= FLAG.IF;
         break;
       case 'DI':
-        this.setFlag(FLAG.IF, false);
+        this.flags &= ~FLAG.IF;
         break;
       case 'IN': // rd = port[rp]
-        r[ops[0]!] = this.ports.in(r[ops[1]!]!) >>> 0;
+        r[op0] = this.ports.in(r[op1]!) >>> 0;
         break;
       case 'OUT': // port[rp] = rs   (operands: rp, rs)
-        this.ports.out(r[ops[0]!]!, r[ops[1]!]!);
+        this.ports.out(r[op0]!, r[op1]!);
         break;
       case 'IRET': {
         // Pop the trap frame pushed by deliver() (all reads while still KERNEL).
@@ -636,26 +738,26 @@ export class CPU {
         break;
       }
       case 'LIDT':
-        this.idtr = r[ops[0]!]! >>> 0;
+        this.idtr = r[op0]! >>> 0;
         break;
       case 'LKSP':
-        this.ksp = r[ops[0]!]! >>> 0;
+        this.ksp = r[op0]! >>> 0;
         break;
       case 'RDPFLA':
-        r[ops[0]!] = this.pfla >>> 0;
+        r[op0] = this.pfla >>> 0;
         break;
       case 'RDERR':
-        r[ops[0]!] = this.errorCode >>> 0;
+        r[op0] = this.errorCode >>> 0;
         break;
       case 'STMR': {
-        const n = r[ops[0]!]! >>> 0;
+        const n = r[op0]! >>> 0;
         this.timerInterval = n;
         this.timerCount = n;
-        if (n === 0) this.pendingIrqs.delete(TIMER_IRQ);
+        if (n === 0) this.cancelPendingIrq(TIMER_IRQ);
         break;
       }
       case 'LPTBR':
-        this.ptbr = r[ops[0]!]! >>> 0;
+        this.ptbr = r[op0]! >>> 0;
         break;
       case 'PGON':
         this.pagingEnabled = true;
