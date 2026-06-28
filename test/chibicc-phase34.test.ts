@@ -182,7 +182,7 @@ test('chibicc Phase 34 runs guest cc and emits assembly inside the OS', () => {
 
   const out = bootAndRun(disk, 'cc -S -o /tmp/ret.s /ret.c\ncat /tmp/ret.s', 300_000_000);
   assert.ok(out.includes('main:\n'), `missing generated main label in:\n${out}`);
-  assert.match(out, /  ADD R0, R[17]\n/, `missing generated addition in:\n${out}`);
+  assert.match(out, / {2}ADD R0, R[17]\n/, `missing generated addition in:\n${out}`);
 });
 
 test('chibicc Phase 34 runs guest cc, links an executable, and runs it', () => {

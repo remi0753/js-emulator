@@ -3,10 +3,10 @@ import { test } from 'node:test';
 
 import { Fs } from '../src/storage/fs.ts';
 import { PortBlockDevice } from '../src/storage/port-block-device.ts';
-import { buildUserExecutable } from '../src/v3/guest-kernel.ts';
 import {
   buildGuestDiskImage,
   buildGuestKernelImage,
+  buildUserExecutable,
   GUEST_DEVELOPMENT_FS_BLOCKS,
   GUEST_KERNEL_LAYOUT,
 } from '../src/v3/guest-kernel.ts';

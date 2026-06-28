@@ -97,12 +97,9 @@ const ALL_FRONTEND_UNITS = [
   'upstream/unicode.c',
 ] as const;
 
-const COMPILER_UNITS = [
-  'main.c',
-  'guestlink.c',
-  ...ALL_FRONTEND_UNITS,
-  'codegen.c',
-] as const;
+const COMPILER_UNITS = ['main.c', 'guestlink.c', ...ALL_FRONTEND_UNITS, 'codegen.c'] as const;
+
+const COMPILER_SUPPORT_FILES = ['ccsupport.c', 'ccsupport.h', 'guestlink.h'] as const;
 
 const COMPILER_HEADERS = [
   'include/assert.h',
@@ -116,6 +113,12 @@ const COMPILER_HEADERS = [
   'include/sys/types.h',
   'include/sys/wait.h',
   'include/time.h',
+] as const;
+
+const COMPILER_SOURCE_FILES = [
+  ...COMPILER_UNITS,
+  ...COMPILER_SUPPORT_FILES,
+  'upstream/chibicc.h',
 ] as const;
 
 const USERLAND_HEADERS = [
@@ -133,6 +136,19 @@ const USERLAND_HEADERS = [
 ] as const;
 
 const COMPILER_STACK_SIZE = 256 * 1024;
+
+const SELFHOST_PROBE_SOURCE = [
+  'struct cc_type { int kind; int size; int align; };',
+  '',
+  'int cc_selfhost_align(int n, int align) {',
+  '  return (n + align - 1) / align * align;',
+  '}',
+  '',
+  'int cc_selfhost_probe(struct cc_type *ty, int x) {',
+  '  return cc_selfhost_align(x + ty->size, ty->align);',
+  '}',
+  '',
+].join('\n');
 
 // Compile every vendored frontend translation unit to a relocatable object,
 // proving the real chibicc C frontend cross-compiles under the bootstrap
@@ -177,6 +193,8 @@ export function buildChibiccCompiler(): Uint8Array {
 
 export interface InstallChibiccOptions {
   path?: string;
+  installSources?: boolean;
+  sourceRoot?: string;
 }
 
 // Install the guest compiler and the headers it can search at `/include`.
@@ -198,4 +216,32 @@ export function installChibiccToolchain(fs: Fs, options: InstallChibiccOptions =
       new TextEncoder().encode(ccSource(header)),
     );
   }
+  if (options.installSources) installChibiccSources(fs, options.sourceRoot);
+}
+
+export function installChibiccSources(fs: Fs, root = '/usr/src/cc'): void {
+  const enc = new TextEncoder();
+  for (const source of COMPILER_SOURCE_FILES) {
+    fs.writeFile(`${root}/${source}`, enc.encode(ccSource(source)));
+  }
+  fs.writeFile(`${root}/chibicc.h`, enc.encode(ccSource('upstream/chibicc.h')));
+  fs.writeFile(`${root}/selfhost.c`, enc.encode(SELFHOST_PROBE_SOURCE));
+  fs.writeFile(
+    `${root}/README`,
+    enc.encode(
+      [
+        'custom32 guest compiler bootstrap source bundle',
+        '',
+        'These files are the exact C inputs used by the host bootstrap stage to',
+        'build /bin/cc. Phase 35 tests compile a selfhost probe from this tree',
+        'inside the guest and compare repeated stage outputs for deterministic',
+        'replay.',
+        '',
+        'Current guest cc limits: no -c relocatable output, no multi-input link,',
+        'and no standalone guest as/ld yet. The package failure queue is tracked',
+        'in docs/phase35-package-queue.md in the host repository.',
+        '',
+      ].join('\n'),
+    ),
+  );
 }

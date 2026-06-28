@@ -9,10 +9,7 @@
 import { writeFileSync } from 'node:fs';
 
 import { decodeBootBlock } from '../src/formats/bootblock.ts';
-import {
-  buildGuestDiskImage,
-  GUEST_DEVELOPMENT_FS_BLOCKS,
-} from '../src/v3/guest-kernel.ts';
+import { buildGuestDiskImage, GUEST_DEVELOPMENT_FS_BLOCKS } from '../src/v3/guest-kernel.ts';
 
 let out = 'disk.img';
 let fsBlocks: number | undefined;

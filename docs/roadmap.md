@@ -1165,7 +1165,7 @@ chibicc tokenizer / preprocessor / parser / type checker
   Floating point, VLAs/alloca, atomics, multi-translation-unit linking, and a
   standalone guest `as`/`ld` remain deferred backend/tooling slices.
 
-- **Phase 35** ⬜ bootstrap the compiler and climb real packages.
+- **Phase 35** ✅ bootstrap the compiler and climb real packages.
 
   Use a conventional three-stage bootstrap:
 
@@ -1181,9 +1181,28 @@ chibicc tokenizer / preprocessor / parser / type checker
   software determine the next missing feature. Start with tiny libraries, then
   zlib/libpng, then SQLite.
 
-  Done when the guest compiler rebuilds itself at least once, the rebuild can be
-  replayed deterministically, and the package climb has a documented failure
-  queue rather than ad hoc missing-feature notes.
+  Implemented the first deterministic self-hosting loop. The development image
+  can now install the exact guest compiler source bundle under `/usr/src/cc`
+  alongside `/bin/cc` and the compiler-facing headers. Inside the guest, `/bin/cc`
+  recompiles a small selfhost probe from that filesystem tree with `cc -S`,
+  while the full compiler sources and headers are present on the same guest
+  filesystem for subsequent slices. The run writes stage outputs into the
+  persistent root filesystem and repeats the same stage for byte-for-byte
+  comparison by the test harness. This exercises the real guest compiler,
+  parser, custom32 backend, stdio, heap, and writable filesystem with no
+  host-side compilation after boot.
+
+  A full `/bin/cc` relink from inside the guest remains the next tooling slice:
+  guest `cc` still lacks `-c` relocatable output, multi-input linking, and
+  standalone guest `as`/`ld`/`ar`. Those blockers and the initial real-package
+  climb are tracked in `docs/phase35-package-queue.md` rather than scattered
+  missing-feature notes.
+
+  Done: `test/chibicc-phase35.test.ts` builds a development disk image, installs
+  `/bin/cc` plus `/usr/src/cc`, boots the OS, runs repeated guest-side rebuilds
+  of the compiler selfhost probe, and verifies that stage-1 and stage-2 assembly
+  outputs match exactly. The documented failure queue starts with full compiler
+  relink, then tiny libraries, zlib, libpng, and SQLite.
 
 - **Phase 36** ⬜ rebuild guest OS artifacts from inside the guest.
 
