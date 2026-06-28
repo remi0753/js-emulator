@@ -25,16 +25,18 @@ include/         freestanding compat headers so the frontend preprocesses under
 ccsupport.{h,c}  small libc gap-fillers the guest libc lacks (strndup, ispunct,
                  strcasecmp/strncasecmp, strerror, strtold, deterministic time)
 codegen.c        custom32 backend — LOCAL, replaces upstream codegen.c (x86-64)
-main.c           freestanding driver: read .c from FS, emit custom32 asm
+guestlink.c      guest in-process assembler/linker for single-file executables
+main.c           freestanding driver: read .c from FS, emit asm or executable
 probe.c          de-risking probe: tokenize an in-memory string with the real
                  chibicc tokenizer and report counts
 ```
 
-`main.c` is a guest-native `cc -S` driver. It keeps upstream's process-spawning
-driver out of the guest for now: it reads one C file from the guest filesystem,
-runs tokenize/preprocess/parse/codegen in process, and writes custom32 assembly
-back to the guest filesystem. Guest `as`/`ld` are still a separate Phase 34
-slice before `cc` can produce and run executables entirely in the guest.
+`main.c` is a guest-native single-file `cc` driver. It keeps upstream's
+process-spawning driver out of the guest: it reads one C file from the guest
+filesystem and runs tokenize/preprocess/parse/codegen in process. With `-S` it
+writes custom32 assembly back to the guest filesystem; otherwise it calls
+`guestlink.c` to assemble/link that assembly with a compact crt/runtime and
+write a guest executable.
 
 `codegen.c` is ported from the TS port's
 `codegen.ts`, but walks upstream's Node/Obj/Type model and assigns local frame
@@ -42,7 +44,8 @@ offsets itself (as upstream's codegen.c does). It covers the integer / pointer /
 struct / control-flow / 64-bit core the frontend itself uses; floating point,
 VLAs/alloca, and atomics are the next backend slices and currently raise a
 codegen error. `main.c`/glob/subprocess `as`/`ld` from upstream's driver are
-replaced because the guest emits assembly directly rather than shelling out.
+replaced because the guest compiles and links in-process rather than shelling
+out.
 
 ## Vendored revision
 

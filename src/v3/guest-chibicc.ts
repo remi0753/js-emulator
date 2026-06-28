@@ -61,7 +61,7 @@ const resolveCompilerInclude: IncludeResolver = (name) => {
 };
 
 function compileCc(subpath: string): ObjectFile {
-  return compileObject(ccSource(subpath), {
+  return compileObject(substituteDefines(ccSource(subpath), GUEST_KERNEL_DEFINES), {
     name: `${subpath.replace(/[/.]/g, '_')}.o`,
     resolveInclude: resolveCompilerInclude,
   });
@@ -86,8 +86,7 @@ const FRONTEND_UNITS = [
 
 // Every vendored chibicc frontend translation unit (codegen.c and main.c are
 // replaced by the guest backend and driver). All of these cross-compile with
-// the TS bootstrap frontend; linking the whole compiler additionally needs the
-// ported codegen.c and a driver (Phase 34, in progress).
+// the TS bootstrap frontend and link into the guest-native compiler.
 const ALL_FRONTEND_UNITS = [
   'upstream/tokenize.c',
   'upstream/preprocess.c',
@@ -100,6 +99,7 @@ const ALL_FRONTEND_UNITS = [
 
 const COMPILER_UNITS = [
   'main.c',
+  'guestlink.c',
   ...ALL_FRONTEND_UNITS,
   'codegen.c',
 ] as const;
@@ -180,8 +180,8 @@ export interface InstallChibiccOptions {
 }
 
 // Install the guest compiler and the headers it can search at `/include`.
-// The compiler currently emits custom32 assembly (`-S`); guest as/ld are the
-// next Phase 34 slice.
+// The compiler supports `-S` assembly output and its default mode assembles and
+// links a single source file into a guest executable in-process.
 export function installChibiccToolchain(fs: Fs, options: InstallChibiccOptions = {}): void {
   const path = options.path ?? '/bin/cc';
   fs.writeFile(path, buildChibiccCompiler());

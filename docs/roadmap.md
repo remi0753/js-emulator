@@ -1109,7 +1109,7 @@ chibicc tokenizer / preprocessor / parser / type checker
   unit-like heap state, writes and seeks temporary files, creates/removes
   `/tmp` scratch files, and verifies the larger development disk image.
 
-- **Phase 34** ⬜ make the compiler runnable inside the guest.
+- **Phase 34** ✅ make the compiler runnable inside the guest.
 
   Cross-compile the compiler as a guest executable, install it with its headers
   and libraries into the disk image, and run it on small source files stored in
@@ -1152,10 +1152,18 @@ chibicc tokenizer / preprocessor / parser / type checker
   double-indirect inode layout so compiler-sized binaries fit on development
   images.
 
-  Next: guest-ify as/ld, or fold an assembler/linker library into `cc`, so the
-  guest can turn that assembly into an executable and run it without host-side
-  compilation after boot. Floating point, VLAs/alloca, and atomics remain
-  deferred backend slices.
+  Completed the remaining Phase 34 slice by folding a deterministic
+  custom32 assembler/linker into the guest compiler (`cc-c/guestlink.c`).
+  Default `cc -o output input.c` now captures the generated assembly in-process,
+  assembles the single translation unit together with a compact guest crt/runtime,
+  emits the flat guest executable format, marks it executable, and can run the
+  result inside the OS with no host-side compilation after boot. `-S` remains
+  available for assembly output. Covered by `test/chibicc-phase34.test.ts`,
+  which boots the OS, runs guest `cc -o /hello /hello.c`, runs `/hello`,
+  and verifies its output.
+
+  Floating point, VLAs/alloca, atomics, multi-translation-unit linking, and a
+  standalone guest `as`/`ld` remain deferred backend/tooling slices.
 
 - **Phase 35** ⬜ bootstrap the compiler and climb real packages.
 

@@ -184,3 +184,26 @@ test('chibicc Phase 34 runs guest cc and emits assembly inside the OS', () => {
   assert.ok(out.includes('main:\n'), `missing generated main label in:\n${out}`);
   assert.match(out, /  ADD R0, R[17]\n/, `missing generated addition in:\n${out}`);
 });
+
+test('chibicc Phase 34 runs guest cc, links an executable, and runs it', () => {
+  const disk = buildGuestDiskImage({ fsBlocks: GUEST_DEVELOPMENT_FS_BLOCKS });
+  const fs = installFs(disk);
+  installChibiccToolchain(fs);
+  fs.writeFile(
+    '/hello.c',
+    new TextEncoder().encode(
+      [
+        'extern int write(int fd, char *buf, int n);',
+        'int main(void) {',
+        '  int x = 40;',
+        '  if (x + 2 == 42) write(1, "guestcc=42\\n", 11);',
+        '  return 0;',
+        '}',
+        '',
+      ].join('\n'),
+    ),
+  );
+
+  const out = bootAndRun(disk, 'cc -o /hello /hello.c\n/hello', 900_000_000);
+  assert.ok(out.includes('guestcc=42\n'), `missing guest-built executable output in:\n${out}`);
+});

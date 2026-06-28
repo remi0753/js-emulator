@@ -3,7 +3,8 @@
 // The upstream chibicc codegen.c targets x86-64 and is intentionally *not*
 // vendored. This file is the target-specific half of the guest compiler: it
 // turns the typed AST produced by the upstream frontend (tokenize/preprocess/
-// parse/type) into custom32 assembly that the guest `as`/linker consume.
+// parse/type) into custom32 assembly that the guest compiler's in-process
+// assembler/linker can consume.
 //
 // It is a C port of the maintained host backend `src/toolchain/chibicc/
 // codegen.ts`; that TypeScript file is the authoritative reference for the

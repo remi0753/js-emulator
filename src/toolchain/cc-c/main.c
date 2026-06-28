@@ -1,4 +1,5 @@
 #include "upstream/chibicc.h"
+#include "guestlink.h"
 
 StringArray include_paths;
 bool opt_fpic;
@@ -7,6 +8,7 @@ char *base_file;
 
 static char *input_path;
 static char *output_path;
+static bool opt_asm;
 
 bool file_exists(char *path) {
   struct stat st;
@@ -15,7 +17,7 @@ bool file_exists(char *path) {
 
 static void usage(int status) {
   FILE *out = status == 0 ? stdout : stderr;
-  fprintf(out, "usage: cc [-S] [-I dir] [-o output.s] input.c\n");
+  fprintf(out, "usage: cc [-S] [-I dir] [-o output] input.c\n");
   exit(status);
 }
 
@@ -43,11 +45,12 @@ static void parse_args(int argc, char **argv) {
   while (i < argc) {
     if (!strcmp(argv[i], "--help")) usage(0);
     if (!strcmp(argv[i], "-S")) {
+      opt_asm = true;
       i = i + 1;
       continue;
     }
     if (!strcmp(argv[i], "-c")) {
-      fprintf(stderr, "cc: -c waits on guest as/ld; use -S for now\n");
+      fprintf(stderr, "cc: -c relocatable object output is not supported yet\n");
       exit(1);
     }
     if (!strcmp(argv[i], "-o")) {
@@ -79,7 +82,10 @@ static void parse_args(int argc, char **argv) {
     i = i + 1;
   }
   if (input_path == 0) usage(1);
-  if (output_path == 0) output_path = replace_ext(input_path, ".s");
+  if (output_path == 0) {
+    if (opt_asm) output_path = replace_ext(input_path, ".s");
+    else output_path = "a.out";
+  }
 }
 
 static void add_default_include_paths(void) {
@@ -111,9 +117,43 @@ static void compile_to_asm(char *input, char *output) {
   fclose(out);
 }
 
+static char *compile_to_asm_memory(char *input) {
+  Token *tok;
+  Obj *prog;
+  FILE *out;
+  char *buffer;
+  size_t size;
+  base_file = input;
+  tok = tokenize_file(input);
+  if (tok == 0) {
+    fprintf(stderr, "cc: cannot open %s: %s\n", input, strerror(errno));
+    exit(1);
+  }
+  init_macros();
+  tok = preprocess(tok);
+  prog = parse(tok);
+
+  buffer = 0;
+  size = 0;
+  out = open_memstream(&buffer, &size);
+  if (out == 0) {
+    fprintf(stderr, "cc: cannot create assembly buffer\n");
+    exit(1);
+  }
+  codegen(prog, out);
+  fclose(out);
+  return buffer;
+}
+
 int main(int argc, char **argv) {
+  char *assembly;
   add_default_include_paths();
   parse_args(argc, argv);
-  compile_to_asm(input_path, output_path);
+  if (opt_asm) {
+    compile_to_asm(input_path, output_path);
+    return 0;
+  }
+  assembly = compile_to_asm_memory(input_path);
+  assemble_and_link_guest(assembly, output_path);
   return 0;
 }
