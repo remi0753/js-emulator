@@ -122,10 +122,14 @@ export function buildUserExecutable(name: string, programSource: string): Uint8A
 
 export interface GuestDiskImageOptions {
   kernel?: KernelImage;
+  fsBlocks?: number;
 }
 
+export const GUEST_DEFAULT_FS_BLOCKS = 2048;
+export const GUEST_DEVELOPMENT_FS_BLOCKS = 32768;
+
 export function buildGuestDiskImage(options: GuestDiskImageOptions = {}): Uint8Array {
-  const fsDisk = BlockDisk.blank(2048);
+  const fsDisk = BlockDisk.blank(options.fsBlocks ?? GUEST_DEFAULT_FS_BLOCKS);
   const ports = new PortBus();
   ports.register(PORT.DISK_DATA, 1, fsDisk);
   ports.register(PORT.DISK_POS, 1, fsDisk);

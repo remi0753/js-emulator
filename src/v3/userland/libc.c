@@ -668,6 +668,93 @@ int atoi(char *text) {
   return value * sign;
 }
 
+int isspace(int character) {
+  return character == ' ' || character == '\t' || character == '\n' ||
+    character == '\r' || character == '\v' || character == '\f';
+}
+
+int isdigit(int character) {
+  return character >= '0' && character <= '9';
+}
+
+int isupper(int character) {
+  return character >= 'A' && character <= 'Z';
+}
+
+int islower(int character) {
+  return character >= 'a' && character <= 'z';
+}
+
+int isalpha(int character) {
+  return isupper(character) || islower(character);
+}
+
+int isalnum(int character) {
+  return isalpha(character) || isdigit(character);
+}
+
+int isxdigit(int character) {
+  return isdigit(character) ||
+    (character >= 'a' && character <= 'f') ||
+    (character >= 'A' && character <= 'F');
+}
+
+int toupper(int character) {
+  if (islower(character)) return character - 'a' + 'A';
+  return character;
+}
+
+int tolower(int character) {
+  if (isupper(character)) return character - 'A' + 'a';
+  return character;
+}
+
+int digit_value(int character) {
+  if (character >= '0' && character <= '9') return character - '0';
+  if (character >= 'a' && character <= 'z') return character - 'a' + 10;
+  if (character >= 'A' && character <= 'Z') return character - 'A' + 10;
+  return -1;
+}
+
+unsigned int strtoul(char *text, char **endptr, int base) {
+  int i;
+  int sign;
+  int digit;
+  unsigned int value;
+  i = 0;
+  sign = 1;
+  value = 0;
+  while (isspace(text[i])) i = i + 1;
+  if (text[i] == '+') i = i + 1;
+  else if (text[i] == '-') {
+    sign = -1;
+    i = i + 1;
+  }
+  if ((base == 0 || base == 16) && text[i] == '0' &&
+      (text[i + 1] == 'x' || text[i + 1] == 'X')) {
+    base = 16;
+    i = i + 2;
+  } else if (base == 0 && text[i] == '0') {
+    base = 8;
+    i = i + 1;
+  } else if (base == 0) {
+    base = 10;
+  }
+  while (1) {
+    digit = digit_value(text[i]);
+    if (digit < 0 || digit >= base) break;
+    value = value * base + digit;
+    i = i + 1;
+  }
+  if (endptr != 0) *endptr = text + i;
+  if (sign < 0) return 0 - value;
+  return value;
+}
+
+int strtol(char *text, char **endptr, int base) {
+  return strtoul(text, endptr, base);
+}
+
 // --- unbuffered stdio ------------------------------------------------------
 
 FILE *fdopen(int fd, char *mode) {
@@ -705,6 +792,41 @@ int fclose(FILE *stream) {
 
 int fflush(FILE *stream) {
   return 0;
+}
+
+int fseek(FILE *stream, int offset, int whence) {
+  int result;
+  result = lseek(stream->fd, offset, whence);
+  if (result < 0) {
+    stream->error = 1;
+    return -1;
+  }
+  stream->eof = 0;
+  return 0;
+}
+
+int ftell(FILE *stream) {
+  int result;
+  result = lseek(stream->fd, 0, 1);
+  if (result < 0) stream->error = 1;
+  return result;
+}
+
+int feof(FILE *stream) {
+  return stream->eof;
+}
+
+int ferror(FILE *stream) {
+  return stream->error;
+}
+
+void clearerr(FILE *stream) {
+  stream->error = 0;
+  stream->eof = 0;
+}
+
+int fileno(FILE *stream) {
+  return stream->fd;
 }
 
 int fread(void *buffer, int size, int count, FILE *stream) {
@@ -799,35 +921,219 @@ int puts(char *text) {
   return fputc('\n', stdout);
 }
 
-int printf(char *text) {
-  return fputs(text, stdout);
+struct format_sink {
+  FILE *stream;
+  char *buffer;
+  int size;
+  int count;
+  int error;
+};
+
+void format_putc(struct format_sink *sink, int character) {
+  if (sink->stream != 0) {
+    if (fputc(character, sink->stream) < 0) sink->error = 1;
+  } else if (sink->buffer != 0 && sink->size > 0 &&
+      sink->count + 1 < sink->size) {
+    sink->buffer[sink->count] = character;
+  }
+  sink->count = sink->count + 1;
 }
 
-int fprintf(FILE *stream, char *text) {
-  return fputs(text, stream);
+void format_puts(struct format_sink *sink, char *text) {
+  int i;
+  if (text == 0) text = "(null)";
+  i = 0;
+  while (text[i] != 0) {
+    format_putc(sink, text[i]);
+    i = i + 1;
+  }
+}
+
+void format_uint(struct format_sink *sink, unsigned int value, int base, int upper) {
+  char digits[32];
+  int n;
+  int digit;
+  if (value == 0) {
+    format_putc(sink, '0');
+    return;
+  }
+  n = 0;
+  while (value != 0) {
+    digit = value % base;
+    if (digit < 10) digits[n] = '0' + digit;
+    else if (upper != 0) digits[n] = 'A' + digit - 10;
+    else digits[n] = 'a' + digit - 10;
+    value = value / base;
+    n = n + 1;
+  }
+  while (n > 0) {
+    n = n - 1;
+    format_putc(sink, digits[n]);
+  }
+}
+
+void format_int(struct format_sink *sink, int value) {
+  if (value < 0) {
+    format_putc(sink, '-');
+    format_uint(sink, 0 - value, 10, 0);
+  } else {
+    format_uint(sink, value, 10, 0);
+  }
+}
+
+int vformat(struct format_sink *sink, char *format, va_list ap) {
+  int i;
+  int long_flag;
+  int spec;
+  i = 0;
+  while (format[i] != 0) {
+    if (format[i] != '%') {
+      format_putc(sink, format[i]);
+      i = i + 1;
+      continue;
+    }
+    i = i + 1;
+    if (format[i] == '%') {
+      format_putc(sink, '%');
+      i = i + 1;
+      continue;
+    }
+    long_flag = 0;
+    if (format[i] == 'l') {
+      long_flag = 1;
+      i = i + 1;
+      if (format[i] == 'l') i = i + 1;
+    }
+    spec = format[i];
+    if (spec == 0) break;
+    if (spec == 's') format_puts(sink, va_arg(ap, char *));
+    else if (spec == 'c') format_putc(sink, va_arg(ap, int));
+    else if (spec == 'd' || spec == 'i') format_int(sink, va_arg(ap, int));
+    else if (spec == 'u') format_uint(sink, va_arg(ap, unsigned int), 10, 0);
+    else if (spec == 'x') format_uint(sink, va_arg(ap, unsigned int), 16, 0);
+    else if (spec == 'X') format_uint(sink, va_arg(ap, unsigned int), 16, 1);
+    else if (spec == 'p') {
+      format_puts(sink, "0x");
+      format_uint(sink, va_arg(ap, unsigned int), 16, 0);
+    } else {
+      format_putc(sink, '%');
+      if (long_flag != 0) format_putc(sink, 'l');
+      format_putc(sink, spec);
+    }
+    i = i + 1;
+  }
+  if (sink->buffer != 0 && sink->size > 0) {
+    if (sink->count < sink->size) sink->buffer[sink->count] = 0;
+    else sink->buffer[sink->size - 1] = 0;
+  }
+  if (sink->error != 0) return -1;
+  return sink->count;
+}
+
+int vfprintf(FILE *stream, char *format, va_list ap) {
+  struct format_sink sink;
+  sink.stream = stream;
+  sink.buffer = 0;
+  sink.size = 0;
+  sink.count = 0;
+  sink.error = 0;
+  return vformat(&sink, format, ap);
+}
+
+int vsnprintf(char *buffer, int size, char *format, va_list ap) {
+  struct format_sink sink;
+  sink.stream = 0;
+  sink.buffer = buffer;
+  sink.size = size;
+  sink.count = 0;
+  sink.error = 0;
+  return vformat(&sink, format, ap);
+}
+
+int snprintf(char *buffer, int size, char *format, ...) {
+  va_list ap;
+  int result;
+  va_start(ap, format);
+  result = vsnprintf(buffer, size, format, ap);
+  va_end(ap);
+  return result;
+}
+
+int printf(char *format, ...) {
+  va_list ap;
+  int result;
+  struct format_sink sink;
+  sink.stream = stdout;
+  sink.buffer = 0;
+  sink.size = 0;
+  sink.count = 0;
+  sink.error = 0;
+  va_start(ap, format);
+  result = vformat(&sink, format, ap);
+  va_end(ap);
+  return result;
+}
+
+int fprintf(FILE *stream, char *format, ...) {
+  va_list ap;
+  int result;
+  struct format_sink sink;
+  sink.stream = stream;
+  sink.buffer = 0;
+  sink.size = 0;
+  sink.count = 0;
+  sink.error = 0;
+  va_start(ap, format);
+  result = vformat(&sink, format, ap);
+  va_end(ap);
+  return result;
 }
 
 int print_int(int value) {
-  char digits[16];
+  return printf("%d", value);
+}
+
+char tmpnam_buffer[32];
+int tmp_sequence;
+
+char *tmpnam(char *buffer) {
+  char *out;
+  out = buffer;
+  if (out == 0) out = tmpnam_buffer;
+  tmp_sequence = tmp_sequence + 1;
+  snprintf(out, 32, "/tmp/ctmp%x", tmp_sequence);
+  return out;
+}
+
+int mkstemp(char *template) {
   int i;
-  int start;
-  if (value == 0) return write(1, "0", 1);
-  if (value < 0) {
-    write(1, minus_text, 1);
-    value = 0 - value;
-  }
+  int fd;
+  struct stat st;
   i = 0;
-  while (value > 0) {
-    digits[i] = '0' + value % 10;
-    value = value / 10;
+  while (i < 256) {
+    tmp_sequence = tmp_sequence + 1;
+    snprintf(template, 32, "/tmp/ctmp%x", tmp_sequence);
+    if (stat(template, &st) < 0) {
+      fd = open(template, O_RDWR | O_CREAT | O_TRUNC);
+      if (fd >= 0) return fd;
+    }
     i = i + 1;
   }
-  start = i - 1;
-  while (start >= 0) {
-    write(1, digits + start, 1);
-    start = start - 1;
-  }
-  return i;
+  errno = CFG_EEXIST;
+  return -1;
+}
+
+FILE *tmpfile(void) {
+  char path[32];
+  int fd;
+  fd = mkstemp(path);
+  if (fd < 0) return 0;
+  unlink(path);
+  return fdopen(fd, "w+");
+}
+
+int remove(char *path) {
+  return unlink(path);
 }
 
 // --- directories -----------------------------------------------------------

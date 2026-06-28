@@ -85,26 +85,28 @@ test('a caught signal interrupts a blocking syscall with EINTR', () => {
       }
       int main(int argc, char **argv) {
         int fds[2];
+        int ready[2];
         int pid;
         int status;
-        int i;
         char byte;
         pipe(fds);
+        pipe(ready);
         pid = fork();
         if (pid == 0) {
           close(fds[1]);
+          close(ready[0]);
           signal(10, on_signal);
+          write(ready[1], "r", 1);
+          close(ready[1]);
           if (read(fds[0], &byte, 1) != -1) exit(1);
           if (errno != 4 || caught != 10) exit(2);
           write(1, "EINTR-ok\\n", 9);
           exit(0);
         }
         close(fds[0]);
-        i = 0;
-        while (i < 4) {
-          __syscall(2, 0, 0, 0);
-          i = i + 1;
-        }
+        close(ready[1]);
+        read(ready[0], &byte, 1);
+        close(ready[0]);
         kill(pid, 10);
         waitpid(pid, &status, 0);
         close(fds[1]);
@@ -116,7 +118,7 @@ test('a caught signal interrupts a blocking syscall with EINTR', () => {
   machine.keyboard.close();
 
   assert.equal(machine.run(40_000_000).reason, 'halt');
-  assert.equal(output().includes('EINTR-ok\n'), true);
+  assert.equal(output().includes('EINTR-ok\n'), true, output());
 });
 
 test('waitpid reports stopped and continued children before final signal exit', () => {

@@ -1066,7 +1066,7 @@ chibicc tokenizer / preprocessor / parser / type checker
   and regression programs for custom32 and run them deterministically inside the
   guest.
 
-- **Phase 33** ⬜ expand the guest libc and build environment for compiler-sized
+- **Phase 33** ✅ expand the guest libc and build environment for compiler-sized
   programs.
 
   The compiler needs a broader libc than ordinary userland tools. Provide
@@ -1085,6 +1085,29 @@ chibicc tokenizer / preprocessor / parser / type checker
   Done when compiler-sized guest programs can parse files, allocate large
   translation-unit state, emit temporary/output files, and report errors through
   libc without exhausting the default development environment.
+
+  Added compiler-facing guest headers (`stddef.h`, `stdint.h`, `limits.h`,
+  `errno.h`, `stdio.h`, `stdlib.h`, `string.h`, `ctype.h`, `fcntl.h`,
+  `unistd.h`, and `sys/stat.h`) backed by the maintained `libc.h` declarations.
+  libc now has real `stdarg.h`-based `printf`/`fprintf`/`snprintf`/
+  `vfprintf`/`vsnprintf`, `strtol`/`strtoul`, ctype helpers, seek/error stdio
+  helpers, `fileno`, `tmpfile`, `tmpnam`, `mkstemp`, and `remove`. tmpfs files
+  grew to 4 KiB, enough for deterministic compiler scratch/output smoke tests
+  without moving the kernel image into the reserved IDT/page-table region.
+
+  The guest image builder now accepts a filesystem block count and
+  `tools/mkimg.ts --dev` builds a larger development disk (32,768 filesystem
+  blocks before the kernel region) for sources, objects, archives, and temporary
+  files. The RAM target still needs a kernel direct-map expansion before frames
+  above the first 4 MiB can safely enter the allocator, so the Phase 33
+  implementation keeps the existing physical-memory layout and documents the
+  larger-disk path first.
+
+  Done: `test/chibicc-phase33.test.ts` boots a guest program that includes the
+  compiler-facing headers, formats diagnostics with variadic stdio, parses
+  integers, uses ctype/path/error constants, allocates 128 KiB of translation
+  unit-like heap state, writes and seeks temporary files, creates/removes
+  `/tmp` scratch files, and verifies the larger development disk image.
 
 - **Phase 34** ⬜ make the compiler runnable inside the guest.
 

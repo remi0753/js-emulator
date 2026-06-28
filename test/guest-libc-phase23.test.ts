@@ -91,7 +91,7 @@ test('Phase 23 libc, environment, scripts, text tools, and multi-stage pipelines
   machine.load(0, kernel.flat);
   machine.reset({ pc: kernel.entry, sp: GUEST_KERNEL_LAYOUT.kstackTop });
 
-  assert.equal(machine.run(160_000_000).reason, 'halt');
+  assert.equal(machine.run(240_000_000).reason, 'halt', output);
   assert.equal(output.includes('GREETING=hello\n'), true, output);
   assert.equal(output.includes('path-search\n'), true, output);
   assert.equal(output.includes('sh: bad pipeline\n'), true, output);

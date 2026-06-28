@@ -5,7 +5,27 @@
 extern int errno;
 extern char **environ;
 
+#define NULL ((void *)0)
+#define EOF (-1)
+
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+
+#define O_RDONLY 0
+#define O_WRONLY 1
+#define O_RDWR 2
+#define O_CREAT 0x200
+#define O_TRUNC 0x400
+#define O_APPEND 0x1000
+#define O_NONBLOCK 0x800
+
 typedef void (*sighandler_t)(int signal);
+typedef int size_t;
+typedef int ssize_t;
+typedef int ptrdiff_t;
+
+#include <stdarg.h>
 
 struct sigaction {
   sighandler_t handler;
@@ -120,6 +140,17 @@ char *strrchr(char *text, int character);
 char *strstr(char *text, char *needle);
 char *strdup(char *text);
 int atoi(char *text);
+int strtol(char *text, char **endptr, int base);
+unsigned int strtoul(char *text, char **endptr, int base);
+int isspace(int character);
+int isdigit(int character);
+int isxdigit(int character);
+int isalpha(int character);
+int isalnum(int character);
+int isupper(int character);
+int islower(int character);
+int toupper(int character);
+int tolower(int character);
 
 int write(int fd, char *buffer, int length);
 int read(int fd, char *buffer, int length);
@@ -204,6 +235,12 @@ FILE *fdopen(int fd, char *mode);
 FILE *fopen(char *path, char *mode);
 int fclose(FILE *stream);
 int fflush(FILE *stream);
+int fseek(FILE *stream, int offset, int whence);
+int ftell(FILE *stream);
+int feof(FILE *stream);
+int ferror(FILE *stream);
+void clearerr(FILE *stream);
+int fileno(FILE *stream);
 int fread(void *buffer, int size, int count, FILE *stream);
 int fwrite(void *buffer, int size, int count, FILE *stream);
 int fgetc(FILE *stream);
@@ -211,9 +248,16 @@ int fputc(int character, FILE *stream);
 char *fgets(char *buffer, int size, FILE *stream);
 int fputs(char *text, FILE *stream);
 int puts(char *text);
-int printf(char *text);
-int fprintf(FILE *stream, char *text);
+int vfprintf(FILE *stream, char *format, va_list ap);
+int vsnprintf(char *buffer, int size, char *format, va_list ap);
+int snprintf(char *buffer, int size, char *format, ...);
+int printf(char *format, ...);
+int fprintf(FILE *stream, char *format, ...);
 int print_int(int value);
+FILE *tmpfile(void);
+char *tmpnam(char *buffer);
+int mkstemp(char *template);
+int remove(char *path);
 
 DIR *opendir(char *path);
 struct dirent *readdir(DIR *directory);
