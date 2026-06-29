@@ -506,16 +506,18 @@ int page_cache_find(int file, int offset) {
 void page_cache_flush_object(int object) {
   int fs_type;
   int node_object;
-  int i;
+  struct page_cache_entry *e;
+  struct page_cache_entry *end;
   if (file_mmap_identity(object, &fs_type, &node_object) < 0) return;
-  i = 0;
-  while (i < CFG_PAGE_CACHE_SIZE) {
-    if (page_cache[i].used != 0 &&
-        page_cache[i].fs_type == fs_type &&
-        page_cache[i].object == node_object) {
-      page_cache_flush(i);
+  // Walk a struct pointer rather than indexing page_cache[i]: the naive backend
+  // recomputes base + i*sizeof(entry) for each of the three field reads per slot.
+  e = page_cache;
+  end = e + CFG_PAGE_CACHE_SIZE;
+  while (e < end) {
+    if (e->used != 0 && e->fs_type == fs_type && e->object == node_object) {
+      page_cache_flush(e - page_cache);
     }
-    i = i + 1;
+    e = e + 1;
   }
 }
 
