@@ -373,7 +373,6 @@ extern int fs_inodestart;
 extern int fs_bmapstart;
 extern int fs_mount_flags;
 extern int buf_block[CFG_NBUF];
-extern int buf_valid[CFG_NBUF];
 extern int buf_next;
 extern char buf_data[CFG_BUF_DATA_LEN]; // NBUF * 512 bytes
 extern char namebuf[16];                // one path component during namei

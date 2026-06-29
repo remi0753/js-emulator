@@ -8,7 +8,6 @@ int fs_bmapstart;
 int fs_mount_flags; // bit 0 is read-only; the boot root is mounted read/write
 
 int buf_block[CFG_NBUF];
-int buf_valid[CFG_NBUF];
 int buf_next;
 char buf_data[CFG_BUF_DATA_LEN];
 
@@ -19,20 +18,28 @@ int fs_redirect_valid;
 char fs_redirect_path[CFG_INITPATH_LEN];
 
 int bread(int blockno) {
-  int i;
+  int *bb;
+  int *bend;
+  char *data;
   int slot;
-  i = 0;
-  while (i < CFG_NBUF) {
-    if (buf_valid[i] != 0 && buf_block[i] == blockno) {
-      return buf_data + i * 512;
-    }
-    i = i + 1;
+  // Scan the buffer cache by walking parallel pointers rather than indexing, so
+  // the naive backend doesn't recompute base + i*N three times per slot. Empty
+  // slots hold -1 (set in fs_mount); no real block number is negative, so a
+  // single buf_block compare replaces the old valid-flag-plus-block-number test.
+  // bread runs tens of thousands of times per compile (every inode, indirect,
+  // and data block lookup), so this scan is one of the hottest kernel loops.
+  bb = buf_block;
+  bend = bb + CFG_NBUF;
+  data = buf_data;
+  while (bb < bend) {
+    if (*bb == blockno) return data;
+    bb = bb + 1;
+    data = data + 512;
   }
   slot = buf_next;
   buf_next = (buf_next + 1) % CFG_NBUF;
   disk_read_block(blockno, buf_data + slot * 512);
   buf_block[slot] = blockno;
-  buf_valid[slot] = 1;
   return buf_data + slot * 512;
 }
 
@@ -42,6 +49,14 @@ void bwrite(int blockno, int data) {
 
 void fs_mount(void) {
   int sb;
+  int i;
+  // Mark every buffer-cache slot empty (-1) before the first bread; bread uses
+  // -1 rather than a separate valid array to recognise an unused slot.
+  i = 0;
+  while (i < CFG_NBUF) {
+    buf_block[i] = -1;
+    i = i + 1;
+  }
   sb = bread(1);
   if (read32_at(sb) != CFG_FS_MAGIC) {
     panic("bad filesystem magic");
