@@ -123,7 +123,17 @@ memcpy:
   SUB R1, R7
   LOADR R4, R1
   MOVR R0, R2
-memcpy_loop:
+memcpy_word:
+  MOV R7, 4
+  CMP R4, R7
+  JL memcpy_byte
+  LOADR R5, R3
+  STORER R2, R5
+  ADD R2, R7
+  ADD R3, R7
+  SUB R4, R7
+  JMP memcpy_word
+memcpy_byte:
   MOV R7, 0
   CMP R4, R7
   JZ memcpy_done
@@ -132,7 +142,7 @@ memcpy_loop:
   INC R2
   INC R3
   DEC R4
-  JMP memcpy_loop
+  JMP memcpy_byte
 memcpy_done:
   STORE R6, __csp
   POP R6
@@ -154,14 +164,27 @@ memset:
   SUB R1, R7
   LOADR R4, R1
   MOVR R0, R2
-memset_loop:
+  MOV R7, 255
+  AND R3, R7
+  MOV R7, 16843009
+  MOVR R5, R3
+  MUL R5, R7
+memset_word:
+  MOV R7, 4
+  CMP R4, R7
+  JL memset_byte
+  STORER R2, R5
+  ADD R2, R7
+  SUB R4, R7
+  JMP memset_word
+memset_byte:
   MOV R7, 0
   CMP R4, R7
   JZ memset_done
   SB R2, R3
   INC R2
   DEC R4
-  JMP memset_loop
+  JMP memset_byte
 memset_done:
   STORE R6, __csp
   POP R6
