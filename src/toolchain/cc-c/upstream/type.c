@@ -20,7 +20,11 @@ Type *ty_ullong = &(Type){TY_LONG, 8, 4, true};
 
 Type *ty_float = &(Type){TY_FLOAT, 4, 4};
 Type *ty_double = &(Type){TY_DOUBLE, 8, 4};
-Type *ty_ldouble = &(Type){TY_LDOUBLE, 16, 4};
+// [jscpu-os vendoring patch] custom32 has no extended-precision float, so
+// `long double` is the same 8-byte IEEE-754 double as `double` (the bootstrap
+// TS frontend also maps `long double` to `double`). The backend treats
+// TY_LDOUBLE exactly like TY_DOUBLE.
+Type *ty_ldouble = &(Type){TY_LDOUBLE, 8, 4};
 
 static Type *new_type(TypeKind kind, int size, int align) {
   Type *ty = calloc(1, sizeof(Type));

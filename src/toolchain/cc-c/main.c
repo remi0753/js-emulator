@@ -10,6 +10,7 @@ static char *inputs[128];
 static int input_count;
 static char *output_path;
 static bool opt_asm;
+static bool opt_compile;
 
 bool file_exists(char *path) {
   struct stat st;
@@ -18,7 +19,7 @@ bool file_exists(char *path) {
 
 static void usage(int status) {
   FILE *out = status == 0 ? stdout : stderr;
-  fprintf(out, "usage: cc [-S] [-I dir] [-o output] input.c\n");
+  fprintf(out, "usage: cc [-S | -c] [-I dir] [-o output] input...\n");
   exit(status);
 }
 
@@ -29,14 +30,15 @@ static bool startswith2(char *s, char *prefix) {
 static char *replace_ext(char *path, char *ext) {
   char *out;
   int len;
-  int dot;
+  int cut;
   len = strlen(path);
-  dot = len;
-  while (dot > 0 && path[dot - 1] != '/' && path[dot - 1] != '.') dot--;
-  if (dot == 0 || path[dot - 1] != '.') dot = len;
-  out = calloc(dot + strlen(ext) + 1, 1);
-  memcpy(out, path, dot);
-  strcpy(out + dot, ext);
+  cut = len;
+  while (cut > 0 && path[cut - 1] != '/' && path[cut - 1] != '.') cut--;
+  if (cut == 0 || path[cut - 1] != '.') cut = len;  // no extension: just append
+  else cut = cut - 1;  // drop the existing `.` so `ext` (which carries one) wins
+  out = calloc(cut + strlen(ext) + 1, 1);
+  memcpy(out, path, cut);
+  strcpy(out + cut, ext);
   return out;
 }
 
@@ -47,6 +49,11 @@ static void parse_args(int argc, char **argv) {
     if (!strcmp(argv[i], "--help")) usage(0);
     if (!strcmp(argv[i], "-S")) {
       opt_asm = true;
+      i = i + 1;
+      continue;
+    }
+    if (!strcmp(argv[i], "-c")) {
+      opt_compile = true;
       i = i + 1;
       continue;
     }
@@ -104,9 +111,19 @@ static void parse_args(int argc, char **argv) {
     i = i + 1;
   }
   if (input_count == 0) usage(1);
+  if (opt_asm && opt_compile) {
+    fprintf(stderr, "cc: -S and -c are mutually exclusive\n");
+    exit(1);
+  }
+  if (output_path != 0 && (opt_asm || opt_compile) && input_count != 1) {
+    fprintf(stderr, "cc: cannot specify -o with %s and multiple input files\n",
+            opt_asm ? "-S" : "-c");
+    exit(1);
+  }
   if (output_path == 0) {
     if (opt_asm) output_path = replace_ext(inputs[0], ".s");
-    else output_path = "a.out";
+    // -c derives a `.o` per input below; only plain link mode defaults to a.out.
+    else if (!opt_compile) output_path = "a.out";
   }
 }
 
@@ -188,12 +205,28 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  // Link mode: when every input is assembly, assemble each translation unit and
-  // link them (plus crt/libc/runtime assembly) into one guest executable.
-  bool all_asm = true;
+  // -c: compile (or assemble) each input to its own relocatable `.o` object,
+  // without linking. A `.s` input is assembled directly; anything else is run
+  // through the frontend first.
+  if (opt_compile) {
+    for (int i = 0; i < input_count; i++) {
+      char *out = output_path ? output_path : replace_ext(inputs[i], ".o");
+      if (ends_with(inputs[i], ".s")) {
+        assemble_to_object(guest_read_file(inputs[i]), out);
+      } else {
+        assemble_to_object(compile_to_asm_memory(inputs[i]), out);
+      }
+    }
+    return 0;
+  }
+
+  // Link mode: when every input is already assembly (.s) or a relocatable
+  // object (.o), link them (plus whatever crt/libc/runtime the inputs supply)
+  // into one guest executable. The inputs must define `_start`.
+  bool all_linkable = true;
   for (int i = 0; i < input_count; i++)
-    if (!ends_with(inputs[i], ".s")) all_asm = false;
-  if (all_asm) {
+    if (!ends_with(inputs[i], ".s") && !ends_with(inputs[i], ".o")) all_linkable = false;
+  if (all_linkable) {
     link_guest_objects(inputs, input_count, output_path);
     return 0;
   }
@@ -201,7 +234,7 @@ int main(int argc, char **argv) {
   // Single-source convenience path: compile, assemble, and link one .c file
   // with the built-in crt in one step.
   if (input_count != 1) {
-    fprintf(stderr, "cc: mixed or multiple non-assembly inputs are not supported; compile each with -S, then link the .s files\n");
+    fprintf(stderr, "cc: mixed or multiple non-assembly inputs are not supported; compile each with -c, then link the .o files\n");
     exit(1);
   }
   assembly = compile_to_asm_memory(inputs[0]);

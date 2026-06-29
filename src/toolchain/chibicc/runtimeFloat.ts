@@ -408,8 +408,19 @@ unsigned long long __divdf3(unsigned alo, unsigned ahi, unsigned blo, unsigned b
   __df_normalize(&ae, &am);
   __df_normalize(&be, &bm);
 
-  unsigned long long q = 0ull;
+  // Normalize the dividend into [bm, 2*bm) so the quotient is in [1, 2) and
+  // lands as a 56-bit value in [2^55, 2^56) -- exactly what __df_pack expects.
+  // Generating 55 fraction bits *below* an explicit integer bit avoids the
+  // off-by-one that dropped the quotient's integer bit whenever am >= bm (a
+  // plain 55-iteration loop can only ever hold 55 bits, i.e. < 2^55).
+  int exp = ae - be;
   unsigned long long rem = am;
+  if (am < bm) {
+    rem = am << 1;
+    exp = exp - 1;
+  }
+  unsigned long long q = 1ull;
+  rem = rem - bm;
   int i = 0;
   while (i < 55) {
     rem = rem << 1;
@@ -421,11 +432,6 @@ unsigned long long __divdf3(unsigned alo, unsigned ahi, unsigned blo, unsigned b
     i = i + 1;
   }
   if (rem != 0ull) q = q | 1ull;
-  int exp = ae - be;
-  if (q < (1ull << 55)) {
-    q = q << 1;
-    exp = exp - 1;
-  }
   return __df_pack(sign, exp, q);
 }
 

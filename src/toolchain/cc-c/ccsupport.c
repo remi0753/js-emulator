@@ -51,8 +51,58 @@ char *strerror(int errnum) {
   return "error";
 }
 
+// Parse a decimal floating-point literal (the tokenizer's convert_pp_number
+// path). custom32 has no hardware float, but this file is compiled by the
+// bootstrap backend with soft-float, so plain `double` arithmetic works here.
+// Not perfectly rounded, but accurate enough for ordinary C source literals.
+// Hex floats and inf/nan spellings are not handled (the frontend never emits
+// them for this target).
 long double strtold(char *nptr, char **endptr) {
-  return strtol(nptr, endptr, 0);
+  char *p = nptr;
+  while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+  int sign = 1;
+  if (*p == '+') {
+    p++;
+  } else if (*p == '-') {
+    sign = -1;
+    p++;
+  }
+  double val = 0.0;
+  while (*p >= '0' && *p <= '9') {
+    val = val * 10.0 + (double)(*p - '0');
+    p++;
+  }
+  if (*p == '.') {
+    p++;
+    double scale = 0.1;
+    while (*p >= '0' && *p <= '9') {
+      val = val + (double)(*p - '0') * scale;
+      scale = scale * 0.1;
+      p++;
+    }
+  }
+  if (*p == 'e' || *p == 'E') {
+    p++;
+    int esign = 1;
+    if (*p == '+') {
+      p++;
+    } else if (*p == '-') {
+      esign = -1;
+      p++;
+    }
+    int exp = 0;
+    while (*p >= '0' && *p <= '9') {
+      exp = exp * 10 + (*p - '0');
+      p++;
+    }
+    double pw = 1.0;
+    for (int i = 0; i < exp; i++) pw = pw * 10.0;
+    if (esign < 0) val = val / pw;
+    else val = val * pw;
+  }
+  if (endptr) *endptr = p;
+  if (sign < 0) return -val;
+  return val;
 }
 
 static struct tm deterministic_tm;

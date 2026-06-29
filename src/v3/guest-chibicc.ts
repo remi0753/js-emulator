@@ -18,7 +18,7 @@ import type { Fs } from '../storage/fs.ts';
 import { compileObject, crt0Object, userCrtAssembly } from '../toolchain/cc.ts';
 import { compile as chibiccCompile, type IncludeResolver } from '../toolchain/chibicc/index.ts';
 import { I64_RUNTIME_SOURCE, i64RuntimeObject } from '../toolchain/chibicc/runtime64.ts';
-import { floatRuntimeArchive } from '../toolchain/chibicc/runtimeFloat.ts';
+import { FLOAT_RUNTIME_SOURCE, floatRuntimeArchive } from '../toolchain/chibicc/runtimeFloat.ts';
 import { linkObjects } from '../toolchain/object-linker.ts';
 import { type Defines, GUEST_KERNEL_DEFINES, GUEST_KERNEL_LAYOUT } from './config.ts';
 import { linkGuestExecutable } from './guest-cc.ts';
@@ -102,6 +102,12 @@ const COMPILER_UNITS = ['main.c', 'guestlink.c', ...ALL_FRONTEND_UNITS, 'codegen
 
 const COMPILER_SUPPORT_FILES = ['ccsupport.c', 'ccsupport.h', 'guestlink.h'] as const;
 
+// Standalone toolchain drivers built as their own guest executables. Each links
+// only the assembler/linker half (`guestlink.c`) plus the compiler support and
+// libc — no frontend or backend — so `as`/`ld` stay small and independent of the
+// C compiler proper.
+const TOOL_UNITS = ['guestlink.c', 'ccsupport.c'] as const;
+
 const COMPILER_HEADERS = [
   'include/assert.h',
   'include/glob.h',
@@ -119,6 +125,8 @@ const COMPILER_HEADERS = [
 const COMPILER_SOURCE_FILES = [
   ...COMPILER_UNITS,
   ...COMPILER_SUPPORT_FILES,
+  'as.c',
+  'ld.c',
   'upstream/chibicc.h',
 ] as const;
 
@@ -277,6 +285,30 @@ export function buildChibiccCompiler(): Uint8Array {
   return linkCompilerProgram(COMPILER_UNITS);
 }
 
+// Build a standalone toolchain driver (`as` or `ld`) as a guest executable: the
+// given driver translation unit linked against the assembler/linker half and
+// the support/libc objects only.
+function buildToolProgram(driver: string): Uint8Array {
+  const objects: ObjectFile[] = [
+    crt0Object(COMPILER_STACK_SIZE),
+    compileCc(driver),
+    ...TOOL_UNITS.map(compileCc),
+    compileLibc(),
+    i64RuntimeObject(),
+  ];
+  return linkGuestExecutable(objects, [floatRuntimeArchive()]);
+}
+
+// The standalone guest assembler: `.s` assembly -> relocatable `.o` object.
+export function buildGuestAs(): Uint8Array {
+  return buildToolProgram('as.c');
+}
+
+// The standalone guest linker: `.o`/`.s` inputs -> a guest executable.
+export function buildGuestLd(): Uint8Array {
+  return buildToolProgram('ld.c');
+}
+
 export interface InstallChibiccOptions {
   path?: string;
   installSources?: boolean;
@@ -290,6 +322,17 @@ export function installChibiccToolchain(fs: Fs, options: InstallChibiccOptions =
   const path = options.path ?? '/bin/cc';
   fs.writeFile(path, buildChibiccCompiler());
   fs.chmod(path, 0o755);
+  // The standalone assembler and linker, sharing cc's object format.
+  fs.writeFile('/bin/as', buildGuestAs());
+  fs.chmod('/bin/as', 0o755);
+  fs.writeFile('/bin/ld', buildGuestLd());
+  fs.chmod('/bin/ld', 0o755);
+  // The toolchain runtime libraries the single-source `cc -o` link pulls in on
+  // demand: soft-float (float/double ops) and the 64-bit integer helpers. Both
+  // are prebuilt to custom32 assembly with the bootstrap backend, the same way
+  // the self-rebuild kit ships crt.s/libc.s/i64rt.s. guestlink.c reads them from
+  // these fixed `/lib` paths (LIB_I64 / LIB_SOFTFLOAT).
+  installRuntimeLibraries(fs);
   for (const header of USERLAND_HEADERS) {
     fs.writeFile(
       `/include/${header}`,
@@ -320,6 +363,19 @@ export function installChibiccToolchain(fs: Fs, options: InstallChibiccOptions =
   );
   fs.writeFile('/include/ccsupport.h', new TextEncoder().encode(ccSource('ccsupport.h')));
   if (options.installSources) installChibiccSources(fs, options.sourceRoot);
+}
+
+// Stage the prebuilt soft-float and 64-bit integer runtime assembly under
+// `/lib`, where the guest `cc -o` link path (guestlink.c) looks for them when a
+// program uses float/double or `long long`. Compiled with the bootstrap backend
+// so they speak the same assembly dialect the guest assembler reads.
+function installRuntimeLibraries(fs: Fs): void {
+  const enc = new TextEncoder();
+  fs.writeFile('/lib/i64.s', enc.encode(chibiccCompile(I64_RUNTIME_SOURCE, { name: 'i64.c' })));
+  fs.writeFile(
+    '/lib/softfloat.s',
+    enc.encode(chibiccCompile(FLOAT_RUNTIME_SOURCE, { name: 'softfloat.c' })),
+  );
 }
 
 export function installChibiccSources(fs: Fs, root = '/usr/src/cc'): void {
@@ -355,9 +411,11 @@ export function installChibiccSources(fs: Fs, root = '/usr/src/cc'): void {
         'inside the guest and compare repeated stage outputs for deterministic',
         'replay.',
         '',
-        'Current guest cc limits: no -c relocatable output, no multi-input link,',
-        'and no standalone guest as/ld yet. The package failure queue is tracked',
-        'in docs/phase35-package-queue.md in the host repository.',
+        'Guest toolchain now has -c relocatable .o output, multi-input linking of',
+        '.o/.s objects, standalone /bin/as and /bin/ld, soft-float (float/double)',
+        'codegen with the runtime linked from /lib on demand, and variadic',
+        'functions (<stdarg.h>). Archive (ar) support is still pending. The package',
+        'failure queue is tracked in docs/phase35-package-queue.md in the host repo.',
         '',
       ].join('\n'),
     ),

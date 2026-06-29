@@ -5,6 +5,12 @@
 #define SEC_DATA 2
 #define SEC_BSS 3
 
+// Relocatable object magic ("JSO1"), distinct from the executable magic. A `.o`
+// file is a flat serialization of one AsmImage: header, raw text/data bytes, the
+// defined symbol table, and the relocation table. `cc -c`, `as`, and `ld` are
+// the only producers/consumers, so the format stays private to this toolchain.
+#define OBJ_MAGIC 0x314f534a
+
 #define ARG_NONE 0
 #define ARG_REG 1
 #define ARG_IMM 2
@@ -695,53 +701,6 @@ static int symbol_addr(AsmImage *img, Symbol *sym, int text_base, int data_base,
   return 0;
 }
 
-static void patch_relocs(AsmImage *img, int text_base, int data_base, int bss_base) {
-  for (int i = 0; i < img->reloc_count; i++) {
-    Reloc *rel = &img->relocs[i];
-    int si = find_symbol(img, rel->name);
-    if (si < 0) die("undefined symbol: %s", rel->name);
-    int value = symbol_addr(img, &img->symbols[si], text_base, data_base, bss_base) + rel->addend;
-    if (rel->section == SEC_TEXT) {
-      if (rel->offset + 4 > img->text.len) die("bad text relocation");
-      write32(img->text.data + rel->offset, value);
-    } else {
-      if (rel->offset + 4 > img->data.len) die("bad data relocation");
-      write32(img->data.data + rel->offset, value);
-    }
-  }
-}
-
-static void write_executable(AsmImage *img, char *output_path) {
-  int text_base = CFG_USER_LOAD_BASE;
-  int text_end = text_base + img->text.len;
-  int data_base = align_to_guest(text_end, 4096);
-  int data_end = data_base + img->data.len;
-  int bss_base = align_to_guest(data_end, 4);
-  int mem_end = bss_base + img->bss_size;
-  int file_len = data_end - text_base;
-  int entry_index = find_symbol(img, "_start");
-  int entry;
-  unsigned char *out;
-  FILE *f;
-
-  if (entry_index < 0) die("entry symbol not found: _start");
-  entry = symbol_addr(img, &img->symbols[entry_index], text_base, data_base, bss_base);
-  patch_relocs(img, text_base, data_base, bss_base);
-
-  out = calloc(12 + file_len, 1);
-  write32(out, CFG_EXEC_MAGIC);
-  write32(out + 4, entry);
-  write32(out + 8, mem_end - text_base);
-  memcpy(out + 12, img->text.data, img->text.len);
-  memcpy(out + 12 + (data_base - text_base), img->data.data, img->data.len);
-
-  f = fopen(output_path, "w");
-  if (!f) die("cannot open %s: %s", output_path, strerror(errno));
-  if (fwrite(out, 1, 12 + file_len, f) != 12 + file_len) die("cannot write %s", output_path);
-  fclose(f);
-  chmod(output_path, 493);
-}
-
 // --- multi-input linker -----------------------------------------------------
 
 typedef struct {
@@ -749,7 +708,9 @@ typedef struct {
   int addr;
 } GlobalSym;
 
-char *guest_read_file(char *path) {
+static void link_images(AsmImage *imgs, int input_count, char *output_path);
+
+char *guest_read_file_len(char *path, int *out_len) {
   int fd = open(path, 0);
   if (fd < 0) die("cannot open %s: %s", path, strerror(errno));
   int cap = 8192;
@@ -771,18 +732,190 @@ char *guest_read_file(char *path) {
   if (buf == 0) die("out of memory reading %s", path);
   buf[len] = 0;
   close(fd);
+  if (out_len) *out_len = len;
   return buf;
 }
 
-void link_guest_objects(char **input_paths, int input_count, char *output_path) {
-  AsmImage *imgs = calloc(input_count, sizeof(AsmImage));
-  for (int i = 0; i < input_count; i++) {
-    char *source = guest_read_file(input_paths[i]);
-    memset(&imgs[i], 0, sizeof(AsmImage));
-    imgs[i].section = SEC_TEXT;
-    assemble_source(&imgs[i], source);
+char *guest_read_file(char *path) {
+  return guest_read_file_len(path, 0);
+}
+
+static int link_ends_with(char *s, char *suffix) {
+  int ls = strlen(s);
+  int lt = strlen(suffix);
+  if (lt > ls) return 0;
+  return strcmp(s + ls - lt, suffix) == 0;
+}
+
+// --- relocatable object serialization --------------------------------------
+
+static unsigned int read32(unsigned char *p) {
+  return p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24);
+}
+
+static void put32(Bytes *b, unsigned int v) {
+  bytes_push(b, v);
+  bytes_push(b, v >> 8);
+  bytes_push(b, v >> 16);
+  bytes_push(b, v >> 24);
+}
+
+static void put_str(Bytes *b, char *s) {
+  int n = strlen(s);
+  put32(b, n);
+  for (int i = 0; i < n; i++) bytes_push(b, s[i]);
+}
+
+// Serialize one assembled image to a `.o` file: header (magic, section sizes,
+// counts), the raw text/data bytes, every locally-defined symbol, then every
+// relocation. Symbols with section 0 are unresolved externals carried by the
+// relocations themselves, so they are not exported.
+static void write_object_image(AsmImage *img, char *output_path) {
+  Bytes out;
+  out.data = 0;
+  out.len = 0;
+  out.cap = 0;
+
+  int defined = 0;
+  for (int i = 0; i < img->symbol_count; i++)
+    if (img->symbols[i].section != 0) defined++;
+
+  put32(&out, OBJ_MAGIC);
+  put32(&out, img->text.len);
+  put32(&out, img->data.len);
+  put32(&out, img->bss_size);
+  put32(&out, defined);
+  put32(&out, img->reloc_count);
+  for (int i = 0; i < img->text.len; i++) bytes_push(&out, img->text.data[i]);
+  for (int i = 0; i < img->data.len; i++) bytes_push(&out, img->data.data[i]);
+  for (int i = 0; i < img->symbol_count; i++) {
+    Symbol *sym = &img->symbols[i];
+    if (sym->section == 0) continue;
+    put32(&out, sym->section);
+    put32(&out, sym->offset);
+    put32(&out, sym->global);
+    put_str(&out, sym->name);
+  }
+  for (int i = 0; i < img->reloc_count; i++) {
+    Reloc *rel = &img->relocs[i];
+    put32(&out, rel->section);
+    put32(&out, rel->offset);
+    put32(&out, rel->addend);
+    put_str(&out, rel->name);
   }
 
+  FILE *f = fopen(output_path, "w");
+  if (!f) die("cannot open %s: %s", output_path, strerror(errno));
+  if (fwrite(out.data, 1, out.len, f) != out.len) die("cannot write %s", output_path);
+  fclose(f);
+  free(out.data);
+}
+
+// Parse a `.o` file back into an AsmImage with text/data bytes, bss size,
+// symbols, and relocations restored, ready for the linker to lay out and patch.
+static void read_object_image(AsmImage *img, unsigned char *data, int len) {
+  memset(img, 0, sizeof(*img));
+  img->section = SEC_TEXT;
+  if (len < 24 || read32(data) != OBJ_MAGIC) die("not an object file");
+  int pos = 4;
+  int text_len = read32(data + pos);
+  pos += 4;
+  int data_len = read32(data + pos);
+  pos += 4;
+  int bss = read32(data + pos);
+  pos += 4;
+  int sym_count = read32(data + pos);
+  pos += 4;
+  int rel_count = read32(data + pos);
+  pos += 4;
+
+  for (int i = 0; i < text_len; i++) bytes_push(&img->text, data[pos++]);
+  for (int i = 0; i < data_len; i++) bytes_push(&img->data, data[pos++]);
+  img->bss_size = bss;
+
+  for (int i = 0; i < sym_count; i++) {
+    int section = read32(data + pos);
+    pos += 4;
+    int offset = read32(data + pos);
+    pos += 4;
+    int global = read32(data + pos);
+    pos += 4;
+    int nlen = read32(data + pos);
+    pos += 4;
+    char *name = dup_range((char *)data + pos, nlen);
+    pos += nlen;
+    Symbol *sym = ensure_symbol(img, name);
+    sym->section = section;
+    sym->offset = offset;
+    sym->global = global;
+  }
+  for (int i = 0; i < rel_count; i++) {
+    int section = read32(data + pos);
+    pos += 4;
+    int offset = read32(data + pos);
+    pos += 4;
+    int addend = read32(data + pos);
+    pos += 4;
+    int nlen = read32(data + pos);
+    pos += 4;
+    char *name = dup_range((char *)data + pos, nlen);
+    pos += nlen;
+    add_reloc(img, section, offset, name, addend);
+  }
+}
+
+// Assemble one translation unit's assembly text into a relocatable object file.
+// Shared by `cc -c` and the standalone `as`.
+void assemble_to_object(char *assembly, char *output_path) {
+  AsmImage img;
+  memset(&img, 0, sizeof(img));
+  img.section = SEC_TEXT;
+  assemble_source(&img, assembly);
+  write_object_image(&img, output_path);
+}
+
+void link_guest_objects(char **input_paths, int input_count, char *output_path) {
+  // Room for one synthetic crt image appended after the user inputs.
+  AsmImage *imgs = calloc(input_count + 1, sizeof(AsmImage));
+  for (int i = 0; i < input_count; i++) {
+    if (link_ends_with(input_paths[i], ".o")) {
+      int len = 0;
+      char *data = guest_read_file_len(input_paths[i], &len);
+      read_object_image(&imgs[i], (unsigned char *)data, len);
+    } else {
+      char *source = guest_read_file(input_paths[i]);
+      memset(&imgs[i], 0, sizeof(AsmImage));
+      imgs[i].section = SEC_TEXT;
+      assemble_source(&imgs[i], source);
+    }
+  }
+
+  // If no input supplies an entry point, link in the built-in crt (startup plus
+  // the small write/read/open/close/exit + mem/str runtime), exactly as the
+  // single-source `cc -o file.c` path does. A link list that provides its own
+  // crt (the compiler self-rebuild) defines `_start` and so skips this.
+  int has_start = 0;
+  for (int i = 0; i < input_count; i++) {
+    int si = find_symbol(&imgs[i], "_start");
+    if (si >= 0 && imgs[i].symbols[si].section != 0) has_start = 1;
+  }
+  if (!has_start) {
+    char *crt_src = calloc(strlen(guest_crt) + 1, 1);
+    strcpy(crt_src, guest_crt);
+    AsmImage *crt = &imgs[input_count];
+    memset(crt, 0, sizeof(AsmImage));
+    crt->section = SEC_TEXT;
+    assemble_source(crt, crt_src);
+    input_count = input_count + 1;
+  }
+
+  link_images(imgs, input_count, output_path);
+}
+
+// Lay out, cross-resolve, and write a set of already-assembled/loaded images
+// into one guest executable. Shared by every link path (cc link mode, `ld`, and
+// the single-source `assemble_and_link_guest`).
+static void link_images(AsmImage *imgs, int input_count, char *output_path) {
   // Lay out every image's text, then every image's data, then bss.
   int *tb = calloc(input_count, sizeof(int));
   int *db = calloc(input_count, sizeof(int));
@@ -879,14 +1012,49 @@ void link_guest_objects(char **input_paths, int input_count, char *output_path) 
   chmod(output_path, 493);
 }
 
+// The default library directory: precompiled toolchain runtime the single-
+// source link pulls in on demand. Installed by installChibiccToolchain.
+#define LIB_I64 "/lib/i64.s"
+#define LIB_SOFTFLOAT "/lib/softfloat.s"
+
+// True if `text` mentions any symbol from the soft-float runtime. The backend
+// only emits these names when a float/double operation is compiled.
+static int uses_softfloat(char *text) {
+  return strstr(text, "sf3") || strstr(text, "df3") || strstr(text, "__cmpsf2") ||
+         strstr(text, "__cmpdf2") || strstr(text, "__floatsi") || strstr(text, "__floatunsi") ||
+         strstr(text, "__fixsfsi") || strstr(text, "__fixdfsi") || strstr(text, "__truncdfsf2") ||
+         strstr(text, "__extendsfdf2");
+}
+
+// True if `text` references the 64-bit integer runtime (also implied by the
+// soft-float runtime, which is itself written with `long long`).
+static int uses_i64(char *text) {
+  return strstr(text, "__i64_") || strstr(text, "__u64_");
+}
+
+// Assemble one image and append it to `imgs`, returning the new count.
+static int append_asm_image(AsmImage *imgs, int count, char *assembly) {
+  memset(&imgs[count], 0, sizeof(AsmImage));
+  imgs[count].section = SEC_TEXT;
+  assemble_source(&imgs[count], assembly);
+  return count + 1;
+}
+
 void assemble_and_link_guest(char *assembly, char *output_path) {
-  AsmImage img;
   char *combined = calloc(strlen(guest_crt) + strlen(assembly) + 2, 1);
-  memset(&img, 0, sizeof(img));
-  img.section = SEC_TEXT;
   strcpy(combined, guest_crt);
   strcat(combined, "\n");
   strcat(combined, assembly);
-  assemble_source(&img, combined);
-  write_executable(&img, output_path);
+
+  // Pull in the soft-float and/or 64-bit runtime only when the generated code
+  // actually calls into them, so ordinary integer programs stay small. The
+  // soft-float runtime is itself written with `long long`, so it drags in i64.
+  int need_float = uses_softfloat(combined);
+  int need_i64 = need_float || uses_i64(combined);
+
+  AsmImage *imgs = calloc(3, sizeof(AsmImage));
+  int count = append_asm_image(imgs, 0, combined);
+  if (need_i64) count = append_asm_image(imgs, count, guest_read_file(LIB_I64));
+  if (need_float) count = append_asm_image(imgs, count, guest_read_file(LIB_SOFTFLOAT));
+  link_images(imgs, count, output_path);
 }

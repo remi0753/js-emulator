@@ -26,9 +26,13 @@
 //   - 64-bit values live in the R0(low):R1(high) pair and route through the
 //     __i64_*/__u64_* runtime helpers.
 //
+// Floating point is supported via a soft-float runtime (see the soft-float
+// section below and runtimeFloat.ts): the backend carries IEEE-754 bits through
+// the integer ABI and lowers every float op to a runtime call.
+//
 // Not yet ported (the frontend's own source does not need them to compile, and
-// these are the next backend slices): floating point, VLAs/alloca, atomics
-// (ND_CAS/ND_EXCH), and labels-as-values.
+// these are the next backend slices): VLAs/alloca, atomics (ND_CAS/ND_EXCH),
+// and labels-as-values.
 
 #include "upstream/chibicc.h"
 
@@ -165,6 +169,13 @@ static bool is_flonum_ty(Type *ty) {
   return ty && (ty->kind == TY_FLOAT || ty->kind == TY_DOUBLE || ty->kind == TY_LDOUBLE);
 }
 
+// binary32 lives in a single word; binary64 (and `long double`, which is the
+// same 8-byte double on this target) lives in an R0:R1 pair / two stack slots.
+static bool is_float_ty(Type *ty) { return ty && ty->kind == TY_FLOAT; }
+static bool is_double_ty(Type *ty) {
+  return ty && (ty->kind == TY_DOUBLE || ty->kind == TY_LDOUBLE);
+}
+
 static int slot_size(Type *ty) { return align_to(ty->size < 1 ? 1 : ty->size, 4); }
 
 // --- forward declarations ---------------------------------------------------
@@ -176,6 +187,16 @@ static void gen_call(Node *node);
 static void gen64_value(Node *node);
 static void gen_value_as(Node *node, Type *ty);
 static int push_call_arg(Node *arg);
+static void gen_float_expr(Node *node);
+static void gen_double_expr(Node *node);
+static void gen_float_value(Node *node);
+static void gen_double_value(Node *node);
+static void gen_float_compare(Node *node);
+
+// Soft-float helper used at compile time to fold a float literal's IEEE-754
+// double bits down to binary32. The guest cc executable links the soft-float
+// runtime, so this resolves like any other runtime call.
+extern unsigned __truncdfsf2(unsigned lo, unsigned hi);
 
 // --- lvalue addresses -------------------------------------------------------
 
@@ -525,6 +546,234 @@ static void gen64_expr(Node *node) {
   }
 }
 
+// --- soft-float -------------------------------------------------------------
+//
+// custom32 has no FPU. Floating-point values are carried as raw IEEE-754 bits
+// through the integer ABI (binary32 in one word, binary64 in an R0:R1 pair) and
+// every operation is a call into the soft-float runtime (runtimeFloat.ts:
+// __addsf3/__adddf3/__cmpsf2/__floatsisf/...). Mirrors the genFloat*/genDouble*
+// methods in the maintained backend codegen.ts.
+
+// A float/double literal's value is stored by the frontend as an 8-byte IEEE
+// double at &node->fval (the bootstrap maps `long double` to `double`). Read
+// the raw words directly so this stays free of host float ops; the binary32
+// form is obtained by folding through the soft-float truncation helper.
+static void double_literal_bits(Node *node, unsigned *lo, unsigned *hi) {
+  unsigned *p = (unsigned *)&node->fval;
+  *lo = p[0];
+  *hi = p[1];
+}
+
+static unsigned float_literal_bits(Node *node) {
+  unsigned lo, hi;
+  double_literal_bits(node, &lo, &hi);
+  return __truncdfsf2(lo, hi);
+}
+
+static char *float_binary_helper(Node *node, bool dbl) {
+  switch (node->kind) {
+  case ND_ADD:
+    return dbl ? "__adddf3" : "__addsf3";
+  case ND_SUB:
+    return dbl ? "__subdf3" : "__subsf3";
+  case ND_MUL:
+    return dbl ? "__muldf3" : "__mulsf3";
+  case ND_DIV:
+    return dbl ? "__divdf3" : "__divsf3";
+  default:
+    error("codegen: no soft-float helper");
+  }
+  return "";
+}
+
+// helper(b, a) for binary32: rhs then lhs pushed (one word each).
+static void gen_float_binary(Node *node) {
+  gen_float_value(node->rhs);
+  push();
+  gen_float_value(node->lhs);
+  push();
+  jmp("CALL", float_binary_helper(node, false));
+  adjust_csp(-8);
+}
+
+// helper(b_lo, b_hi, a_lo, a_hi) for binary64, args pushed right-to-left.
+static void gen_double_binary(Node *node) {
+  gen_double_value(node->rhs);
+  push_reg("R1");
+  push_reg("R0");
+  gen_double_value(node->lhs);
+  push_reg("R1");
+  push_reg("R0");
+  jmp("CALL", float_binary_helper(node, true));
+  adjust_csp(-16);
+}
+
+// Produce a binary32 value in R0 for a node already typed `float`.
+static void gen_float_expr(Node *node) {
+  switch (node->kind) {
+  case ND_NUM:
+    ins_imm("MOV R0", float_literal_bits(node));
+    return;
+  case ND_VAR:
+  case ND_MEMBER:
+    gen_addr(node);
+    load(node);
+    return;
+  case ND_DEREF:
+    gen_expr(node->lhs);
+    load(node);
+    return;
+  case ND_ASSIGN:
+    gen_addr(node->lhs);
+    push();
+    gen_float_value(node->rhs);
+    pop("R1");
+    store(node->lhs);
+    return;
+  case ND_CAST:
+    gen_float_value(node->lhs);
+    return;
+  case ND_FUNCALL:
+    gen_call(node);
+    return;
+  case ND_NEG:
+    gen_float_value(node->lhs);
+    ins("MOV R7, 2147483648");
+    ins("XOR R0, R7");
+    return;
+  default:
+    gen_float_binary(node);
+  }
+}
+
+// Produce a binary64 value in R0(low):R1(high) for a node already typed
+// `double`.
+static void gen_double_expr(Node *node) {
+  switch (node->kind) {
+  case ND_NUM: {
+    unsigned lo, hi;
+    double_literal_bits(node, &lo, &hi);
+    ins_imm("MOV R0", lo);
+    ins_imm("MOV R1", hi);
+    return;
+  }
+  case ND_VAR:
+  case ND_MEMBER:
+    gen_addr(node);
+    load64();
+    return;
+  case ND_DEREF:
+    gen_expr(node->lhs);
+    load64();
+    return;
+  case ND_ASSIGN:
+    gen_addr(node->lhs);
+    push();
+    gen_double_value(node->rhs);
+    pop("R2");
+    ins("STORER R2, R0");
+    ins("MOV R7, 4");
+    ins("ADD R2, R7");
+    ins("STORER R2, R1");
+    return;
+  case ND_CAST:
+    gen_double_value(node->lhs);
+    return;
+  case ND_FUNCALL:
+    gen_call(node);
+    return;
+  case ND_NEG:
+    gen_double_value(node->lhs);
+    ins("MOV R7, 2147483648");
+    ins("XOR R1, R7");
+    return;
+  default:
+    gen_double_binary(node);
+  }
+}
+
+// Evaluate any node and leave a binary32 value in R0, converting from double or
+// integer source types as needed.
+static void gen_float_value(Node *node) {
+  if (is_float_ty(node->ty)) {
+    gen_float_expr(node);
+    return;
+  }
+  if (is_double_ty(node->ty)) {
+    gen_double_value(node);
+    push_reg("R1");
+    push_reg("R0");
+    jmp("CALL", "__truncdfsf2");
+    adjust_csp(-8);
+    return;
+  }
+  gen_expr(node);
+  push();
+  jmp("CALL",
+      is_unsigned_int(node->ty) || is_pointer_like(node->ty) ? "__floatunsisf" : "__floatsisf");
+  adjust_csp(-4);
+}
+
+// Evaluate any node and leave a binary64 value in R0:R1.
+static void gen_double_value(Node *node) {
+  if (is_double_ty(node->ty)) {
+    gen_double_expr(node);
+    return;
+  }
+  if (is_float_ty(node->ty)) {
+    gen_float_value(node);
+    push();
+    jmp("CALL", "__extendsfdf2");
+    adjust_csp(-4);
+    return;
+  }
+  gen_expr(node);
+  push();
+  jmp("CALL",
+      is_unsigned_int(node->ty) || is_pointer_like(node->ty) ? "__floatunsidf" : "__floatsidf");
+  adjust_csp(-4);
+}
+
+// Float/double ==, !=, <, <=: the runtime returns -1/0/1, turned into a 0/1
+// boolean by the same sign test the integer path uses.
+static void gen_float_compare(Node *node) {
+  bool dbl = is_double_ty(node->lhs->ty) || is_double_ty(node->rhs->ty);
+  if (dbl) {
+    gen_double_value(node->rhs);
+    push_reg("R1");
+    push_reg("R0");
+    gen_double_value(node->lhs);
+    push_reg("R1");
+    push_reg("R0");
+    jmp("CALL", "__cmpdf2");
+    adjust_csp(-16);
+  } else {
+    gen_float_value(node->rhs);
+    push();
+    gen_float_value(node->lhs);
+    push();
+    jmp("CALL", "__cmpsf2");
+    adjust_csp(-8);
+  }
+  char *yes = new_label();
+  char *done = new_label();
+  char *op = "JZ";
+  if (node->kind == ND_NE)
+    op = "JNZ";
+  else if (node->kind == ND_LT)
+    op = "JL";
+  else if (node->kind == ND_LE)
+    op = "JLE";
+  ins("MOV R7, 0");
+  ins("CMP R0, R7");
+  jmp(op, yes);
+  ins("MOV R0, 0");
+  jmp("JMP", done);
+  emit_label(yes);
+  ins("MOV R0, 1");
+  emit_label(done);
+}
+
 // --- aggregates -------------------------------------------------------------
 
 static void gen_aggregate_assign(Node *node) {
@@ -560,10 +809,17 @@ static void return_aggregate(Node *expr) {
 // --- calls ------------------------------------------------------------------
 
 static int push_call_arg(Node *arg) {
-  // Floating point is unsupported: the guest backend is integer-only. Float
-  // operands fall through to the generic single-word path, which gen_expr
-  // lowers to a placeholder value (see gen_expr). This keeps float-using
-  // translation units compilable as long as those paths stay unexecuted.
+  if (is_float_ty(arg->ty)) {
+    gen_float_value(arg);
+    push();
+    return 1;
+  }
+  if (is_double_ty(arg->ty)) {
+    gen_double_value(arg);
+    push_reg("R0"); // low word (lower address)
+    push_reg("R1"); // high word
+    return 2;
+  }
   if (is64(arg->ty)) {
     gen64_value(arg);
     push_reg("R0"); // low word (lower address)
@@ -745,8 +1001,17 @@ static void gen_call(Node *node) {
 // Evaluate a condition's truthiness into R0. A 64-bit operand folds both words.
 static void gen_cond(Node *node) {
   gen_expr(node);
-  if (is64(node->ty))
+  if (is64(node->ty)) {
     ins("OR R0, R1");
+  } else if (is_float_ty(node->ty)) {
+    // Truthy iff any bit except the sign is set (also makes -0.0 false).
+    ins("MOV R7, 2147483647");
+    ins("AND R0, R7");
+  } else if (is_double_ty(node->ty)) {
+    ins("MOV R7, 2147483647");
+    ins("AND R1, R7");
+    ins("OR R0, R1");
+  }
 }
 
 static void gen_compare(Node *node) {
@@ -771,8 +1036,10 @@ static void gen_compare(Node *node) {
 
 static void gen_binary(Node *node) {
   if (node->kind == ND_EQ || node->kind == ND_NE || node->kind == ND_LT || node->kind == ND_LE) {
-    // Float operands are not supported; fall through to the integer compare
-    // (placeholder, unexecuted) rather than failing the whole translation unit.
+    if (is_flonum_ty(node->lhs->ty) || is_flonum_ty(node->rhs->ty)) {
+      gen_float_compare(node);
+      return;
+    }
     if (is64(node->lhs->ty) || is64(node->rhs->ty)) {
       gen64_compare(node);
       return;
@@ -898,10 +1165,35 @@ static void gen_value_as(Node *node, Type *ty) {
     gen_expr(node);
     return;
   }
-  // Float conversions are unsupported; the placeholder integer path keeps the
-  // unit compilable (these conversions are never reached for integer inputs).
+  if (is_float_ty(ty)) {
+    gen_float_value(node);
+    return;
+  }
+  if (is_double_ty(ty)) {
+    gen_double_value(node);
+    return;
+  }
   if (is64(ty)) {
     gen64_value(node);
+    return;
+  }
+  // Float/double -> integer: the runtime returns a 32-bit int in R0; narrow it
+  // further if the destination is char/short.
+  if (is_float_ty(node->ty)) {
+    gen_float_value(node);
+    push();
+    jmp("CALL", "__fixsfsi");
+    adjust_csp(-4);
+    cast_to(ty);
+    return;
+  }
+  if (is_double_ty(node->ty)) {
+    gen_double_value(node);
+    push_reg("R1");
+    push_reg("R0");
+    jmp("CALL", "__fixdfsi");
+    adjust_csp(-8);
+    cast_to(ty);
     return;
   }
   gen_expr(node);
@@ -948,12 +1240,14 @@ static void gen_expr(Node *node) {
     gen64_expr(node);
     return;
   }
-  // The guest backend is integer-only. A floating-point-typed expression is
-  // lowered to a placeholder zero so float-using translation units still
-  // compile; such values must not be relied on at runtime (the compiler's own
-  // sources only name `double` in code paths that integer inputs never reach).
-  if (is_flonum_ty(node->ty)) {
-    ins_imm("MOV R0", 0);
+  // Floating point: binary32 in R0, binary64 in R0:R1, via the soft-float
+  // runtime (see the soft-float section above).
+  if (is_float_ty(node->ty)) {
+    gen_float_expr(node);
+    return;
+  }
+  if (is_double_ty(node->ty)) {
+    gen_double_expr(node);
     return;
   }
 
