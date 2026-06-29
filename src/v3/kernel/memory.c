@@ -1155,29 +1155,33 @@ void copy_space(int src, int dst) {
 
 void free_space(int pd) {
   int *pdp;
-  int di;
+  int *pdend;
   int pde;
   int *ptp;
-  int ti;
+  int *ptend;
   int pte;
+  // Walk parallel pointers rather than indexing pdp[di]/ptp[ti]: the naive
+  // backend recomputes base + i*4 every iteration, and this runs over 1024 page
+  // directory entries (each with up to 1024 PTEs) on every process exit/exec.
   pdp = pd;
-  di = CFG_KERNEL_IDENTITY_PTS; // shared kernel identity PDEs are never freed
-  while (di < 1024) {
-    pde = pdp[di];
+  pdend = pdp + 1024;
+  pdp = pdp + CFG_KERNEL_IDENTITY_PTS; // shared kernel identity PDEs are never freed
+  while (pdp < pdend) {
+    pde = *pdp;
     if ((pde & 1) != 0) {
       ptp = pde & 0xfffff000;
-      ti = 0;
-      while (ti < 1024) {
-        pte = ptp[ti];
+      ptend = ptp + 1024;
+      while (ptp < ptend) {
+        pte = *ptp;
         if ((pte & 1) != 0) {
           page_cache_flush_frame(pte & 0xfffff000);
           free_frame(pte & 0xfffff000);
         }
-        ti = ti + 1;
+        ptp = ptp + 1;
       }
       free_frame(pde & 0xfffff000);
     }
-    di = di + 1;
+    pdp = pdp + 1;
   }
   free_frame(pd);
 }
