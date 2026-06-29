@@ -63,7 +63,9 @@ const OPCODES: (DecodedOpcode | undefined)[] = (() => {
   return table;
 })();
 
-function decodeArgKind(kind: ArgKind | undefined): typeof ARG_NONE | typeof ARG_REG | typeof ARG_WORD {
+function decodeArgKind(
+  kind: ArgKind | undefined,
+): typeof ARG_NONE | typeof ARG_REG | typeof ARG_WORD {
   if (kind === undefined) return ARG_NONE;
   return kind === 'reg' ? ARG_REG : ARG_WORD;
 }
@@ -264,12 +266,14 @@ export class CPU {
 
   private rd8(v: number): number {
     const p = this.xlateN(v, 1, false);
-    if (p >= this.phys.size) throw new RangeError(`physical memory out of range: 0x${p.toString(16)} (+1)`);
+    if (p >= this.phys.size)
+      throw new RangeError(`physical memory out of range: 0x${p.toString(16)} (+1)`);
     return this.phys.bytes[p]!;
   }
   private wr8(v: number, x: number): void {
     const p = this.xlateN(v, 1, true);
-    if (p >= this.phys.size) throw new RangeError(`physical memory out of range: 0x${p.toString(16)} (+1)`);
+    if (p >= this.phys.size)
+      throw new RangeError(`physical memory out of range: 0x${p.toString(16)} (+1)`);
     this.phys.bytes[p] = x & 0xff;
   }
   private rd32(v: number): number {
@@ -402,7 +406,7 @@ export class CPU {
     let flags = this.flags & ~(FLAG.ZF | FLAG.SF | FLAG.CF | FLAG.OF);
     if (r === 0) flags |= FLAG.ZF;
     if ((r & 0x80000000) !== 0) flags |= FLAG.SF;
-    if ((a >>> 0) < (b >>> 0)) flags |= FLAG.CF;
+    if (a >>> 0 < b >>> 0) flags |= FLAG.CF;
     if (((a ^ b) & (a ^ r) & 0x80000000) !== 0) flags |= FLAG.OF;
     this.flags = flags;
     return r;
@@ -648,30 +652,30 @@ export class CPU {
 
     const r = this.regs;
     switch (opcode) {
-      case 0x00: /* NOP */
+      case 0x00 /* NOP */:
         break;
-      case 0x01: /* MOV */
+      case 0x01 /* MOV */:
         r[op0] = op1 >>> 0;
         break;
-      case 0x02: /* MOVR */
+      case 0x02 /* MOVR */:
         r[op0] = r[op1]!;
         break;
-      case 0x03: /* LOAD */
+      case 0x03 /* LOAD */:
         r[op0] = this.rd32(op1);
         break;
-      case 0x04: /* STORE */
+      case 0x04 /* STORE */:
         this.wr32(op1, r[op0]!);
         break;
-      case 0x05: /* LOADR */
+      case 0x05 /* LOADR */:
         r[op0] = this.rd32(r[op1]!);
         break;
-      case 0x06: /* STORER */
+      case 0x06 /* STORER */:
         this.wr32(r[op0]!, r[op1]!);
         break;
-      case 0x07: /* LB */
+      case 0x07 /* LB */:
         r[op0] = this.rd8(r[op1]!);
         break;
-      case 0x08: /* SB */
+      case 0x08 /* SB */:
         this.wr8(r[op0]!, r[op1]! & 0xff);
         break;
       case 0x09: /* LBS */ {
@@ -679,7 +683,7 @@ export class CPU {
         r[op0] = (v & 0x80) !== 0 ? (v | 0xffffff00) >>> 0 : v;
         break;
       }
-      case 0x0a: /* LH */
+      case 0x0a /* LH */:
         r[op0] = this.rd16(r[op1]!);
         break;
       case 0x0b: /* LHS */ {
@@ -687,7 +691,7 @@ export class CPU {
         r[op0] = (v & 0x8000) !== 0 ? (v | 0xffff0000) >>> 0 : v;
         break;
       }
-      case 0x0c: /* SH */
+      case 0x0c /* SH */:
         this.wr16(r[op0]!, r[op1]! & 0xffff);
         break;
 
@@ -703,7 +707,7 @@ export class CPU {
         r[op0] = this.setSubFlags(a, b, a - b);
         break;
       }
-      case 0x12: /* MUL */
+      case 0x12 /* MUL */:
         r[op0] = this.setZS(Math.imul(r[op0]!, r[op1]!));
         break;
       case 0x13: /* DIV */ {
@@ -730,31 +734,31 @@ export class CPU {
         r[op0] = this.setZS((r[op0]! | 0) % b);
         break;
       }
-      case 0x15: /* AND */
+      case 0x15 /* AND */:
         r[op0] = this.setZS(r[op0]! & r[op1]!);
         break;
-      case 0x16: /* OR */
+      case 0x16 /* OR */:
         r[op0] = this.setZS(r[op0]! | r[op1]!);
         break;
-      case 0x17: /* XOR */
+      case 0x17 /* XOR */:
         r[op0] = this.setZS(r[op0]! ^ r[op1]!);
         break;
-      case 0x18: /* NOT */
+      case 0x18 /* NOT */:
         r[op0] = this.setZS(~r[op0]!);
         break;
-      case 0x19: /* SHL */
+      case 0x19 /* SHL */:
         r[op0] = this.setZS(r[op0]! << (r[op1]! & 31));
         break;
-      case 0x1a: /* SHR */
+      case 0x1a /* SHR */:
         r[op0] = this.setZS(r[op0]! >>> (r[op1]! & 31));
         break;
-      case 0x2e: /* SAR */
+      case 0x2e /* SAR */:
         r[op0] = this.setZS((r[op0]! | 0) >> (r[op1]! & 31));
         break;
-      case 0x1b: /* INC */
+      case 0x1b /* INC */:
         r[op0] = this.setAddFlags(r[op0]!, 1, r[op0]! + 1);
         break;
-      case 0x1c: /* DEC */
+      case 0x1c /* DEC */:
         r[op0] = this.setSubFlags(r[op0]!, 1, r[op0]! - 1);
         break;
       case 0x1d: /* CMP */ {
@@ -764,71 +768,71 @@ export class CPU {
         break;
       }
 
-      case 0x20: /* JMP */
+      case 0x20 /* JMP */:
         this.pc = op0;
         break;
-      case 0x21: /* JZ */
+      case 0x21 /* JZ */:
         if ((this.flags & FLAG.ZF) !== 0) this.pc = op0;
         break;
-      case 0x22: /* JNZ */
+      case 0x22 /* JNZ */:
         if ((this.flags & FLAG.ZF) === 0) this.pc = op0;
         break;
-      case 0x23: /* JG */
+      case 0x23 /* JG */:
         if ((this.flags & FLAG.ZF) === 0 && !this.signedLess()) this.pc = op0;
         break;
-      case 0x24: /* JGE */
+      case 0x24 /* JGE */:
         if (!this.signedLess()) this.pc = op0;
         break;
-      case 0x25: /* JL */
+      case 0x25 /* JL */:
         if (this.signedLess()) this.pc = op0;
         break;
-      case 0x26: /* JLE */
+      case 0x26 /* JLE */:
         if (this.signedLess() || (this.flags & FLAG.ZF) !== 0) this.pc = op0;
         break;
-      case 0x27: /* CALL */
+      case 0x27 /* CALL */:
         this.push(this.pc);
         this.pc = op0;
         break;
-      case 0x29: /* CALLR */
+      case 0x29 /* CALLR */:
         this.push(this.pc);
         this.pc = r[op0]! >>> 0;
         break;
-      case 0x2a: /* JA */
+      case 0x2a /* JA */:
         if ((this.flags & (FLAG.CF | FLAG.ZF)) === 0) this.pc = op0;
         break;
-      case 0x2b: /* JAE */
+      case 0x2b /* JAE */:
         if ((this.flags & FLAG.CF) === 0) this.pc = op0;
         break;
-      case 0x2c: /* JB */
+      case 0x2c /* JB */:
         if ((this.flags & FLAG.CF) !== 0) this.pc = op0;
         break;
-      case 0x2d: /* JBE */
+      case 0x2d /* JBE */:
         if ((this.flags & (FLAG.CF | FLAG.ZF)) !== 0) this.pc = op0;
         break;
-      case 0x28: /* RET */
+      case 0x28 /* RET */:
         this.pc = this.pop();
         break;
 
-      case 0x30: /* PUSH */
+      case 0x30 /* PUSH */:
         this.push(r[op0]!);
         break;
-      case 0x31: /* POP */
+      case 0x31 /* POP */:
         r[op0] = this.pop();
         break;
 
       // --- system ---
-      case 0x40: /* INT */
+      case 0x40 /* INT */:
         return { reason: 'syscall', num: op0 >>> 0 };
-      case 0x41: /* EI */
+      case 0x41 /* EI */:
         this.flags |= FLAG.IF;
         break;
-      case 0x42: /* DI */
+      case 0x42 /* DI */:
         this.flags &= ~FLAG.IF;
         break;
-      case 0x43: /* IN */ // rd = port[rp]
+      case 0x43 /* IN */: // rd = port[rp]
         r[op0] = this.ports.in(r[op1]!) >>> 0;
         break;
-      case 0x44: /* OUT */ // port[rp] = rs   (operands: rp, rs)
+      case 0x44 /* OUT */: // port[rp] = rs   (operands: rp, rs)
         this.ports.out(r[op0]!, r[op1]!);
         break;
       case 0x45: /* IRET */ {
@@ -844,16 +848,16 @@ export class CPU {
         this.fetchVpn = -1; // mode may have changed: re-validate the code page
         break;
       }
-      case 0x46: /* LIDT */
+      case 0x46 /* LIDT */:
         this.idtr = r[op0]! >>> 0;
         break;
-      case 0x47: /* LKSP */
+      case 0x47 /* LKSP */:
         this.ksp = r[op0]! >>> 0;
         break;
-      case 0x48: /* RDPFLA */
+      case 0x48 /* RDPFLA */:
         r[op0] = this.pfla >>> 0;
         break;
-      case 0x49: /* RDERR */
+      case 0x49 /* RDERR */:
         r[op0] = this.errorCode >>> 0;
         break;
       case 0x4a: /* STMR */ {
@@ -863,19 +867,19 @@ export class CPU {
         if (n === 0) this.cancelPendingIrq(TIMER_IRQ);
         break;
       }
-      case 0x4b: /* LPTBR */
+      case 0x4b /* LPTBR */:
         this.ptbr = r[op0]! >>> 0;
         this.flushTlb();
         break;
-      case 0x4c: /* PGON */
+      case 0x4c /* PGON */:
         this.pagingEnabled = true;
         this.flushTlb();
         break;
-      case 0x4d: /* PGOFF */
+      case 0x4d /* PGOFF */:
         this.pagingEnabled = false;
         this.flushTlb();
         break;
-      case 0xff: /* HLT */
+      case 0xff /* HLT */:
         return { reason: 'halt' };
     }
     return undefined;

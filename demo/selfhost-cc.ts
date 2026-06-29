@@ -15,6 +15,8 @@
 // of assembly with an interpreted CPU, so expect a multi-minute (tens of
 // minutes) execution.
 
+import { DirectBlockDevice } from '../src/storage/direct-block-device.ts';
+import { Fs } from '../src/storage/fs.ts';
 import { bootGuestDiskImage } from '../src/v3/boot.ts';
 import {
   GUEST_BUILD_COMMAND,
@@ -22,8 +24,6 @@ import {
   installChibiccToolchain,
 } from '../src/v3/guest-chibicc.ts';
 import { buildGuestDiskImage, GUEST_DEVELOPMENT_FS_BLOCKS } from '../src/v3/guest-kernel.ts';
-import { DirectBlockDevice } from '../src/storage/direct-block-device.ts';
-import { Fs } from '../src/storage/fs.ts';
 
 // A budget large enough to boot, compile every compiler translation unit, and
 // link the result. The interpreted CPU runs at a few million steps/second.
@@ -111,7 +111,9 @@ fs.writeFile(
   ),
 );
 
-console.log(`[host] installed source units under /usr/src/cc; libc.s ${fileSize(fs, '/usr/src/cc/libc.s')} bytes`);
+console.log(
+  `[host] installed source units under /usr/src/cc; libc.s ${fileSize(fs, '/usr/src/cc/libc.s')} bytes`,
+);
 console.log('');
 console.log(`[guest] rebuilding the compiler from source: ${GUEST_BUILD_COMMAND}`);
 console.log('[guest] (this is the long part — the guest compiles every translation unit)…');

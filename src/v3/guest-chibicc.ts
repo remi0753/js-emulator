@@ -163,10 +163,13 @@ const GUEST_SELFBUILD_UNITS: readonly { src: string; obj: string }[] = [
 // itself, then links them here. Produced with the bootstrap compiler's
 // `compile()`, which emits the same assembly dialect the guest assembler reads.
 function guestSupportAssembly(): { name: string; text: string }[] {
-  const libcText = chibiccCompile(substituteDefines(userlandSource('libc.c'), GUEST_KERNEL_DEFINES), {
-    name: 'libc.c',
-    resolveInclude: resolveCompilerInclude,
-  });
+  const libcText = chibiccCompile(
+    substituteDefines(userlandSource('libc.c'), GUEST_KERNEL_DEFINES),
+    {
+      name: 'libc.c',
+      resolveInclude: resolveCompilerInclude,
+    },
+  );
   const i64Text = chibiccCompile(I64_RUNTIME_SOURCE, { name: 'i64rt.c' });
   return [
     { name: 'crt.s', text: userCrtAssembly(COMPILER_STACK_SIZE) },
