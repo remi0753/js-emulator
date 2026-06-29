@@ -65,7 +65,13 @@ int user_phys_addr(int proc, int addr, int write) {
   pd = proc_table[proc].vm.ptbr;
   pde = pd[(addr >> 22) & 0x3ff];
   if ((pde & 5) != 5) {
-    return -1;
+    error = 0;
+    if (write != 0) error = 2;
+    if (vm_handle_page_fault(proc, addr, error) < 0) {
+      return -1;
+    }
+    pde = pd[(addr >> 22) & 0x3ff];
+    if ((pde & 5) != 5) return -1;
   }
   pt = pde & 0xfffff000;
   pte = pt[(addr >> 12) & 0x3ff];

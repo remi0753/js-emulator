@@ -755,16 +755,20 @@ char *guest_read_file(char *path) {
   int cap = 8192;
   int len = 0;
   char *buf = malloc(cap);
+  if (buf == 0) die("out of memory reading %s", path);
   for (;;) {
     if (len + 4096 > cap) {
       cap = cap * 2;
       buf = realloc(buf, cap);
+      if (buf == 0) die("out of memory reading %s", path);
     }
     int n = read(fd, buf + len, 4096);
-    if (n <= 0) break;
+    if (n < 0) die("cannot read %s: %s", path, strerror(errno));
+    if (n == 0) break;
     len = len + n;
   }
   if (len + 1 > cap) buf = realloc(buf, len + 1);
+  if (buf == 0) die("out of memory reading %s", path);
   buf[len] = 0;
   close(fd);
   return buf;
