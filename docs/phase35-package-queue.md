@@ -42,11 +42,26 @@ tooling.
      right-to-left arg ABI (see `test/guest-cc-float.test.ts`). Fixed a latent
      `__divdf3` off-by-one in the shared soft-float runtime while wiring it up.
 
-2. **zlib**
-   - Expected blockers: multi-translation-unit builds, archive creation,
-     Makefile-like build steps, and broader libc file APIs.
-   - Start with a tiny fixed-command build script after guest `-c` and archive
-     support exist.
+2. **zlib** — DONE (2026-06-29). Real, unmodified zlib **v1.3.1** source
+   (vendored byte-for-byte in `test/fixtures/zlib`) compiles and runs entirely
+   inside the guest: each of the 10 core translation units built with `cc -c`,
+   linked with `cc -o`, and a `compress()`/`uncompress()` round trip verified
+   (4096 -> 54 bytes, byte-exact decompress). See `test/guest-zlib.test.ts`.
+   - What it took:
+     - The guest preprocessor was advertising x86-64/LP64 lies (`_LP64`,
+       `__amd64__`, `__x86_64__`, `__SIZEOF_POINTER__=8`, ...); zlib's crc32.c
+       keyed a 64-bit-word path off `__x86_64__`. Corrected to the real LP32
+       target and added `__STDC_NO_ATOMICS__` (no atomics) so crc32.c does not
+       `#include <stdatomic.h>` (`cc-c/upstream/preprocess.c`).
+     - Drive multi-minute builds from an on-disk script (`sh /build.sh`), not a
+       long keyboard feed (which overflows the tty input buffer).
+     - Prepend `#define DYNAMIC_CRC_TABLE` to crc32.c at stage time so the CRC
+       tables are computed at runtime (avoids the ~9400-line static crc32.h).
+     - The harness supplies a freestanding bump allocator + memcmp (zlib's
+       default zcalloc/zcfree call malloc/free, not in the crt).
+   - Function pointers (z_stream alloc/free, deflate's config table) and the
+     full deflate/inflate/trees code all compile cleanly. No `ar` was needed
+     (objects listed explicitly via an `@listfile`).
 
 3. **libpng**
    - Depends on zlib first.

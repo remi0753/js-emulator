@@ -1058,23 +1058,31 @@ static char *format_time(struct tm *tm) {
 }
 
 void init_macros(void) {
-  // Define predefined macros
-  define_macro("_LP64", "1");
+  // Define predefined macros.
+  // [jscpu-os vendoring patch] custom32 is a 32-bit LP32 target, NOT x86-64, so
+  // the upstream amd64/LP64 macros are corrected here: drop _LP64/__LP64__ and
+  // __amd64/__x86_64, and make the __SIZEOF_* values match (long/pointer/size_t
+  // are 4 bytes). Real third-party software keys word sizes and code paths off
+  // these (e.g. zlib's crc32.c selects a 64-bit word path under __x86_64__), so
+  // leaving the x86-64 values lies about the target and miscompiles.
   define_macro("__C99_MACRO_WITH_VA_ARGS", "1");
   define_macro("__ELF__", "1");
-  define_macro("__LP64__", "1");
   define_macro("__SIZEOF_DOUBLE__", "8");
   define_macro("__SIZEOF_FLOAT__", "4");
   define_macro("__SIZEOF_INT__", "4");
   define_macro("__SIZEOF_LONG_DOUBLE__", "8");
   define_macro("__SIZEOF_LONG_LONG__", "8");
-  define_macro("__SIZEOF_LONG__", "8");
-  define_macro("__SIZEOF_POINTER__", "8");
-  define_macro("__SIZEOF_PTRDIFF_T__", "8");
+  define_macro("__SIZEOF_LONG__", "4");
+  define_macro("__SIZEOF_POINTER__", "4");
+  define_macro("__SIZEOF_PTRDIFF_T__", "4");
   define_macro("__SIZEOF_SHORT__", "2");
-  define_macro("__SIZEOF_SIZE_T__", "8");
+  define_macro("__SIZEOF_SIZE_T__", "4");
   define_macro("__SIZE_TYPE__", "unsigned long");
   define_macro("__STDC_HOSTED__", "1");
+  // [jscpu-os vendoring patch] custom32 has no atomics (codegen.c stubs ND_CAS/
+  // ND_EXCH), so advertise __STDC_NO_ATOMICS__; C11 code (e.g. zlib's crc32.c)
+  // guards `#include <stdatomic.h>` on it.
+  define_macro("__STDC_NO_ATOMICS__", "1");
   define_macro("__STDC_NO_COMPLEX__", "1");
   define_macro("__STDC_UTF_16__", "1");
   define_macro("__STDC_UTF_32__", "1");
@@ -1082,8 +1090,6 @@ void init_macros(void) {
   define_macro("__STDC__", "1");
   define_macro("__USER_LABEL_PREFIX__", "");
   define_macro("__alignof__", "_Alignof");
-  define_macro("__amd64", "1");
-  define_macro("__amd64__", "1");
   define_macro("__chibicc__", "1");
   define_macro("__const__", "const");
   define_macro("__gnu_linux__", "1");
@@ -1095,8 +1101,6 @@ void init_macros(void) {
   define_macro("__unix", "1");
   define_macro("__unix__", "1");
   define_macro("__volatile__", "volatile");
-  define_macro("__x86_64", "1");
-  define_macro("__x86_64__", "1");
   define_macro("linux", "1");
   define_macro("unix", "1");
 
