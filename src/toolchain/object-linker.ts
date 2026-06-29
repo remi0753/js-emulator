@@ -21,6 +21,7 @@ export interface LinkObjectsOptions {
   textOrigin?: number;
   entry?: string;
   gcSections?: boolean;
+  includeLocals?: boolean; // TEMP profiling: also map local text symbols
 }
 
 export interface LinkedObjects {
@@ -168,6 +169,8 @@ export function linkObjects(
     p.obj.symbols.forEach((sym, index) => {
       if (sym.binding === 'global' && sym.section !== 'undef') {
         globalAddrs.set(sym.name, localAddr(p, index));
+      } else if (options.includeLocals && sym.section === 'text' && !sym.name.startsWith('.L')) {
+        globalAddrs.set(`${p.obj.name}:${sym.name}`, localAddr(p, index));
       }
     });
   }

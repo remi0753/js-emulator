@@ -249,7 +249,7 @@ function linkCompilerProgram(units: readonly string[]): Uint8Array {
 
 // Global symbol name -> guest address for the built `/bin/cc`. Used only by
 // development profiling to map sampled program counters back to functions.
-export function chibiccCompilerSymbols(): Map<string, number> {
+export function chibiccCompilerSymbols(includeLocals = false): Map<string, number> {
   const objects: ObjectFile[] = [
     crt0Object(COMPILER_STACK_SIZE),
     ...COMPILER_UNITS.map(compileCc),
@@ -260,6 +260,7 @@ export function chibiccCompilerSymbols(): Map<string, number> {
   return linkObjects(objects, [floatRuntimeArchive()], {
     textOrigin: GUEST_KERNEL_LAYOUT.userLoadBase,
     entry: '_start',
+    includeLocals,
   }).symbols;
 }
 
