@@ -28,6 +28,7 @@ char minus_text[2] = {45, 0};
 #define FILE_READ 1
 #define FILE_WRITE 2
 #define FILE_MEMSTREAM 4
+#define FILE_BUFW 8 // fd-backed write stream: buffer output through mem_data
 
 sighandler_t signal_handlers[32];
 int signal_current;
@@ -801,7 +802,19 @@ int strtol(char *text, char **endptr, int base) {
   return strtoul(text, endptr, base);
 }
 
-// --- unbuffered stdio ------------------------------------------------------
+// --- block-buffered stdio --------------------------------------------------
+//
+// fd-backed write streams accumulate output in a heap buffer and flush it in
+// block-sized chunks, so a flood of tiny fputc/fputs calls (the C compiler emits
+// assembly a token at a time) collapses to a few write syscalls instead of one
+// per byte. The buffer reuses the otherwise-idle memstream fields — for a real
+// fd stream mem_data/mem_capacity/mem_length are never used as a memstream — so
+// FILE keeps its size (its layout is baked into every userland binary). The
+// FILE_BUFW flag, set only in fdopen, marks a stream as buffer-eligible; the
+// static stdin/stdout/stderr objects never pass through fdopen, so interactive
+// console output keeps flushing immediately.
+
+#define STDIO_WBUF_SIZE 4096
 
 FILE *fdopen(int fd, char *mode) {
   FILE *stream;
@@ -819,7 +832,35 @@ FILE *fdopen(int fd, char *mode) {
   stream->mem_capacity = 0;
   stream->mem_length = 0;
   stream->mem_position = 0;
+  if (fd >= 0 && (stream->flags & FILE_WRITE) != 0) {
+    stream->mem_data = malloc(STDIO_WBUF_SIZE);
+    if (stream->mem_data != 0) {
+      stream->mem_capacity = STDIO_WBUF_SIZE;
+      stream->flags = stream->flags | FILE_BUFW;
+    }
+  }
   return stream;
+}
+
+// Drain a buffered write stream to its fd. Returns 0 on success, -1 on error.
+int fflush_wbuf(FILE *stream) {
+  int done;
+  int n;
+  if ((stream->flags & FILE_BUFW) == 0 || stream->mem_length == 0) {
+    return 0;
+  }
+  done = 0;
+  while (done < stream->mem_length) {
+    n = write(stream->fd, stream->mem_data + done, stream->mem_length - done);
+    if (n <= 0) {
+      stream->error = 1;
+      stream->mem_length = 0;
+      return -1;
+    }
+    done = done + n;
+  }
+  stream->mem_length = 0;
+  return 0;
 }
 
 FILE *fopen(char *path, char *mode) {
@@ -889,14 +930,17 @@ int fclose(FILE *stream) {
     free(stream);
     return 0;
   }
+  fflush_wbuf(stream);
   result = close(stream->fd);
+  if ((stream->flags & FILE_BUFW) != 0) free(stream->mem_data);
   if (stream != stdin && stream != stdout && stream != stderr) free(stream);
   return result;
 }
 
 int fflush(FILE *stream) {
-  if (stream != 0) memstream_publish(stream);
-  return 0;
+  if (stream == 0) return 0;
+  memstream_publish(stream);
+  return fflush_wbuf(stream);
 }
 
 int fseek(FILE *stream, int offset, int whence) {
@@ -914,6 +958,7 @@ int fseek(FILE *stream, int offset, int whence) {
     stream->eof = 0;
     return 0;
   }
+  fflush_wbuf(stream);
   result = lseek(stream->fd, offset, whence);
   if (result < 0) {
     stream->error = 1;
@@ -926,6 +971,7 @@ int fseek(FILE *stream, int offset, int whence) {
 int ftell(FILE *stream) {
   int result;
   if ((stream->flags & FILE_MEMSTREAM) != 0) return stream->mem_position;
+  fflush_wbuf(stream);
   result = lseek(stream->fd, 0, 1);
   if (result < 0) stream->error = 1;
   return result;
@@ -1003,6 +1049,32 @@ int fwrite(void *buffer, int size, int count, FILE *stream) {
     memstream_publish(stream);
     return count;
   }
+  if ((stream->flags & FILE_BUFW) != 0) {
+    // Buffered path: copy into mem_data, flushing whenever it fills. A write
+    // bigger than the buffer is flushed straight through after draining what's
+    // pending, so large fwrites don't churn the buffer.
+    done = 0;
+    while (done < total) {
+      if (stream->mem_length == stream->mem_capacity) {
+        if (fflush_wbuf(stream) < 0) break;
+      }
+      if (stream->mem_length == 0 && total - done >= stream->mem_capacity) {
+        n = write(stream->fd, bytes + done, total - done);
+        if (n <= 0) {
+          stream->error = 1;
+          break;
+        }
+        done = done + n;
+        continue;
+      }
+      n = stream->mem_capacity - stream->mem_length;
+      if (n > total - done) n = total - done;
+      memcpy(stream->mem_data + stream->mem_length, bytes + done, n);
+      stream->mem_length = stream->mem_length + n;
+      done = done + n;
+    }
+    return done / size;
+  }
   done = 0;
   while (done < total) {
     n = write(stream->fd, bytes + done, total - done);
@@ -1033,6 +1105,12 @@ int fputc(int character, FILE *stream) {
   c = character;
   if ((stream->flags & FILE_MEMSTREAM) != 0) {
     if (fwrite(&c, 1, 1, stream) != 1) return -1;
+    return c;
+  }
+  if ((stream->flags & FILE_BUFW) != 0) {
+    if (stream->mem_length == stream->mem_capacity && fflush_wbuf(stream) < 0) return -1;
+    stream->mem_data[stream->mem_length] = c;
+    stream->mem_length = stream->mem_length + 1;
     return c;
   }
   if (write(stream->fd, &c, 1) != 1) {
