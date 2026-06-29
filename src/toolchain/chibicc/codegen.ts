@@ -85,14 +85,27 @@ class Generator {
   // stack-machine output.
   private r5HasCsp = false;
 
+  // Whether R5 holds a newer `__csp` value than the in-memory global — i.e. a
+  // push/pop/adjust advanced R5 but deferred the `STORE R5, __csp` write-back.
+  // The stack machine round-trips __csp through memory on every push/pop; keeping
+  // the live value in R5 and only reconciling memory at the points that actually
+  // read __csp (calls, traps, control-flow joins, explicit __csp access) removes
+  // most of that traffic. Invariant: cspMemStale implies r5HasCsp — when R5 holds
+  // the only current copy of __csp it must never be clobbered before a flush.
+  private cspMemStale = false;
+
   private emit(line: string): void {
+    const t = line.trim();
+    // Reconcile a deferred __csp before any instruction that needs it current in
+    // memory: a control-flow boundary (label/branch/return), a call or trap (the
+    // callee or kernel reads __csp), or an explicit __csp access.
+    if (this.cspMemStale && this.needsCspFlush(t)) this.flushCsp();
     this.text.push(line);
     // Conservatively forget the R5==__csp fact whenever a line could change R5
     // or __csp, reach a control-flow join (label), or clobber R5 via a call/trap.
     // Only straight-line instructions that touch neither R5 nor __csp preserve
     // it. The csp helpers re-assert the fact after emitting their sequence.
     if (this.r5HasCsp) {
-      const t = line.trim();
       if (
         t.endsWith(':') ||
         /\bR5\b/.test(t) ||
@@ -102,6 +115,24 @@ class Generator {
         this.r5HasCsp = false;
       }
     }
+  }
+
+  // Whether `__csp` must be current in memory before the given (trimmed) line.
+  private needsCspFlush(t: string): boolean {
+    return (
+      t.endsWith(':') ||
+      /^(CALL|CALLR|INT|IRET|RET)\b/.test(t) ||
+      /^J[A-Z]+\b/.test(t) ||
+      /\b__csp\b/.test(t)
+    );
+  }
+
+  // Write the deferred software-stack pointer back from R5 to the __csp global.
+  private flushCsp(): void {
+    if (!this.cspMemStale) return;
+    this.cspMemStale = false;
+    this.emit('  STORE R5, __csp');
+    this.r5HasCsp = true; // R5 still holds __csp; memory is current again
   }
 
   // Load __csp into R5, skipping the load when R5 already holds it.
@@ -120,8 +151,10 @@ class Generator {
     this.emit('  STORER R5, R0');
     this.emit('  MOV R7, 4');
     this.emit('  ADD R5, R7');
-    this.emit('  STORE R5, __csp');
-    this.r5HasCsp = true; // R5 holds the just-stored (current) __csp
+    // Defer the `STORE R5, __csp`: R5 holds the live __csp, memory lags until the
+    // next flush point. A straight run of pushes keeps advancing R5 in place.
+    this.cspMemStale = true;
+    this.r5HasCsp = true;
   }
 
   // Push a specific register onto the software stack; advance __csp by 4.
@@ -130,7 +163,7 @@ class Generator {
     this.emit(`  STORER R5, ${reg}`);
     this.emit('  MOV R7, 4');
     this.emit('  ADD R5, R7');
-    this.emit('  STORE R5, __csp');
+    this.cspMemStale = true;
     this.r5HasCsp = true;
   }
 
@@ -139,16 +172,24 @@ class Generator {
     this.loadCsp();
     this.emit('  MOV R7, 4');
     this.emit('  SUB R5, R7');
-    this.emit('  STORE R5, __csp');
+    if (reg === 'R5') {
+      // The load overwrites R5, so the retreated __csp must reach memory first.
+      this.emit('  STORE R5, __csp');
+      this.emit('  LOADR R5, R5');
+      this.cspMemStale = false;
+      this.r5HasCsp = false;
+      return;
+    }
+    this.cspMemStale = true; // R5 keeps the live __csp; defer the write-back
     this.emit(`  LOADR ${reg}, R5`);
-    this.r5HasCsp = reg !== 'R5'; // the load clobbers R5 only when reg is R5
+    this.r5HasCsp = true;
   }
 
   private adjustCsp(delta: number): void {
     this.loadCsp();
     this.emit(`  MOV R7, ${Math.abs(delta)}`);
     this.emit(delta >= 0 ? '  ADD R5, R7' : '  SUB R5, R7');
-    this.emit('  STORE R5, __csp');
+    this.cspMemStale = true;
     this.r5HasCsp = true;
   }
 
@@ -200,6 +241,8 @@ class Generator {
 
   private genFunction(fn: Obj): void {
     this.currentFn = fn;
+    this.cspMemStale = false;
+    this.r5HasCsp = false;
     if (!fn.isStatic) this.globalDecls.push(fn.name);
     this.returnLabel = this.label(`${fn.name}.return`);
 
@@ -314,6 +357,8 @@ class Generator {
         return;
       }
       case 'asm':
+        // Inline asm may use R5 as scratch; reconcile any deferred __csp first.
+        this.flushCsp();
         for (const line of (node.asmSource ?? '').split('\n')) {
           const trimmed = line.trim();
           if (trimmed === '') continue;
@@ -472,6 +517,8 @@ class Generator {
     const mask = this.bitMask(width);
     const shiftedMask = bit === 0 ? mask : (mask << bit) >>> 0;
     const clearMask = ~shiftedMask >>> 0;
+    // Uses R5 as scratch; flush any deferred __csp held in R5 first.
+    this.flushCsp();
     this.emit('  MOVR R2, R0');
     this.emit('  LOADR R0, R1');
     this.emit(`  MOV R7, ${clearMask}`);
@@ -491,6 +538,8 @@ class Generator {
   // Copy exactly `size` bytes from R0 (source address) to R1 (destination
   // address). R0/R1 are not preserved; callers decide the expression result.
   private copyBytes(size: number): void {
+    // Uses R5 as the scratch destination pointer; flush any deferred __csp first.
+    this.flushCsp();
     this.emit('  MOVR R2, R0');
     this.emit('  MOVR R5, R1');
     let remaining = size;
