@@ -572,6 +572,14 @@ void page_cache_flush(int slot) {
 
 void page_cache_flush_frame(int frame) {
   int i;
+  // The page cache holds its own reference to every frame it caches (the eviction
+  // path in page_cache_alloc_slot treats refcount 1 as "only the cache holds it,
+  // unmapped"). So a frame that is both cached and mapped into a process has
+  // refcount >= 2; a process page with refcount 1 cannot be in the cache. This
+  // caller only ever passes process-mapped frames (teardown and munmap), which
+  // are overwhelmingly private pages, so this skips the 128-entry scan for the
+  // common case where it would find nothing.
+  if (frame_refs[frame / 4096] <= 1) return;
   i = 0;
   while (i < CFG_PAGE_CACHE_SIZE) {
     if (page_cache[i].used != 0 && page_cache[i].frame == frame) {
