@@ -139,13 +139,25 @@ static void pop(char *reg) {
   wr(", R5\n");
 }
 
-// Expression temporaries are routed through wrappers so this backend can grow a
-// different temporary strategy later without touching every call site. For now
-// they stay on the software stack; using the hardware return stack for arbitrary
-// C code is not safe enough for large programs with deep helper calls.
-static void push_tmp(void) { push(); }
-static void push_tmp_reg(char *reg) { push_reg(reg); }
-static void pop_tmp(char *reg) { pop(reg); }
+// A balanced expression temporary: spilled and reloaded within the same
+// expression, never read by a callee and never left live past a statement
+// boundary, so it uses the single-instruction hardware PUSH/POP instead of the
+// software __csp stack. Safe because the hardware stack already carries return
+// addresses and saved frame pointers and is preserved across traps and context
+// switches. Call arguments (read by the callee off __csp) keep using push()/
+// push_reg(); the switch dispatch, which leaves its value live across the case
+// jumps, stays on the leak-tolerant software stack.
+static void push_tmp(void) { ins("PUSH R0"); }
+static void push_tmp_reg(char *reg) {
+  wr("  PUSH ");
+  wr(reg);
+  wr("\n");
+}
+static void pop_tmp(char *reg) {
+  wr("  POP ");
+  wr(reg);
+  wr("\n");
+}
 
 static void adjust_csp(int delta) {
   ins("LOAD R5, __csp");
@@ -1482,11 +1494,15 @@ static void gen_stmt(Node *node) {
     return;
   }
   case ND_SWITCH: {
+    // The dispatch keeps the test value live on the software stack across the
+    // case jumps (a matched case branches away with the value still pushed); the
+    // epilogue's `STORE R6, __csp` reclaims that slot, so this stays on __csp
+    // rather than the balanced hardware-temp path.
     gen_expr(node->cond);
-    push_tmp();
+    push();
     for (Node *c = node->case_next; c; c = c->case_next) {
-      pop_tmp("R0");
-      push_tmp();
+      pop("R0");
+      push();
       if (c->begin == c->end) {
         ins_imm("MOV R7", (unsigned)c->begin);
         ins("CMP R0, R7");
@@ -1500,7 +1516,7 @@ static void gen_stmt(Node *node) {
         jmp("JBE", c->label);
       }
     }
-    pop_tmp("R0");
+    pop("R0");
     if (node->default_case)
       jmp("JMP", node->default_case->label);
     else

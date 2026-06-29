@@ -185,18 +185,25 @@ class Generator {
     this.r5HasCsp = true;
   }
 
-  // Expression temporaries are routed through helpers so the C-source guest
-  // backend can use a different strategy while the bootstrap backend stays on
-  // the conservative software-stack ABI. The bootstrap output includes the
-  // soft-float and i64 runtimes, whose deep helper nesting is deliberately kept
-  // on the older path.
+  // A balanced expression temporary: spilled and reloaded within the same
+  // expression, never read by a callee and never left live past a statement
+  // boundary. Such a value can use the single-instruction hardware PUSH/POP
+  // instead of the software __csp stack (which costs a store + pointer advance,
+  // a retreat + load, and a deferred __csp write-back). This is safe because the
+  // hardware stack already carries return addresses and saved frame pointers and
+  // so is preserved across traps and context switches; a same-mode trap even
+  // continues on the current SP instead of resetting it (cpu.ts deliver).
+  //
+  // Two uses stay on the software stack: call arguments, which the callee reads
+  // off __csp (push()/pushReg()); and the switch dispatch, which leaves its test
+  // value live across the case jumps and relies on the software stack being
+  // reset from R6 at the function epilogue to reclaim it.
   private pushTemp(reg = 'R0'): void {
-    if (reg === 'R0') this.push();
-    else this.pushReg(reg);
+    this.emit(`  PUSH ${reg}`);
   }
 
   private popTemp(reg: string): void {
-    this.pop(reg);
+    this.emit(`  POP ${reg}`);
   }
 
   private adjustCsp(delta: number): void {
@@ -392,16 +399,20 @@ class Generator {
     const defaultLabel = node.defaultCase ? this.label('switch.default') : end;
     const labels = (node.cases ?? []).map((c) => ({ ...c, label: this.label('switch.case') }));
 
+    // The dispatch keeps the test value live on the software stack across the
+    // case jumps (a matched case branches away with the value still pushed); the
+    // epilogue's `STORE R6, __csp` reclaims that slot, so this stays on __csp
+    // rather than the balanced hardware-temp path.
     this.genExpr(node.cond!);
-    this.pushTemp();
+    this.push();
     for (const c of labels) {
-      this.popTemp('R0');
-      this.pushTemp();
+      this.pop('R0');
+      this.push();
       this.emit(`  MOV R7, ${c.value >>> 0}`);
       this.emit('  CMP R0, R7');
       this.emit(`  JZ ${c.label}`);
     }
-    this.popTemp('R0');
+    this.pop('R0');
     this.emit(`  JMP ${defaultLabel}`);
 
     this.breakStack.push(end);
