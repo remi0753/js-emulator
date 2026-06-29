@@ -14,10 +14,16 @@
 // Represents a deleted hash entry
 #define TOMBSTONE ((void *)-1)
 
-static uint64_t fnv_hash(char *s, int len) {
-  uint64_t hash = 0xcbf29ce484222325;
+// 32-bit FNV-1a. The upstream table hashes with 64-bit arithmetic, but the
+// custom32 guest has no native 64-bit ops, so a 64-bit hash compiles to a chain
+// of software __u64_* helper calls *per character* — by far the dominant cost of
+// running this compiler on the 32-bit guest. A 32-bit hash uses native MUL/XOR
+// and distributes just as well; hash values never cross the host/guest boundary,
+// so changing the function is safe.
+static unsigned int fnv_hash(char *s, int len) {
+  unsigned int hash = 2166136261u;
   for (int i = 0; i < len; i++) {
-    hash *= 0x100000001b3;
+    hash *= 16777619u;
     hash ^= (unsigned char)s[i];
   }
   return hash;
@@ -61,7 +67,7 @@ static HashEntry *get_entry(HashMap *map, char *key, int keylen) {
   if (!map->buckets)
     return NULL;
 
-  uint64_t hash = fnv_hash(key, keylen);
+  unsigned int hash = fnv_hash(key, keylen);
 
   for (int i = 0; i < map->capacity; i++) {
     HashEntry *ent = &map->buckets[(hash + i) % map->capacity];
@@ -81,7 +87,7 @@ static HashEntry *get_or_insert_entry(HashMap *map, char *key, int keylen) {
     rehash(map);
   }
 
-  uint64_t hash = fnv_hash(key, keylen);
+  unsigned int hash = fnv_hash(key, keylen);
 
   for (int i = 0; i < map->capacity; i++) {
     HashEntry *ent = &map->buckets[(hash + i) % map->capacity];

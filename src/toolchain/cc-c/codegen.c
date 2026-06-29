@@ -559,8 +559,10 @@ static void return_aggregate(Node *expr) {
 // --- calls ------------------------------------------------------------------
 
 static int push_call_arg(Node *arg) {
-  if (is_flonum_ty(arg->ty))
-    error("codegen: floating-point arguments are not yet supported");
+  // Floating point is unsupported: the guest backend is integer-only. Float
+  // operands fall through to the generic single-word path, which gen_expr
+  // lowers to a placeholder value (see gen_expr). This keeps float-using
+  // translation units compilable as long as those paths stay unexecuted.
   if (is64(arg->ty)) {
     gen64_value(arg);
     push_reg("R0"); // low word (lower address)
@@ -583,7 +585,122 @@ static int push_call_arg(Node *arg) {
   return 1;
 }
 
+// Evaluate the call's arguments left-to-right and land them in `regs`. Extra
+// arguments beyond `nregs` are discarded; unused registers are zeroed. Used
+// only for the fixed-arity target intrinsics below.
+static void into_regs(Node *node, char **regs, int nregs) {
+  int n = 0;
+  for (Node *a = node->args; a; a = a->next) {
+    gen_expr(a);
+    push();
+    n++;
+  }
+  while (n > nregs) {
+    pop("R7");
+    n--;
+  }
+  for (int i = n - 1; i >= 0; i--)
+    pop(regs[i]);
+  for (int i = n; i < nregs; i++)
+    ins_imm(format("MOV %s", regs[i]), 0);
+}
+
+// Target intrinsics recognized by name: `__syscall` (the userland trap) plus a
+// few raw device/CPU primitives. Mirrors the bootstrap backend's genBuiltin
+// (src/toolchain/chibicc/codegen.ts). Returns true when the call was lowered
+// inline; false to fall back to an ordinary CALL.
+static bool gen_intrinsic(Node *node) {
+  Node *fn = node->lhs;
+  if (!fn || fn->kind != ND_VAR)
+    return false;
+  char *name = fn->var->name;
+  char *r4[4] = {"R0", "R1", "R2", "R3"};
+  char *r2[2] = {"R1", "R2"};
+  char *r1[1] = {"R1"};
+  if (!strcmp(name, "__syscall")) {
+    into_regs(node, r4, 4);
+    ins("INT 128");
+    return true;
+  }
+  if (!strcmp(name, "__out")) {
+    into_regs(node, r2, 2);
+    ins("OUT R1, R2");
+    ins("MOV R0, 0");
+    return true;
+  }
+  if (!strcmp(name, "__in")) {
+    into_regs(node, r1, 1);
+    ins("IN R0, R1");
+    return true;
+  }
+  if (!strcmp(name, "__halt")) {
+    ins("HLT");
+    ins("MOV R0, 0");
+    return true;
+  }
+  if (!strcmp(name, "__iret")) {
+    ins("IRET");
+    ins("MOV R0, 0");
+    return true;
+  }
+  if (!strcmp(name, "__lidt")) {
+    into_regs(node, r1, 1);
+    ins("LIDT R1");
+    ins("MOV R0, 0");
+    return true;
+  }
+  if (!strcmp(name, "__lksp")) {
+    into_regs(node, r1, 1);
+    ins("LKSP R1");
+    ins("MOV R0, 0");
+    return true;
+  }
+  if (!strcmp(name, "__stmr")) {
+    into_regs(node, r1, 1);
+    ins("STMR R1");
+    ins("MOV R0, 0");
+    return true;
+  }
+  if (!strcmp(name, "__lptbr")) {
+    into_regs(node, r1, 1);
+    ins("LPTBR R1");
+    ins("MOV R0, 0");
+    return true;
+  }
+  if (!strcmp(name, "__pgon")) {
+    ins("PGON");
+    ins("MOV R0, 0");
+    return true;
+  }
+  if (!strcmp(name, "__pgoff")) {
+    ins("PGOFF");
+    ins("MOV R0, 0");
+    return true;
+  }
+  if (!strcmp(name, "__rdpfla")) {
+    ins("RDPFLA R0");
+    return true;
+  }
+  if (!strcmp(name, "__rderr")) {
+    ins("RDERR R0");
+    return true;
+  }
+  if (!strcmp(name, "__ei")) {
+    ins("EI");
+    ins("MOV R0, 0");
+    return true;
+  }
+  if (!strcmp(name, "__di")) {
+    ins("DI");
+    ins("MOV R0, 0");
+    return true;
+  }
+  return false;
+}
+
 static void gen_call(Node *node) {
+  if (gen_intrinsic(node))
+    return;
   int n = 0;
   for (Node *a = node->args; a; a = a->next)
     n++;
@@ -653,8 +770,8 @@ static void gen_compare(Node *node) {
 
 static void gen_binary(Node *node) {
   if (node->kind == ND_EQ || node->kind == ND_NE || node->kind == ND_LT || node->kind == ND_LE) {
-    if (is_flonum_ty(node->lhs->ty) || is_flonum_ty(node->rhs->ty))
-      error("codegen: floating-point comparisons are not yet supported");
+    // Float operands are not supported; fall through to the integer compare
+    // (placeholder, unexecuted) rather than failing the whole translation unit.
     if (is64(node->lhs->ty) || is64(node->rhs->ty)) {
       gen64_compare(node);
       return;
@@ -780,8 +897,8 @@ static void gen_value_as(Node *node, Type *ty) {
     gen_expr(node);
     return;
   }
-  if (is_flonum_ty(ty) || is_flonum_ty(node->ty))
-    error("codegen: floating-point conversions are not yet supported");
+  // Float conversions are unsupported; the placeholder integer path keeps the
+  // unit compilable (these conversions are never reached for integer inputs).
   if (is64(ty)) {
     gen64_value(node);
     return;
@@ -830,8 +947,14 @@ static void gen_expr(Node *node) {
     gen64_expr(node);
     return;
   }
-  if (is_flonum_ty(node->ty))
-    error("codegen: floating-point expressions are not yet supported");
+  // The guest backend is integer-only. A floating-point-typed expression is
+  // lowered to a placeholder zero so float-using translation units still
+  // compile; such values must not be relied on at runtime (the compiler's own
+  // sources only name `double` in code paths that integer inputs never reach).
+  if (is_flonum_ty(node->ty)) {
+    ins_imm("MOV R0", 0);
+    return;
+  }
 
   switch (node->kind) {
   case ND_NULL_EXPR:

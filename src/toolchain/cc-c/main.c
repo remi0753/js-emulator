@@ -6,7 +6,8 @@ bool opt_fpic;
 bool opt_fcommon = true;
 char *base_file;
 
-static char *input_path;
+static char *inputs[128];
+static int input_count;
 static char *output_path;
 static bool opt_asm;
 
@@ -49,10 +50,6 @@ static void parse_args(int argc, char **argv) {
       i = i + 1;
       continue;
     }
-    if (!strcmp(argv[i], "-c")) {
-      fprintf(stderr, "cc: -c relocatable object output is not supported yet\n");
-      exit(1);
-    }
     if (!strcmp(argv[i], "-o")) {
       if (i + 1 >= argc) usage(1);
       output_path = argv[i + 1];
@@ -74,18 +71,50 @@ static void parse_args(int argc, char **argv) {
       fprintf(stderr, "cc: unsupported option: %s\n", argv[i]);
       exit(1);
     }
-    if (input_path != 0) {
-      fprintf(stderr, "cc: multiple input files are not supported yet\n");
+    // `@file` response file: read whitespace-separated input paths from `file`.
+    // The kernel caps argv tightly, so a large link is driven from a list file.
+    if (argv[i][0] == '@') {
+      char *list = guest_read_file(argv[i] + 1);
+      int p = 0;
+      while (list[p] != 0) {
+        while (list[p] == ' ' || list[p] == '\t' || list[p] == '\n' || list[p] == '\r') p++;
+        if (list[p] == 0) break;
+        int start = p;
+        while (list[p] != 0 && list[p] != ' ' && list[p] != '\t' && list[p] != '\n' &&
+               list[p] != '\r')
+          p++;
+        char *token = calloc(p - start + 1, 1);
+        memcpy(token, list + start, p - start);
+        if (input_count >= 128) {
+          fprintf(stderr, "cc: too many input files\n");
+          exit(1);
+        }
+        inputs[input_count] = token;
+        input_count = input_count + 1;
+      }
+      i = i + 1;
+      continue;
+    }
+    if (input_count >= 128) {
+      fprintf(stderr, "cc: too many input files\n");
       exit(1);
     }
-    input_path = argv[i];
+    inputs[input_count] = argv[i];
+    input_count = input_count + 1;
     i = i + 1;
   }
-  if (input_path == 0) usage(1);
+  if (input_count == 0) usage(1);
   if (output_path == 0) {
-    if (opt_asm) output_path = replace_ext(input_path, ".s");
+    if (opt_asm) output_path = replace_ext(inputs[0], ".s");
     else output_path = "a.out";
   }
+}
+
+static bool ends_with(char *s, char *suffix) {
+  int ls = strlen(s);
+  int lt = strlen(suffix);
+  if (lt > ls) return false;
+  return strcmp(s + ls - lt, suffix) == 0;
 }
 
 static void add_default_include_paths(void) {
@@ -149,11 +178,33 @@ int main(int argc, char **argv) {
   char *assembly;
   add_default_include_paths();
   parse_args(argc, argv);
+
   if (opt_asm) {
-    compile_to_asm(input_path, output_path);
+    if (input_count != 1) {
+      fprintf(stderr, "cc: -S accepts exactly one input file\n");
+      exit(1);
+    }
+    compile_to_asm(inputs[0], output_path);
     return 0;
   }
-  assembly = compile_to_asm_memory(input_path);
+
+  // Link mode: when every input is assembly, assemble each translation unit and
+  // link them (plus crt/libc/runtime assembly) into one guest executable.
+  bool all_asm = true;
+  for (int i = 0; i < input_count; i++)
+    if (!ends_with(inputs[i], ".s")) all_asm = false;
+  if (all_asm) {
+    link_guest_objects(inputs, input_count, output_path);
+    return 0;
+  }
+
+  // Single-source convenience path: compile, assemble, and link one .c file
+  // with the built-in crt in one step.
+  if (input_count != 1) {
+    fprintf(stderr, "cc: mixed or multiple non-assembly inputs are not supported; compile each with -S, then link the .s files\n");
+    exit(1);
+  }
+  assembly = compile_to_asm_memory(inputs[0]);
   assemble_and_link_guest(assembly, output_path);
   return 0;
 }

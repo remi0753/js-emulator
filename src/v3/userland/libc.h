@@ -234,7 +234,7 @@ int ntohs(int value);
 int htonl(int value);
 int ntohl(int value);
 void exit(int code);
-int time(void);
+int time(int *tloc);
 void shutdown(void);
 
 FILE *fdopen(int fd, char *mode);

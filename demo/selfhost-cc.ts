@@ -27,7 +27,7 @@ import { Fs } from '../src/storage/fs.ts';
 
 // A budget large enough to boot, compile every compiler translation unit, and
 // link the result. The interpreted CPU runs at a few million steps/second.
-const BUILD_BUDGET = 80_000_000_000;
+const BUILD_BUDGET = 300_000_000_000;
 const USE_BUDGET = 12_000_000_000;
 
 function mount(disk: Uint8Array): Fs {
@@ -49,12 +49,33 @@ function fileSize(fs: Fs, path: string): number {
 
 // Run one shell session against the persistent disk image and return console
 // output. The disk array is mutated in place, so later boots see earlier writes.
-function runGuest(disk: Uint8Array, script: string, budget: number): string {
+// When `stream` is set the guest console is echoed live (line-buffered, each
+// completed line stamped with wall-clock elapsed) so a long build shows
+// per-translation-unit progress instead of going silent until it finishes.
+function runGuest(disk: Uint8Array, script: string, budget: number, stream = false): string {
   let out = '';
-  const { machine } = bootGuestDiskImage(disk, { consoleSink: (s) => (out += s) });
+  const t0 = Date.now();
+  let pending = '';
+  const emit = (line: string) => {
+    const sec = ((Date.now() - t0) / 1000).toFixed(1);
+    process.stdout.write(`  [+${sec.padStart(7)}s] ${line}\n`);
+  };
+  const sink = (s: string) => {
+    out += s;
+    if (!stream) return;
+    pending += s;
+    let nl: number;
+    while ((nl = pending.indexOf('\n')) >= 0) {
+      emit(pending.slice(0, nl));
+      pending = pending.slice(nl + 1);
+    }
+  };
+  const { machine } = bootGuestDiskImage(disk, { consoleSink: sink });
   machine.keyboard.feed(`${script}\n`);
   machine.keyboard.close();
   const result = machine.run(budget);
+  if (stream && pending.length) emit(pending);
+  if (stream) emit(`[guest stopped: ${result.reason}]`);
   out += `\n[guest stopped: ${result.reason}]\n`;
   return out;
 }
@@ -94,8 +115,7 @@ console.log(`[host] installed source units under /usr/src/cc; libc.s ${fileSize(
 console.log('');
 console.log(`[guest] rebuilding the compiler from source: ${GUEST_BUILD_COMMAND}`);
 console.log('[guest] (this is the long part — the guest compiles every translation unit)…');
-const buildOut = runGuest(disk, GUEST_BUILD_COMMAND, BUILD_BUDGET);
-process.stdout.write(buildOut);
+const buildOut = runGuest(disk, GUEST_BUILD_COMMAND, BUILD_BUDGET, true);
 
 const built = mount(disk);
 const ccSize = fileSize(built, GUEST_REBUILT_CC_PATH);

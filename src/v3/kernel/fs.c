@@ -279,6 +279,10 @@ int bmap_alloc(int inum, int bn) {
   if (ind == 0) {
     ind = balloc();
     if (ind == 0) return 0;
+    // balloc() does its own bread()s, which can evict the dind buffer from the
+    // FIFO cache; the `data` pointer from bread(dind) above may now alias a
+    // different block. Re-read dind before writing the new outer entry.
+    data = bread(dind);
     write32_at(data + outer * 4, ind);
     bwrite(dind, data);
   }
@@ -385,9 +389,12 @@ void itrunc(int inum) {
   }
   dind = inode_slot(inum, CFG_NDIRECT + 1);
   if (dind != 0) {
-    data = bread(dind);
     i = 0;
     while (i < CFG_NINDIRECT) {
+      // Re-read dind each pass: the bread(ind)/bfree() below can evict the dind
+      // buffer from the FIFO cache, so a `data` pointer held across the loop
+      // would alias another block. (Same hazard as bmap_alloc.)
+      data = bread(dind);
       ind = read32_at(data + i * 4);
       if (ind != 0) {
         data2 = bread(ind);

@@ -3,7 +3,7 @@
 
 int main(int argc, char **argv) {
   int t;
-  t = time();
+  t = time(NULL);
   print_int(t);
   fputc('\n', stdout);
   return 0;

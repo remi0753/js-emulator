@@ -15,11 +15,12 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { ObjectFile } from '../formats/object.ts';
 import type { Fs } from '../storage/fs.ts';
-import { compileObject, crt0Object } from '../toolchain/cc.ts';
-import type { IncludeResolver } from '../toolchain/chibicc/index.ts';
-import { i64RuntimeObject } from '../toolchain/chibicc/runtime64.ts';
+import { compileObject, crt0Object, userCrtAssembly } from '../toolchain/cc.ts';
+import { compile as chibiccCompile, type IncludeResolver } from '../toolchain/chibicc/index.ts';
+import { I64_RUNTIME_SOURCE, i64RuntimeObject } from '../toolchain/chibicc/runtime64.ts';
 import { floatRuntimeArchive } from '../toolchain/chibicc/runtimeFloat.ts';
-import { type Defines, GUEST_KERNEL_DEFINES } from './config.ts';
+import { linkObjects } from '../toolchain/object-linker.ts';
+import { type Defines, GUEST_KERNEL_DEFINES, GUEST_KERNEL_LAYOUT } from './config.ts';
 import { linkGuestExecutable } from './guest-cc.ts';
 
 // Read a file from the compiler source tree (`src/toolchain/cc-c/...`).
@@ -137,6 +138,71 @@ const USERLAND_HEADERS = [
 
 const COMPILER_STACK_SIZE = 256 * 1024;
 
+// Translation units the guest compiler rebuilds itself from. Each is plain C the
+// guest `cc -S` turns into custom32 assembly named `<obj>.s`. These are *every*
+// compiler translation unit — the vendored chibicc frontend, the custom32
+// backend, the driver, the in-process linker, and the compiler support helpers.
+const GUEST_SELFBUILD_UNITS: readonly { src: string; obj: string }[] = [
+  { src: 'main.c', obj: 'main' },
+  { src: 'guestlink.c', obj: 'guestlink' },
+  { src: 'codegen.c', obj: 'codegen' },
+  { src: 'ccsupport.c', obj: 'ccsupport' },
+  { src: 'upstream/tokenize.c', obj: 'tokenize' },
+  { src: 'upstream/preprocess.c', obj: 'preprocess' },
+  { src: 'upstream/parse.c', obj: 'parse' },
+  { src: 'upstream/type.c', obj: 'type' },
+  { src: 'upstream/hashmap.c', obj: 'hashmap' },
+  { src: 'upstream/strings.c', obj: 'strings' },
+  { src: 'upstream/unicode.c', obj: 'unicode' },
+];
+
+// Prebuilt support assembly the guest links its freshly compiled objects
+// against: the crt (startup + mem/str helpers), the guest libc, and the 64-bit
+// runtime. This is toolchain support — provided the way a cross-compiler ships
+// its target libc — so the guest compiles every compiler translation unit
+// itself, then links them here. Produced with the bootstrap compiler's
+// `compile()`, which emits the same assembly dialect the guest assembler reads.
+function guestSupportAssembly(): { name: string; text: string }[] {
+  const libcText = chibiccCompile(substituteDefines(userlandSource('libc.c'), GUEST_KERNEL_DEFINES), {
+    name: 'libc.c',
+    resolveInclude: resolveCompilerInclude,
+  });
+  const i64Text = chibiccCompile(I64_RUNTIME_SOURCE, { name: 'i64rt.c' });
+  return [
+    { name: 'crt.s', text: userCrtAssembly(COMPILER_STACK_SIZE) },
+    { name: 'libc.s', text: libcText },
+    { name: 'i64rt.s', text: i64Text },
+  ];
+}
+
+// The shell script the guest runs to rebuild the compiler from source: compile
+// each translation unit to assembly, then link them with the support assembly
+// into a fresh `cc` executable. One command per line (the guest shell has no
+// `&&`); each `cc` runs in its own process so the frontend starts clean.
+function guestBuildScript(output: string, scratch = '/b'): string {
+  const lines = [`mkdir ${scratch}`];
+  const total = GUEST_SELFBUILD_UNITS.length;
+  GUEST_SELFBUILD_UNITS.forEach((unit, i) => {
+    lines.push(`echo cc-build-unit ${i + 1}/${total} ${unit.src}`);
+    lines.push(`cc -S -o ${scratch}/${unit.obj}.s /usr/src/cc/${unit.src}`);
+  });
+  lines.push('echo cc-build-link');
+  lines.push(`cc -o ${output} @/usr/src/cc/link.objs`);
+  lines.push('echo cc-build-done');
+  return `${lines.join('\n')}\n`;
+}
+
+function guestLinkList(scratch = '/b'): string {
+  const support = ['crt.s', 'libc.s', 'i64rt.s'].map((s) => `/usr/src/cc/${s}`);
+  const objs = GUEST_SELFBUILD_UNITS.map((u) => `${scratch}/${u.obj}.s`);
+  return `${[...support, ...objs].join('\n')}\n`;
+}
+
+// Output path the guest build script writes the rebuilt compiler to.
+export const GUEST_REBUILT_CC_PATH = '/bin/cc2';
+// Command that runs the in-guest compiler self-rebuild.
+export const GUEST_BUILD_COMMAND = 'sh /usr/src/cc/build.sh';
+
 const SELFHOST_PROBE_SOURCE = [
   'struct cc_type { int kind; int size; int align; };',
   '',
@@ -178,6 +244,22 @@ function linkCompilerProgram(units: readonly string[]): Uint8Array {
   return linkGuestExecutable(objects, [floatRuntimeArchive()]);
 }
 
+// Global symbol name -> guest address for the built `/bin/cc`. Used only by
+// development profiling to map sampled program counters back to functions.
+export function chibiccCompilerSymbols(): Map<string, number> {
+  const objects: ObjectFile[] = [
+    crt0Object(COMPILER_STACK_SIZE),
+    ...COMPILER_UNITS.map(compileCc),
+    compileCc('ccsupport.c'),
+    compileLibc(),
+    i64RuntimeObject(),
+  ];
+  return linkObjects(objects, [floatRuntimeArchive()], {
+    textOrigin: GUEST_KERNEL_LAYOUT.userLoadBase,
+    entry: '_start',
+  }).symbols;
+}
+
 // Phase 34 de-risking probe: the vendored chibicc tokenizer compiled to a guest
 // executable. Proves the real frontend cross-compiles and runs in the guest
 // before the codegen.c port is written.
@@ -216,16 +298,48 @@ export function installChibiccToolchain(fs: Fs, options: InstallChibiccOptions =
       new TextEncoder().encode(ccSource(header)),
     );
   }
+  // Headers the compiler/libc sources reach through `#include` but that are not
+  // in the lists above: the userland libc surface (pulled in by stdio.h etc.)
+  // and the compiler support helpers (pulled in by chibicc.h from upstream/).
+  // The guest `cc` (upstream frontend built by the bootstrap backend) cannot yet
+  // parse function-pointer declarators, so degrade `sighandler_t` to a plain
+  // pointer here — the compiler never references signal()/sigaction(), and the
+  // prebuilt libc.s keeps the real definitions, so the symbols still link.
+  fs.writeFile(
+    '/include/libc.h',
+    new TextEncoder().encode(
+      substituteDefines(userlandSource('libc.h'), GUEST_KERNEL_DEFINES).replace(
+        'typedef void (*sighandler_t)(int signal);',
+        'typedef void *sighandler_t;',
+      ),
+    ),
+  );
+  fs.writeFile('/include/ccsupport.h', new TextEncoder().encode(ccSource('ccsupport.h')));
   if (options.installSources) installChibiccSources(fs, options.sourceRoot);
 }
 
 export function installChibiccSources(fs: Fs, root = '/usr/src/cc'): void {
   const enc = new TextEncoder();
+  // Substitute the kernel config tokens (CFG_USER_LOAD_BASE, CFG_EXEC_MAGIC, …)
+  // into the source before staging it, exactly as the host compile path does
+  // (compileObject). The guest `cc` has no -D mechanism for these, so without
+  // substitution guestlink.c's `CFG_USER_LOAD_BASE` reaches the guest as a bare
+  // identifier and fails to compile ("undefined variable").
+  const src = (subpath: string) => substituteDefines(ccSource(subpath), GUEST_KERNEL_DEFINES);
   for (const source of COMPILER_SOURCE_FILES) {
-    fs.writeFile(`${root}/${source}`, enc.encode(ccSource(source)));
+    fs.writeFile(`${root}/${source}`, enc.encode(src(source)));
   }
-  fs.writeFile(`${root}/chibicc.h`, enc.encode(ccSource('upstream/chibicc.h')));
+  fs.writeFile(`${root}/chibicc.h`, enc.encode(src('upstream/chibicc.h')));
+  // ccsupport.h is reached relative to upstream/chibicc.h; mirror it there too.
+  fs.writeFile(`${root}/upstream/ccsupport.h`, enc.encode(src('ccsupport.h')));
   fs.writeFile(`${root}/selfhost.c`, enc.encode(SELFHOST_PROBE_SOURCE));
+
+  // The self-rebuild kit: prebuilt support assembly, the link list, and the
+  // build script the guest runs to recompile the whole compiler into /bin/cc2.
+  for (const support of guestSupportAssembly())
+    fs.writeFile(`${root}/${support.name}`, enc.encode(support.text));
+  fs.writeFile(`${root}/link.objs`, enc.encode(guestLinkList()));
+  fs.writeFile(`${root}/build.sh`, enc.encode(guestBuildScript(GUEST_REBUILT_CC_PATH)));
   fs.writeFile(
     `${root}/README`,
     enc.encode(

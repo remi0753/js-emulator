@@ -742,6 +742,139 @@ static void write_executable(AsmImage *img, char *output_path) {
   chmod(output_path, 493);
 }
 
+// --- multi-input linker -----------------------------------------------------
+
+typedef struct {
+  char *name;
+  int addr;
+} GlobalSym;
+
+char *guest_read_file(char *path) {
+  int fd = open(path, 0);
+  if (fd < 0) die("cannot open %s: %s", path, strerror(errno));
+  int cap = 8192;
+  int len = 0;
+  char *buf = malloc(cap);
+  for (;;) {
+    if (len + 4096 > cap) {
+      cap = cap * 2;
+      buf = realloc(buf, cap);
+    }
+    int n = read(fd, buf + len, 4096);
+    if (n <= 0) break;
+    len = len + n;
+  }
+  if (len + 1 > cap) buf = realloc(buf, len + 1);
+  buf[len] = 0;
+  close(fd);
+  return buf;
+}
+
+void link_guest_objects(char **input_paths, int input_count, char *output_path) {
+  AsmImage *imgs = calloc(input_count, sizeof(AsmImage));
+  for (int i = 0; i < input_count; i++) {
+    char *source = guest_read_file(input_paths[i]);
+    memset(&imgs[i], 0, sizeof(AsmImage));
+    imgs[i].section = SEC_TEXT;
+    assemble_source(&imgs[i], source);
+  }
+
+  // Lay out every image's text, then every image's data, then bss.
+  int *tb = calloc(input_count, sizeof(int));
+  int *db = calloc(input_count, sizeof(int));
+  int *bb = calloc(input_count, sizeof(int));
+  int text_base = CFG_USER_LOAD_BASE;
+  int cur = text_base;
+  for (int i = 0; i < input_count; i++) {
+    tb[i] = cur;
+    cur = cur + imgs[i].text.len;
+  }
+  int text_end = cur;
+  int data_base = align_to_guest(text_end, 4096);
+  cur = data_base;
+  for (int i = 0; i < input_count; i++) {
+    db[i] = cur;
+    cur = cur + imgs[i].data.len;
+  }
+  int data_end = cur;
+  int bss_base = align_to_guest(data_end, 4);
+  cur = bss_base;
+  for (int i = 0; i < input_count; i++) {
+    bb[i] = cur;
+    cur = cur + imgs[i].bss_size;
+  }
+  int mem_end = cur;
+
+  // Collect every defined global symbol with its absolute address.
+  int gcount = 0;
+  int gcap = 256;
+  GlobalSym *globals = malloc(gcap * sizeof(GlobalSym));
+  for (int i = 0; i < input_count; i++) {
+    for (int s = 0; s < imgs[i].symbol_count; s++) {
+      Symbol *sym = &imgs[i].symbols[s];
+      if (!sym->global || sym->section == 0) continue;
+      for (int g = 0; g < gcount; g++)
+        if (!strcmp(globals[g].name, sym->name)) die("duplicate global symbol: %s", sym->name);
+      if (gcount >= gcap) {
+        gcap = gcap * 2;
+        globals = realloc(globals, gcap * sizeof(GlobalSym));
+      }
+      globals[gcount].name = sym->name;
+      globals[gcount].addr = symbol_addr(&imgs[i], sym, tb[i], db[i], bb[i]);
+      gcount = gcount + 1;
+    }
+  }
+
+  // Resolve relocations: a symbol defined in the same image is local; anything
+  // else must be a global exported by another input.
+  for (int i = 0; i < input_count; i++) {
+    AsmImage *img = &imgs[i];
+    for (int r = 0; r < img->reloc_count; r++) {
+      Reloc *rel = &img->relocs[r];
+      int value;
+      int si = find_symbol(img, rel->name);
+      if (si >= 0 && img->symbols[si].section != 0) {
+        value = symbol_addr(img, &img->symbols[si], tb[i], db[i], bb[i]);
+      } else {
+        int g = 0;
+        for (; g < gcount; g++)
+          if (!strcmp(globals[g].name, rel->name)) break;
+        if (g == gcount) die("undefined symbol: %s", rel->name);
+        value = globals[g].addr;
+      }
+      value = value + rel->addend;
+      if (rel->section == SEC_TEXT) {
+        if (rel->offset + 4 > img->text.len) die("bad text relocation");
+        write32(img->text.data + rel->offset, value);
+      } else {
+        if (rel->offset + 4 > img->data.len) die("bad data relocation");
+        write32(img->data.data + rel->offset, value);
+      }
+    }
+  }
+
+  int entry = -1;
+  for (int g = 0; g < gcount; g++)
+    if (!strcmp(globals[g].name, "_start")) entry = globals[g].addr;
+  if (entry < 0) die("entry symbol not found: _start");
+
+  int file_len = data_end - text_base;
+  unsigned char *out = calloc(12 + file_len, 1);
+  write32(out, CFG_EXEC_MAGIC);
+  write32(out + 4, entry);
+  write32(out + 8, mem_end - text_base);
+  for (int i = 0; i < input_count; i++) {
+    if (imgs[i].text.len) memcpy(out + 12 + (tb[i] - text_base), imgs[i].text.data, imgs[i].text.len);
+    if (imgs[i].data.len) memcpy(out + 12 + (db[i] - text_base), imgs[i].data.data, imgs[i].data.len);
+  }
+
+  FILE *f = fopen(output_path, "w");
+  if (!f) die("cannot open %s: %s", output_path, strerror(errno));
+  if (fwrite(out, 1, 12 + file_len, f) != 12 + file_len) die("cannot write %s", output_path);
+  fclose(f);
+  chmod(output_path, 493);
+}
+
 void assemble_and_link_guest(char *assembly, char *output_path) {
   AsmImage img;
   char *combined = calloc(strlen(guest_crt) + strlen(assembly) + 2, 1);

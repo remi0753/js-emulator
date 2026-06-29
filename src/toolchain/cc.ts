@@ -54,6 +54,13 @@ export function kernelCrt0Object(stackSize = 8192): ObjectFile {
   return assembleObject(`${kernelStartAssembly()}\n${runtimeAssembly(stackSize)}`, 'kcrt0.o');
 }
 
+// The user crt as raw assembly text: `_start`, the C software stack, `environ`,
+// and the `memcpy`/`memset`/`strlen`/`strcmp` helpers. Used by the guest-native
+// linker (which assembles this directly) so it shares the host crt definition.
+export function userCrtAssembly(stackSize = 4096): string {
+  return `${userStartAssembly()}\n${runtimeAssembly(stackSize)}`;
+}
+
 function userStartAssembly(): string {
   return `
 .global _start

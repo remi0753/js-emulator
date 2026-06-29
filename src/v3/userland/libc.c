@@ -281,40 +281,66 @@ int mprotect(void *address, int length, int protection) {
 struct heap_block {
   int size;
   int free;
-  int next;
+  struct heap_block *next;
 };
 
-int heap_blocks;
+// A bump allocator with a segregated free list. The earlier allocator linked
+// *every* block into one list and scanned it on each malloc; chibicc allocates
+// hundreds of thousands of objects and frees almost none, so that scan was
+// O(n^2) and dominated by `sbrk` (two syscalls) per allocation — the bulk of the
+// cost of running the compiler on the interpreted guest. Now the bump region is
+// grown in 64 KiB chunks and only *freed* blocks go on `heap_free`, so an
+// arena-style workload never scans and rarely calls into the kernel.
+struct heap_block *heap_free;
+char *heap_next;
+char *heap_limit;
+
+#define HEAP_CHUNK 65536
 
 void *malloc(int size) {
   struct heap_block *block;
+  struct heap_block **link;
   int total;
   if (size <= 0) return 0;
   size = (size + 7) & 0xfffffff8;
-  block = heap_blocks;
-  while (block != 0) {
-    if (block->free != 0 && block->size >= size) {
+  link = &heap_free;
+  while (*link != 0) {
+    if ((*link)->size >= size) {
+      block = *link;
+      *link = block->next;
       block->free = 0;
       return block + 1;
     }
-    block = block->next;
+    link = &(*link)->next;
   }
   total = size + sizeof(struct heap_block);
-  block = sbrk(total);
-  if (block == -1) return 0;
+  while (heap_next == 0 || heap_next + total > heap_limit) {
+    int need = total > HEAP_CHUNK ? total : HEAP_CHUNK;
+    char *base = sbrk(need);
+    if (base == (char *)-1) return 0;
+    if (heap_next != 0 && base == heap_limit) {
+      heap_limit = base + need; // contiguous growth: keep the current cursor
+    } else {
+      heap_next = base; // first region, or a non-contiguous jump
+      heap_limit = base + need;
+    }
+  }
+  block = (struct heap_block *)heap_next;
+  heap_next = heap_next + total;
   block->size = size;
   block->free = 0;
-  block->next = heap_blocks;
-  heap_blocks = block;
+  block->next = 0;
   return block + 1;
 }
 
 void free(void *pointer) {
   struct heap_block *block;
   if (pointer != 0) {
-    block = pointer;
-    block = block - 1;
+    block = (struct heap_block *)pointer - 1;
+    if (block->free != 0) return; // ignore double free
     block->free = 1;
+    block->next = heap_free;
+    heap_free = block;
   }
 }
 
@@ -521,8 +547,12 @@ void exit(int code) {
 }
 
 // Current wall-clock time in whole seconds (Unix epoch), from the RTC device.
-int time() {
-  return ret_errno(__syscall(CFG_SYS_TIME, 0, 0, 0));
+// POSIX: if `tloc` is non-NULL the result is also stored there. Declared with a
+// pointer parameter so callers like chibicc's `time(NULL)` type-check.
+int time(int *tloc) {
+  int now = ret_errno(__syscall(CFG_SYS_TIME, 0, 0, 0));
+  if (tloc) *tloc = now;
+  return now;
 }
 
 // Power the machine off cleanly. Does not return.
