@@ -356,8 +356,9 @@ static bool convert_pp_int(Token *tok) {
 
   int64_t val = strtoul(p, &p, base);
 
-  // Read U, L or LL suffixes.
-  bool l = false;
+  // Read U, L or LL suffixes. On this LP32 target `long` is 32-bit; only a
+  // `long long` suffix (or a value that does not fit in 32 bits) is 64-bit.
+  bool ll = false;
   bool u = false;
 
   if (startswith(p, "LLU") || startswith(p, "LLu") ||
@@ -365,16 +366,15 @@ static bool convert_pp_int(Token *tok) {
       startswith(p, "ULL") || startswith(p, "Ull") ||
       startswith(p, "uLL") || startswith(p, "ull")) {
     p += 3;
-    l = u = true;
+    ll = u = true;
   } else if (!strncasecmp(p, "lu", 2) || !strncasecmp(p, "ul", 2)) {
     p += 2;
-    l = u = true;
+    u = true;
   } else if (startswith(p, "LL") || startswith(p, "ll")) {
     p += 2;
-    l = true;
+    ll = true;
   } else if (*p == 'L' || *p == 'l') {
     p++;
-    l = true;
   } else if (*p == 'U' || *p == 'u') {
     p++;
     u = true;
@@ -383,33 +383,16 @@ static bool convert_pp_int(Token *tok) {
   if (p != tok->loc + tok->len)
     return false;
 
-  // Infer a type.
+  // Infer a type. A value wider than 32 bits, or an explicit `ll`, is 64-bit;
+  // everything else stays in a 32-bit int (long == int width on this target).
   Type *ty;
-  if (base == 10) {
-    if (l && u)
-      ty = ty_ulong;
-    else if (l)
-      ty = ty_long;
-    else if (u)
-      ty = (val >> 32) ? ty_ulong : ty_uint;
-    else
-      ty = (val >> 31) ? ty_long : ty_int;
-  } else {
-    if (l && u)
-      ty = ty_ulong;
-    else if (l)
-      ty = (val >> 63) ? ty_ulong : ty_long;
-    else if (u)
-      ty = (val >> 32) ? ty_ulong : ty_uint;
-    else if (val >> 63)
-      ty = ty_ulong;
-    else if (val >> 32)
-      ty = ty_long;
-    else if (val >> 31)
-      ty = ty_uint;
-    else
-      ty = ty_int;
-  }
+  bool wide = ll || (val >> 32);
+  if (wide)
+    ty = u ? ty_ullong : ty_llong;
+  else if (u)
+    ty = ty_uint;
+  else
+    ty = ty_int;
 
   tok->kind = TK_NUM;
   tok->val = val;

@@ -157,8 +157,9 @@ static bool is_aggregate(Type *ty) {
   return ty && (ty->kind == TY_STRUCT || ty->kind == TY_UNION);
 }
 
-// long / long long: the only 8-byte integer type, carried in an R0:R1 pair.
-static bool is64(Type *ty) { return ty && ty->kind == TY_LONG; }
+// long long: the only 8-byte integer type, carried in an R0:R1 pair. `long`
+// is 32-bit on this LP32 target, so 64-bitness keys off the byte size.
+static bool is64(Type *ty) { return ty && ty->kind == TY_LONG && ty->size == 8; }
 
 static bool is_flonum_ty(Type *ty) {
   return ty && (ty->kind == TY_FLOAT || ty->kind == TY_DOUBLE || ty->kind == TY_LDOUBLE);
