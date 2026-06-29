@@ -78,8 +78,36 @@ class Generator {
 
   // --- emission helpers ----------------------------------------------------
 
+  // Whether R5 currently holds the value of the `__csp` global. The stack
+  // helpers reload __csp into R5 on every push/pop; tracking this lets them skip
+  // the reload when R5 already holds it (the common case in a straight run of
+  // pushes), which removes a large fraction of the memory traffic in the naive
+  // stack-machine output.
+  private r5HasCsp = false;
+
   private emit(line: string): void {
     this.text.push(line);
+    // Conservatively forget the R5==__csp fact whenever a line could change R5
+    // or __csp, reach a control-flow join (label), or clobber R5 via a call/trap.
+    // Only straight-line instructions that touch neither R5 nor __csp preserve
+    // it. The csp helpers re-assert the fact after emitting their sequence.
+    if (this.r5HasCsp) {
+      const t = line.trim();
+      if (
+        t.endsWith(':') ||
+        /\bR5\b/.test(t) ||
+        /\b__csp\b/.test(t) ||
+        /^(CALL|CALLR|INT)\b/.test(t)
+      ) {
+        this.r5HasCsp = false;
+      }
+    }
+  }
+
+  // Load __csp into R5, skipping the load when R5 already holds it.
+  private loadCsp(): void {
+    if (!this.r5HasCsp) this.emit('  LOAD R5, __csp');
+    this.r5HasCsp = true;
   }
 
   private label(prefix: string): string {
@@ -88,36 +116,40 @@ class Generator {
 
   // Push R0 onto the software stack; advance __csp by 4.
   private push(): void {
-    this.emit('  LOAD R5, __csp');
+    this.loadCsp();
     this.emit('  STORER R5, R0');
     this.emit('  MOV R7, 4');
     this.emit('  ADD R5, R7');
     this.emit('  STORE R5, __csp');
+    this.r5HasCsp = true; // R5 holds the just-stored (current) __csp
   }
 
   // Push a specific register onto the software stack; advance __csp by 4.
   private pushReg(reg: string): void {
-    this.emit('  LOAD R5, __csp');
+    this.loadCsp();
     this.emit(`  STORER R5, ${reg}`);
     this.emit('  MOV R7, 4');
     this.emit('  ADD R5, R7');
     this.emit('  STORE R5, __csp');
+    this.r5HasCsp = true;
   }
 
   // Pop the top software-stack slot into `reg`; retreat __csp by 4.
   private pop(reg: string): void {
-    this.emit('  LOAD R5, __csp');
+    this.loadCsp();
     this.emit('  MOV R7, 4');
     this.emit('  SUB R5, R7');
     this.emit('  STORE R5, __csp');
     this.emit(`  LOADR ${reg}, R5`);
+    this.r5HasCsp = reg !== 'R5'; // the load clobbers R5 only when reg is R5
   }
 
   private adjustCsp(delta: number): void {
-    this.emit('  LOAD R5, __csp');
+    this.loadCsp();
     this.emit(`  MOV R7, ${Math.abs(delta)}`);
     this.emit(delta >= 0 ? '  ADD R5, R7' : '  SUB R5, R7');
     this.emit('  STORE R5, __csp');
+    this.r5HasCsp = true;
   }
 
   private slotSize(ty: Node['ty']): number {
