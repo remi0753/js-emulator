@@ -123,8 +123,30 @@ memcpy:
   SUB R1, R7
   LOADR R4, R1
   MOVR R0, R2
-memcpy_word:
   MOV R7, 4
+  MOV R1, 16
+memcpy_chunk:
+  CMP R4, R1
+  JL memcpy_word
+  LOADR R5, R3
+  STORER R2, R5
+  ADD R3, R7
+  ADD R2, R7
+  LOADR R5, R3
+  STORER R2, R5
+  ADD R3, R7
+  ADD R2, R7
+  LOADR R5, R3
+  STORER R2, R5
+  ADD R3, R7
+  ADD R2, R7
+  LOADR R5, R3
+  STORER R2, R5
+  ADD R3, R7
+  ADD R2, R7
+  SUB R4, R1
+  JMP memcpy_chunk
+memcpy_word:
   CMP R4, R7
   JL memcpy_byte
   LOADR R5, R3
@@ -169,8 +191,22 @@ memset:
   MOV R7, 16843009
   MOVR R5, R3
   MUL R5, R7
-memset_word:
   MOV R7, 4
+  MOV R1, 16
+memset_chunk:
+  CMP R4, R1
+  JL memset_word
+  STORER R2, R5
+  ADD R2, R7
+  STORER R2, R5
+  ADD R2, R7
+  STORER R2, R5
+  ADD R2, R7
+  STORER R2, R5
+  ADD R2, R7
+  SUB R4, R1
+  JMP memset_chunk
+memset_word:
   CMP R4, R7
   JL memset_byte
   STORER R2, R5
