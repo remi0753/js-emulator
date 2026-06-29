@@ -447,6 +447,13 @@ void vm_init(int proc, int pd, int image_end) {
     proc_table[proc].vm.areas[i].file = -1;
     i = i + 1;
   }
+  // The user stack below the argv page (which setup_user_args maps eagerly) is
+  // demand-paged: register it as an anonymous private mapping so its pages fault
+  // in only as the stack grows down, instead of reserving the whole region up
+  // front. Slot 0 is free here because the loop above just cleared every area.
+  vm_area_assign(
+    proc, 0, CFG_USER_STACK_PAGE, CFG_USER_STACK_TOP - 4096,
+    CFG_PROT_READ | CFG_PROT_WRITE, CFG_MAP_PRIVATE | CFG_MAP_ANONYMOUS, -1, 0);
 }
 
 void vm_fork(int child, int parent) {

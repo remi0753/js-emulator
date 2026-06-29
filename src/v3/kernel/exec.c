@@ -190,9 +190,18 @@ int setup_user_args(int idx, int pd) {
   int argvaddr;
   int i;
   int avaddr;
+  int top_page;
+  top_page = CFG_USER_STACK_TOP - 4096;
+  // Only the argv/envp page (the top of the stack) is allocated eagerly, because
+  // the kernel fills it below via the physical frame. The rest of the stack is
+  // demand-paged through the anonymous vm_area that vm_init registers, so a
+  // process pays only for the stack pages it actually touches as it grows down.
+  if (frame_available() == 0) {
+    return -CFG_ENOMEM;
+  }
   sframe = alloc_frame();
   zero_page(sframe);
-  map_page(pd, CFG_USER_STACK_PAGE, sframe, CFG_PTE_USER);
+  map_page(pd, top_page, sframe, CFG_PTE_USER);
 
   argtotal = 0;
   if (g_argc > 0) {
@@ -214,30 +223,30 @@ int setup_user_args(int idx, int pd) {
   argstr = strbase;
   envstr = strbase + argtotal;
   if (argtotal > 0) {
-    memcpy(sframe + (argstr - CFG_USER_STACK_PAGE), argbuf, argtotal);
+    memcpy(sframe + (argstr - top_page), argbuf, argtotal);
   }
   if (envtotal > 0) {
-    memcpy(sframe + (envstr - CFG_USER_STACK_PAGE), envbuf, envtotal);
+    memcpy(sframe + (envstr - top_page), envbuf, envtotal);
   }
   envaddr = (strbase - (g_envc + 1) * 4) & 0xfffffffc;
   argvaddr = (envaddr - (g_argc + 1) * 4) & 0xfffffffc;
-  if (argvaddr <= CFG_USER_STACK_PAGE) {
+  if (argvaddr <= top_page) {
     return -CFG_E2BIG;
   }
   i = 0;
   while (i < g_envc) {
     avaddr = envstr + env_off[i];
-    write32_at(sframe + (envaddr - CFG_USER_STACK_PAGE) + i * 4, avaddr);
+    write32_at(sframe + (envaddr - top_page) + i * 4, avaddr);
     i = i + 1;
   }
-  write32_at(sframe + (envaddr - CFG_USER_STACK_PAGE) + g_envc * 4, 0);
+  write32_at(sframe + (envaddr - top_page) + g_envc * 4, 0);
   i = 0;
   while (i < g_argc) {
     avaddr = argstr + arg_off[i];
-    write32_at(sframe + (argvaddr - CFG_USER_STACK_PAGE) + i * 4, avaddr);
+    write32_at(sframe + (argvaddr - top_page) + i * 4, avaddr);
     i = i + 1;
   }
-  write32_at(sframe + (argvaddr - CFG_USER_STACK_PAGE) + g_argc * 4, 0);
+  write32_at(sframe + (argvaddr - top_page) + g_argc * 4, 0);
 
   proc_table[idx].ctx.regs[0] = g_argc; // R0 = argc
   proc_table[idx].ctx.regs[1] = argvaddr; // R1 = argv

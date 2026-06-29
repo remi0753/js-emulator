@@ -170,7 +170,7 @@ export const GUEST_KERNEL_LAYOUT = {
   timerPeriod: 8000,
   physSize: 0x4000000,
   userLoadBase: 0x4000000,
-  userStackPage: 0x7fff000,
+  userStackPage: 0x7ff0000,
   userStackTop: 0x8000000,
   userBase: 0x4000000,
   userEnd: 0x8000000,
