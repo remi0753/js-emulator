@@ -67,6 +67,15 @@ void setup_traps(void) {
 }
 
 void on_default_trap(void) {
+  klog("kernel: unexpected trap pc=");
+  klog_int(sctx_pc);
+  klog(" sp=");
+  klog_int(sctx_sp);
+  klog(" mode=");
+  klog_int(sctx_mode);
+  klog(" err=");
+  klog_int(__rderr());
+  klog("\n");
   panic("unexpected trap");
 }
 
