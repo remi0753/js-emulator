@@ -139,6 +139,14 @@ static void pop(char *reg) {
   wr(", R5\n");
 }
 
+// Expression temporaries are routed through wrappers so this backend can grow a
+// different temporary strategy later without touching every call site. For now
+// they stay on the software stack; using the hardware return stack for arbitrary
+// C code is not safe enough for large programs with deep helper calls.
+static void push_tmp(void) { push(); }
+static void push_tmp_reg(char *reg) { push_reg(reg); }
+static void pop_tmp(char *reg) { pop(reg); }
+
 static void adjust_csp(int delta) {
   ins("LOAD R5, __csp");
   ins_imm("MOV R7", delta >= 0 ? delta : -delta);
@@ -183,6 +191,8 @@ static int slot_size(Type *ty) { return align_to(ty->size < 1 ? 1 : ty->size, 4)
 static void gen_expr(Node *node);
 static void gen_stmt(Node *node);
 static void gen_addr(Node *node);
+static bool value_is_simple(Node *node);
+static bool addr_is_simple(Node *node);
 static void gen_call(Node *node);
 static void gen64_value(Node *node);
 static void gen_value_as(Node *node, Type *ty);
@@ -428,9 +438,9 @@ static char *helper64(Node *node) {
 
 static void gen64_assign(Node *node) {
   gen_addr(node->lhs);
-  push();
+  push_tmp();
   gen64_value(node->rhs);
-  pop("R2");
+  pop_tmp("R2");
   ins("STORER R2, R0");
   ins("MOV R7, 4");
   ins("ADD R2, R7");
@@ -625,9 +635,9 @@ static void gen_float_expr(Node *node) {
     return;
   case ND_ASSIGN:
     gen_addr(node->lhs);
-    push();
+    push_tmp();
     gen_float_value(node->rhs);
-    pop("R1");
+    pop_tmp("R1");
     store(node->lhs);
     return;
   case ND_CAST:
@@ -668,9 +678,9 @@ static void gen_double_expr(Node *node) {
     return;
   case ND_ASSIGN:
     gen_addr(node->lhs);
-    push();
+    push_tmp();
     gen_double_value(node->rhs);
-    pop("R2");
+    pop_tmp("R2");
     ins("STORER R2, R0");
     ins("MOV R7, 4");
     ins("ADD R2, R7");
@@ -781,9 +791,9 @@ static void gen_aggregate_assign(Node *node) {
   if (size < 1)
     size = 1;
   gen_addr(node->lhs);
-  push();
+  push_tmp();
   gen_addr(node->rhs);
-  pop("R1");
+  pop_tmp("R1");
   copy_bytes(size);
   ins("MOVR R0, R1");
 }
@@ -799,9 +809,9 @@ static void return_aggregate(Node *expr) {
   ins("MOV R7, 4");
   ins("SUB R1, R7");
   ins("LOADR R1, R1");
-  push_reg("R1");
+  push_tmp_reg("R1");
   gen_addr(expr);
-  pop("R1");
+  pop_tmp("R1");
   copy_bytes(size);
   ins("MOVR R0, R1");
 }
@@ -849,15 +859,15 @@ static void into_regs(Node *node, char **regs, int nregs) {
   int n = 0;
   for (Node *a = node->args; a; a = a->next) {
     gen_expr(a);
-    push();
+    push_tmp();
     n++;
   }
   while (n > nregs) {
-    pop("R7");
+    pop_tmp("R7");
     n--;
   }
   for (int i = n - 1; i >= 0; i--)
-    pop(regs[i]);
+    pop_tmp(regs[i]);
   for (int i = n; i < nregs; i++)
     ins_imm(format("MOV %s", regs[i]), 0);
 }
@@ -1034,6 +1044,52 @@ static void gen_compare(Node *node) {
   emit_label(done);
 }
 
+// A plain 32-bit integer constant: `MOV R0/R1, value` reproduces it with no
+// stack traffic. Excludes float/64-bit literals, which take other paths.
+static bool is_int_const(Node *node) {
+  return node->kind == ND_NUM && !is_flonum_ty(node->ty) && !is64(node->ty);
+}
+
+static bool is_commutative(NodeKind kind) {
+  return kind == ND_ADD || kind == ND_MUL || kind == ND_BITAND || kind == ND_BITOR ||
+         kind == ND_BITXOR;
+}
+
+// True when gen_expr(node) writes only R0 and the R7 scratch — never R1-R5. A
+// simple value can be (re)computed while another operand is held live in R1,
+// removing the software-stack spill/reload around a binary operator.
+static bool value_is_simple(Node *node) {
+  if (is_flonum_ty(node->ty) || is64(node->ty))
+    return false;
+  switch (node->kind) {
+  case ND_NUM:
+  case ND_VAR:
+    return true;
+  case ND_MEMBER:
+    return !node->member->is_bitfield && addr_is_simple(node);
+  case ND_DEREF:
+    return value_is_simple(node->lhs);
+  case ND_ADDR:
+    return addr_is_simple(node->lhs);
+  default:
+    return false;
+  }
+}
+
+// True when gen_addr(node) writes only R0 and the R7 scratch.
+static bool addr_is_simple(Node *node) {
+  switch (node->kind) {
+  case ND_VAR:
+    return true;
+  case ND_MEMBER:
+    return !node->member->is_bitfield && addr_is_simple(node->lhs);
+  case ND_DEREF:
+    return value_is_simple(node->lhs);
+  default:
+    return false;
+  }
+}
+
 static void gen_binary(Node *node) {
   if (node->kind == ND_EQ || node->kind == ND_NE || node->kind == ND_LT || node->kind == ND_LE) {
     if (is_flonum_ty(node->lhs->ty) || is_flonum_ty(node->rhs->ty)) {
@@ -1045,11 +1101,29 @@ static void gen_binary(Node *node) {
       return;
     }
   }
-  // Evaluate rhs first and stash it, then lhs, so R0 = lhs and R1 = rhs.
-  gen_expr(node->rhs);
-  push();
-  gen_expr(node->lhs);
-  pop("R1");
+  // The operator switch below expects lhs in R0 and rhs in R1. The general way
+  // to get there is to evaluate rhs, spill it to the software stack, evaluate
+  // lhs, then reload rhs — two memory round-trips. The fast paths below avoid
+  // the spill whenever an operand is a constant (fold it straight into R1) or
+  // the left operand is a simple leaf that provably touches only R0/R7, so a
+  // previously computed rhs can stay live in R1.
+  if (is_int_const(node->rhs)) {
+    gen_expr(node->lhs);
+    ins_imm("MOV R1", (unsigned)node->rhs->val);
+  } else if (is_int_const(node->lhs) && is_commutative(node->kind)) {
+    gen_expr(node->rhs);
+    ins_imm("MOV R1", (unsigned)node->lhs->val);
+  } else if (value_is_simple(node->lhs)) {
+    gen_expr(node->rhs);
+    ins("MOVR R1, R0");
+    gen_expr(node->lhs);
+  } else {
+    // Evaluate rhs first and stash it, then lhs, so R0 = lhs and R1 = rhs.
+    gen_expr(node->rhs);
+    push_tmp();
+    gen_expr(node->lhs);
+    pop_tmp("R1");
+  }
 
   switch (node->kind) {
   case ND_ADD:
@@ -1278,9 +1352,16 @@ static void gen_expr(Node *node) {
       return;
     }
     gen_addr(node->lhs);
-    push();
-    gen_expr(node->rhs);
-    pop("R1");
+    if (value_is_simple(node->rhs)) {
+      // Hold the destination address in R1 while a simple rhs recomputes R0,
+      // skipping the software-stack round-trip. store() wants R1 = address.
+      ins("MOVR R1, R0");
+      gen_expr(node->rhs);
+    } else {
+      push_tmp();
+      gen_expr(node->rhs);
+      pop_tmp("R1");
+    }
     store(node->lhs);
     return;
   case ND_STMT_EXPR:
@@ -1402,10 +1483,10 @@ static void gen_stmt(Node *node) {
   }
   case ND_SWITCH: {
     gen_expr(node->cond);
-    push();
+    push_tmp();
     for (Node *c = node->case_next; c; c = c->case_next) {
-      pop("R0");
-      push();
+      pop_tmp("R0");
+      push_tmp();
       if (c->begin == c->end) {
         ins_imm("MOV R7", (unsigned)c->begin);
         ins("CMP R0, R7");
@@ -1419,7 +1500,7 @@ static void gen_stmt(Node *node) {
         jmp("JBE", c->label);
       }
     }
-    pop("R0");
+    pop_tmp("R0");
     if (node->default_case)
       jmp("JMP", node->default_case->label);
     else

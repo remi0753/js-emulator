@@ -185,6 +185,20 @@ class Generator {
     this.r5HasCsp = true;
   }
 
+  // Expression temporaries are routed through helpers so the C-source guest
+  // backend can use a different strategy while the bootstrap backend stays on
+  // the conservative software-stack ABI. The bootstrap output includes the
+  // soft-float and i64 runtimes, whose deep helper nesting is deliberately kept
+  // on the older path.
+  private pushTemp(reg = 'R0'): void {
+    if (reg === 'R0') this.push();
+    else this.pushReg(reg);
+  }
+
+  private popTemp(reg: string): void {
+    this.pop(reg);
+  }
+
   private adjustCsp(delta: number): void {
     this.loadCsp();
     this.emit(`  MOV R7, ${Math.abs(delta)}`);
@@ -379,15 +393,15 @@ class Generator {
     const labels = (node.cases ?? []).map((c) => ({ ...c, label: this.label('switch.case') }));
 
     this.genExpr(node.cond!);
-    this.push();
+    this.pushTemp();
     for (const c of labels) {
-      this.pop('R0');
-      this.push();
+      this.popTemp('R0');
+      this.pushTemp();
       this.emit(`  MOV R7, ${c.value >>> 0}`);
       this.emit('  CMP R0, R7');
       this.emit(`  JZ ${c.label}`);
     }
-    this.pop('R0');
+    this.popTemp('R0');
     this.emit(`  JMP ${defaultLabel}`);
 
     this.breakStack.push(end);
@@ -564,9 +578,9 @@ class Generator {
   private genAggregateAssign(node: Node): void {
     const size = Math.max(1, node.lhs?.ty?.size ?? 1);
     this.genAddr(node.lhs!);
-    this.push();
+    this.pushTemp();
     this.genAddr(node.rhs!);
-    this.pop('R1');
+    this.popTemp('R1');
     this.copyBytes(size);
     this.emit('  MOVR R0, R1');
   }
@@ -580,9 +594,9 @@ class Generator {
     this.emit(`  MOV R7, ${-offset}`);
     this.emit('  SUB R1, R7');
     this.emit('  LOADR R1, R1');
-    this.pushReg('R1');
+    this.pushTemp('R1');
     this.genAddr(expr);
-    this.pop('R1');
+    this.popTemp('R1');
     this.copyBytes(size);
     this.emit('  MOVR R0, R1');
   }
@@ -598,14 +612,14 @@ class Generator {
       this.emit(`  MOV R7, ${elemSize}`);
       this.emit('  MUL R0, R7');
     }
-    this.push();
+    this.pushTemp();
     this.genAddr({ kind: 'var', line: node.line, variable: node.vlaSizeObj });
-    this.pop('R7');
+    this.popTemp('R7');
     this.emit('  STORER R0, R7');
     this.emit('  LOAD R7, __csp');
-    this.pushReg('R7');
+    this.pushTemp('R7');
     this.genAddr({ kind: 'var', line: node.line, variable: node.variable });
-    this.pop('R7');
+    this.popTemp('R7');
     this.emit('  STORER R0, R7');
     this.genExpr({ kind: 'var', line: node.line, variable: node.vlaSizeObj });
     this.emit('  MOV R7, 3');
@@ -619,14 +633,14 @@ class Generator {
 
   private genVaStart(node: Node): void {
     this.genAddr(node.vaList!);
-    this.push();
+    this.pushTemp();
     this.genAddr({
       kind: 'var',
       line: node.line,
       variable: node.vaParam,
       ty: node.vaParam?.ty,
     });
-    this.pop('R1');
+    this.popTemp('R1');
     this.emit('  STORER R1, R0');
     this.emit('  MOV R0, 0');
   }
@@ -637,12 +651,12 @@ class Generator {
   private advanceVaList(node: Node): void {
     const size = this.slotSize(node.castType);
     this.genAddr(node.vaList!);
-    this.push(); // address of the va_list object
+    this.pushTemp(); // address of the va_list object
     this.emit('  LOADR R0, R0');
     this.emit(`  MOV R7, ${size}`);
     this.emit('  SUB R0, R7');
     this.emit('  MOVR R2, R0');
-    this.pop('R1');
+    this.popTemp('R1');
     this.emit('  STORER R1, R2');
     this.emit('  MOVR R0, R2');
   }
@@ -651,10 +665,10 @@ class Generator {
     this.advanceVaList(node);
     if (isAggregate(node.castType)) {
       if (!node.variable) throw new CodegenError('aggregate va_arg without a temporary');
-      this.push();
+      this.pushTemp();
       this.genAddr({ kind: 'var', line: node.line, variable: node.variable, ty: node.variable.ty });
       this.emit('  MOVR R1, R0');
-      this.pop('R0');
+      this.popTemp('R0');
       this.copyBytes(Math.max(1, node.castType?.size ?? 1));
       this.genAddr({ kind: 'var', line: node.line, variable: node.variable, ty: node.variable.ty });
       return;
@@ -725,9 +739,16 @@ class Generator {
           return;
         }
         this.genAddr(node.lhs!);
-        this.push();
-        this.genExpr(node.rhs!);
-        this.pop('R1');
+        if (this.valueIsSimple(node.rhs!)) {
+          // Hold the destination address in R1 while a simple rhs recomputes
+          // R0, skipping the software-stack round-trip. store() wants R1=addr.
+          this.emit('  MOVR R1, R0');
+          this.genExpr(node.rhs!);
+        } else {
+          this.pushTemp();
+          this.genExpr(node.rhs!);
+          this.popTemp('R1');
+        }
         this.store(node.lhs!);
         return;
       case 'vlaalloc':
@@ -835,6 +856,50 @@ class Generator {
     this.emit(`${done}:`);
   }
 
+  // A plain 32-bit integer constant: `MOV R0/R1, value` reproduces it with no
+  // stack traffic. Excludes float/64-bit literals, which take other paths.
+  private isIntConst(node: Node): boolean {
+    return node.kind === 'num' && !isFloating(node.ty) && !is64(node.ty);
+  }
+
+  private isCommutative(kind: Node['kind']): boolean {
+    return kind === 'add' || kind === 'mul' || kind === 'bitand' || kind === 'bitor' || kind === 'bitxor';
+  }
+
+  // True when genExpr(node) writes only R0 and the R7 scratch — never R1-R5. A
+  // simple value can be (re)computed while another operand is held live in R1,
+  // removing the software-stack spill/reload around a binary operator.
+  private valueIsSimple(node: Node): boolean {
+    if (isFloating(node.ty) || is64(node.ty)) return false;
+    switch (node.kind) {
+      case 'num':
+      case 'var':
+        return true;
+      case 'member':
+        return node.member?.bitWidth === undefined && this.addrIsSimple(node);
+      case 'deref':
+        return this.valueIsSimple(node.lhs!);
+      case 'addr':
+        return this.addrIsSimple(node.lhs!);
+      default:
+        return false;
+    }
+  }
+
+  // True when genAddr(node) writes only R0 and the R7 scratch.
+  private addrIsSimple(node: Node): boolean {
+    switch (node.kind) {
+      case 'var':
+        return true;
+      case 'member':
+        return node.member?.bitWidth === undefined && this.addrIsSimple(node.lhs!);
+      case 'deref':
+        return this.valueIsSimple(node.lhs!);
+      default:
+        return false;
+    }
+  }
+
   private genBinary(node: Node): void {
     if (
       (node.kind === 'eq' || node.kind === 'ne' || node.kind === 'lt' || node.kind === 'le') &&
@@ -852,11 +917,31 @@ class Generator {
       this.gen64Compare(node);
       return;
     }
-    // Evaluate rhs first and stash it, then lhs, so R0 = lhs and R1 = rhs.
-    this.genExpr(node.rhs!);
-    this.push();
-    this.genExpr(node.lhs!);
-    this.pop('R1');
+    // The operator switch below expects lhs in R0 and rhs in R1. The general
+    // way to get there is to evaluate rhs, spill it to the software stack,
+    // evaluate lhs, then reload rhs — two memory round-trips. The fast paths
+    // below avoid the spill whenever an operand is a constant (fold it straight
+    // into R1) or the left operand is a simple leaf that provably touches only
+    // R0/R7, so a previously computed rhs can stay live in R1.
+    const lhs = node.lhs!;
+    const rhs = node.rhs!;
+    if (this.isIntConst(rhs)) {
+      this.genExpr(lhs);
+      this.emit(`  MOV R1, ${(rhs.value ?? 0) >>> 0}`);
+    } else if (this.isIntConst(lhs) && this.isCommutative(node.kind)) {
+      this.genExpr(rhs);
+      this.emit(`  MOV R1, ${(lhs.value ?? 0) >>> 0}`);
+    } else if (this.valueIsSimple(lhs)) {
+      this.genExpr(rhs);
+      this.emit('  MOVR R1, R0');
+      this.genExpr(lhs);
+    } else {
+      // Evaluate rhs first and stash it, then lhs, so R0 = lhs and R1 = rhs.
+      this.genExpr(rhs);
+      this.pushTemp();
+      this.genExpr(lhs);
+      this.popTemp('R1');
+    }
 
     switch (node.kind) {
       case 'add':
@@ -1006,9 +1091,9 @@ class Generator {
         return;
       case 'assign':
         this.genAddr(node.lhs!);
-        this.push();
+        this.pushTemp();
         this.genFloatValue(node.rhs!);
-        this.pop('R1');
+        this.popTemp('R1');
         this.store(node.lhs!);
         return;
       case 'cast':
@@ -1047,9 +1132,9 @@ class Generator {
         return;
       case 'assign':
         this.genAddr(node.lhs!);
-        this.push();
+        this.pushTemp();
         this.genDoubleValue(node.rhs!);
-        this.pop('R2');
+        this.popTemp('R2');
         this.emit('  STORER R2, R0');
         this.emit('  MOV R7, 4');
         this.emit('  ADD R2, R7');
@@ -1277,9 +1362,9 @@ class Generator {
 
   private gen64Assign(node: Node): void {
     this.genAddr(node.lhs!);
-    this.push(); // save destination address
+    this.pushTemp(); // save destination address
     this.gen64Value(node.rhs!);
-    this.pop('R2'); // R2 = address
+    this.popTemp('R2'); // R2 = address
     this.emit('  STORER R2, R0');
     this.emit('  MOV R7, 4');
     this.emit('  ADD R2, R7');
