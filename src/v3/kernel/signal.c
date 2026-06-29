@@ -206,9 +206,14 @@ int next_deliverable_signal(int idx) {
   int pending;
   pending = proc_table[idx].pending_signals &
     ~proc_table[idx].blocked_signals;
+  // Fast path for the overwhelmingly common case: nothing deliverable. This runs
+  // on every syscall, schedule, and timer tick (via prepare_signal), so skipping
+  // the 31-iteration scan — and inlining signal_bit's shift rather than calling
+  // it per signal — keeps idle scheduling cheap.
+  if (pending == 0) return 0;
   signal = 1;
   while (signal < CFG_NSIG) {
-    if ((pending & signal_bit(signal)) != 0) {
+    if ((pending & (1 << signal)) != 0) {
       return signal;
     }
     signal = signal + 1;
