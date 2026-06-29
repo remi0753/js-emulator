@@ -30,7 +30,6 @@ char fs_redirect_path[CFG_INITPATH_LEN];
 int bread(int blockno) {
   int *bb;
   int *bend;
-  char *data;
   int slot;
   // Fast path: the previous lookup very often repeats. Re-validate the cached
   // slot still holds the block (FIFO eviction since the last call may have
@@ -38,25 +37,24 @@ int bread(int blockno) {
   if (blockno == bread_last_blockno && buf_block[bread_last_slot] == blockno) {
     return buf_data + bread_last_slot * 512;
   }
-  // Scan the buffer cache by walking parallel pointers rather than indexing, so
-  // the naive backend doesn't recompute base + i*N three times per slot. Empty
-  // slots hold -1 (set in fs_mount); no real block number is negative, so a
-  // single buf_block compare replaces the old valid-flag-plus-block-number test.
-  // bread runs tens of thousands of times per compile (every inode, indirect,
-  // and data block lookup), so this scan is one of the hottest kernel loops.
+  // Scan the buffer cache. The loop body is kept to the bare minimum — only the
+  // block-number compare and one pointer bump per slot — because the naive
+  // backend turns every extra statement into ~15 instructions; the slot index
+  // and data pointer are derived once on a hit instead of tracked each iteration.
+  // Empty slots hold -1 (set in fs_mount); no real block number is negative, so a
+  // single buf_block compare suffices. bread runs tens of thousands of times per
+  // compile (every inode, indirect, and data block lookup), one of the hottest
+  // kernel loops.
   bb = buf_block;
   bend = bb + CFG_NBUF;
-  data = buf_data;
-  slot = 0;
   while (bb < bend) {
     if (*bb == blockno) {
+      slot = bb - buf_block;
       bread_last_blockno = blockno;
       bread_last_slot = slot;
-      return data;
+      return buf_data + slot * 512;
     }
     bb = bb + 1;
-    data = data + 512;
-    slot = slot + 1;
   }
   slot = buf_next;
   buf_next = (buf_next + 1) % CFG_NBUF;
