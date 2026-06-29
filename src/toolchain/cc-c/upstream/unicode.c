@@ -85,6 +85,13 @@ static bool in_range(uint32_t *range, uint32_t c) {
 // 0x00BE-0x00C0 are allowed, while neither ⟘ (U+27D8) nor '　'
 // (U+3000, full-width space) are allowed because they are out of range.
 bool is_ident1(uint32_t c) {
+  // ASCII fast path: C source is overwhelmingly ASCII, and the tokenizer calls
+  // this for every character (including the many non-identifier ones, which would
+  // otherwise scan the whole ~50-range table before returning false). For c < 128
+  // the answer is fully determined here, so the table walk is only reached for
+  // genuine multibyte characters.
+  if (c < 128)
+    return c == '_' || c == '$' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
   static uint32_t range[] = {
     '_', '_', 'a', 'z', 'A', 'Z', '$', '$',
     0x00A8, 0x00A8, 0x00AA, 0x00AA, 0x00AD, 0x00AD, 0x00AF, 0x00AF,
@@ -108,6 +115,9 @@ bool is_ident1(uint32_t c) {
 // Returns true if a given character is acceptable as a non-first
 // character of an identifier.
 bool is_ident2(uint32_t c) {
+  // ASCII fast path, as in is_ident1.
+  if (c < 128)
+    return is_ident1(c) || (c >= '0' && c <= '9');
   static uint32_t range[] = {
     '0', '9', '$', '$', 0x0300, 0x036F, 0x1DC0, 0x1DFF, 0x20D0, 0x20FF,
     0xFE20, 0xFE2F, -1,
