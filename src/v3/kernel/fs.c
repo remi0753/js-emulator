@@ -11,6 +11,16 @@ int buf_block[CFG_NBUF];
 int buf_next;
 char buf_data[CFG_BUF_DATA_LEN];
 
+// Single-entry fast path for bread: the block most callers ask for next is the
+// one they just asked for. Inode-field accessors re-bread the inode block for
+// every field, and balloc/free_space scan the bitmap calling bread on the same
+// bitmap block for thousands of consecutive block numbers. Remember the last
+// (block, slot) and re-validate the slot still holds it before trusting it, so a
+// FIFO eviction since the last call can never hand back a stale buffer.
+// fs_mount sets bread_last set to -1 before the first bread.
+int bread_last_blockno;
+int bread_last_slot;
+
 char namebuf[16];
 char direntbuf[16];
 int fs_lookup_error;
@@ -22,6 +32,12 @@ int bread(int blockno) {
   int *bend;
   char *data;
   int slot;
+  // Fast path: the previous lookup very often repeats. Re-validate the cached
+  // slot still holds the block (FIFO eviction since the last call may have
+  // replaced it) before returning it without a scan.
+  if (blockno == bread_last_blockno && buf_block[bread_last_slot] == blockno) {
+    return buf_data + bread_last_slot * 512;
+  }
   // Scan the buffer cache by walking parallel pointers rather than indexing, so
   // the naive backend doesn't recompute base + i*N three times per slot. Empty
   // slots hold -1 (set in fs_mount); no real block number is negative, so a
@@ -31,15 +47,23 @@ int bread(int blockno) {
   bb = buf_block;
   bend = bb + CFG_NBUF;
   data = buf_data;
+  slot = 0;
   while (bb < bend) {
-    if (*bb == blockno) return data;
+    if (*bb == blockno) {
+      bread_last_blockno = blockno;
+      bread_last_slot = slot;
+      return data;
+    }
     bb = bb + 1;
     data = data + 512;
+    slot = slot + 1;
   }
   slot = buf_next;
   buf_next = (buf_next + 1) % CFG_NBUF;
   disk_read_block(blockno, buf_data + slot * 512);
   buf_block[slot] = blockno;
+  bread_last_blockno = blockno;
+  bread_last_slot = slot;
   return buf_data + slot * 512;
 }
 
@@ -57,6 +81,8 @@ void fs_mount(void) {
     buf_block[i] = -1;
     i = i + 1;
   }
+  // Disable the bread fast path until a real lookup populates it (no block is -1).
+  bread_last_blockno = -1;
   sb = bread(1);
   if (read32_at(sb) != CFG_FS_MAGIC) {
     panic("bad filesystem magic");
@@ -168,20 +194,32 @@ void bitmap_set(int blockno, int used) {
   bwrite(bitmap_block, data);
 }
 
+int balloc_hint; // rover: block number to resume the next allocation scan from
+
 int balloc(void) {
   int blockno;
+  int scanned;
   int data;
   if ((fs_mount_flags & 1) != 0) return 0;
-  blockno = 0;
-  while (blockno < fs_size) {
+  // Resume scanning from the last allocation rather than block 0 every time.
+  // Without this, each balloc re-tests every already-used low block, so writing a
+  // file is O(blocks^2) in bitmap_test/bread calls. The bitmap_test guard still
+  // rejects used blocks, so the hint only moves where the search starts: a stale
+  // hint costs at most one wrapped full scan, never a wrong result.
+  blockno = balloc_hint;
+  scanned = 0;
+  while (scanned < fs_size) {
+    if (blockno >= fs_size) blockno = 0;
     if (bitmap_test(blockno) == 0) {
       bitmap_set(blockno, 1);
+      balloc_hint = blockno + 1;
       data = bread(blockno);
       memset(data, 0, 512);
       bwrite(blockno, data);
       return blockno;
     }
     blockno = blockno + 1;
+    scanned = scanned + 1;
   }
   return 0;
 }
