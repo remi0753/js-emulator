@@ -20,6 +20,10 @@ char buf_data[CFG_BUF_DATA_LEN];
 // fs_mount sets bread_last set to -1 before the first bread.
 int bread_last_blockno;
 int bread_last_slot;
+// Parameters handed to the hand-written cache-scan loop in bread (see below).
+int bread_scan_block;
+int *bread_scan_end;
+int bread_scan_slot;
 
 char namebuf[16];
 char direntbuf[16];
@@ -28,8 +32,6 @@ int fs_redirect_valid;
 char fs_redirect_path[CFG_INITPATH_LEN];
 
 int bread(int blockno) {
-  int *bb;
-  int *bend;
   int slot;
   // Fast path: the previous lookup very often repeats. Re-validate the cached
   // slot still holds the block (FIFO eviction since the last call may have
@@ -37,24 +39,43 @@ int bread(int blockno) {
   if (blockno == bread_last_blockno && buf_block[bread_last_slot] == blockno) {
     return buf_data + bread_last_slot * 512;
   }
-  // Scan the buffer cache. The loop body is kept to the bare minimum — only the
-  // block-number compare and one pointer bump per slot — because the naive
-  // backend turns every extra statement into ~15 instructions; the slot index
-  // and data pointer are derived once on a hit instead of tracked each iteration.
-  // Empty slots hold -1 (set in fs_mount); no real block number is negative, so a
-  // single buf_block compare suffices. bread runs tens of thousands of times per
-  // compile (every inode, indirect, and data block lookup), one of the hottest
-  // kernel loops.
-  bb = buf_block;
-  bend = bb + CFG_NBUF;
-  while (bb < bend) {
-    if (*bb == blockno) {
-      slot = bb - buf_block;
-      bread_last_blockno = blockno;
-      bread_last_slot = slot;
-      return buf_data + slot * 512;
-    }
-    bb = bb + 1;
+  // Hand-written linear scan of buf_block[] for `blockno`, writing the matching
+  // slot (or -1) to bread_scan_slot. bread runs tens of thousands of times per
+  // compile (every inode, indirect, and data block lookup), and the naive backend
+  // compiles the C loop to ~35 instructions per slot; this is ~7. Empty slots hold
+  // -1 (fs_mount), no real block is negative, so one compare per slot suffices.
+  // Uses R0..R3 only (preserves R6 and the software stack; the 'asm' codegen
+  // flushes __csp first). Parameters pass through globals because asm string
+  // literals are not macro-expanded.
+  bread_scan_block = blockno;
+  bread_scan_end = buf_block + CFG_NBUF;
+  bread_scan_slot = 0 - 1;
+  asm(
+    "MOV R0, buf_block\n"          // R0 = &buf_block[0]
+    "LOAD R1, bread_scan_end\n"    // R1 = &buf_block[CFG_NBUF]
+    "LOAD R2, bread_scan_block\n"  // R2 = blockno
+    "bread_scan_loop:\n"
+    "LOADR R3, R0\n"               // R3 = *bb
+    "CMP R3, R2\n"
+    "JZ bread_scan_found\n"
+    "MOV R3, 4\n"
+    "ADD R0, R3\n"                 // bb++
+    "CMP R0, R1\n"
+    "JB bread_scan_loop\n"
+    "JMP bread_scan_done\n"        // not found: leave bread_scan_slot = -1
+    "bread_scan_found:\n"
+    "MOV R3, buf_block\n"
+    "SUB R0, R3\n"                 // R0 = byte offset of the slot
+    "MOV R3, 2\n"
+    "SHR R0, R3\n"                 // R0 = slot index (offset / 4)
+    "STORE R0, bread_scan_slot\n"
+    "bread_scan_done:\n"
+  );
+  slot = bread_scan_slot;
+  if (slot >= 0) {
+    bread_last_blockno = blockno;
+    bread_last_slot = slot;
+    return buf_data + slot * 512;
   }
   slot = buf_next;
   buf_next = (buf_next + 1) % CFG_NBUF;
