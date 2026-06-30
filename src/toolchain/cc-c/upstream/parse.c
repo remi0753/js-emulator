@@ -2125,6 +2125,18 @@ static Node *to_assign(Node *binary) {
     return node;
   }
 
+  // custom32 local change (kept in sync with host parse.ts toAssign): a plain
+  // variable destination has no side effects in its address computation, so
+  // `A op= B` lowers directly to `A = A op B` instead of the temp-pointer form.
+  // This drops a software-stack round-trip and never takes A's address, leaving
+  // A eligible for the codegen.c register allocator. Mirrors `*tmp op B` by
+  // reusing binary's kind/rhs with A re-read as the left operand.
+  if (binary->lhs->kind == ND_VAR) {
+    Node *rd = new_var_node(binary->lhs->var, tok);
+    return new_binary(ND_ASSIGN, binary->lhs,
+                      new_binary(binary->kind, rd, binary->rhs, tok), tok);
+  }
+
   // Convert `A op= B` to ``tmp = &A, *tmp = *tmp op B`.
   Obj *var = new_lvar("", pointer_to(binary->lhs->ty));
 

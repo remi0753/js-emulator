@@ -139,6 +139,13 @@ struct Obj {
   // Local variable
   int offset;
 
+  // custom32 local change (codegen.c register allocation, mirrors the host
+  // codegen.ts Obj fields): `addr_taken` is set by the codegen pre-walk when
+  // `&var` escapes; `reg` is 0 for a frame-resident variable or 2/3/4 when the
+  // variable is promoted to R2/R3/R4 (its `offset` home slot stays reserved).
+  bool addr_taken;
+  int reg;
+
   // Global variable or function
   bool is_function;
   bool is_definition;

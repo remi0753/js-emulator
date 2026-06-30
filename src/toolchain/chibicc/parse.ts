@@ -151,6 +151,11 @@ export interface Obj {
   // Storage offset from the frame base R6 (locals positive, params negative).
   offset?: number;
   isParam?: boolean;
+  // Backend register allocation (codegen.ts). `addrTaken` is set by the codegen
+  // pre-walk when `&var` escapes; `reg` names the GPR a promoted scalar local is
+  // kept in (its `offset` home slot stays reserved but unused). Both default off.
+  addrTaken?: boolean;
+  reg?: 'R2' | 'R3' | 'R4';
   // Global variable storage.
   initData?: Uint8Array; // initialized bytes, or undefined for bss
   // Symbol relocations applied over initData (pointer/address initializers):
@@ -1430,6 +1435,17 @@ class Parser {
     const line = binary.line;
     addType(binary.lhs);
     addType(binary.rhs);
+    // Fast path: a plain variable destination has no side effects in its address
+    // computation, so `A op= B` can be lowered directly to `A = A op B` instead
+    // of `tmp = &A, *tmp = *tmp op B`. This drops a temp-pointer round-trip and,
+    // crucially, never takes A's address — leaving A eligible for the backend's
+    // register allocation (codegen.ts). The op node keeps `binary`'s kind/rhs
+    // (already pointer-scaled by newAdd/newSub) with A re-read as its left
+    // operand, mirroring the temp-pointer form's `*tmp op B`.
+    if (binary.lhs?.kind === 'var') {
+      const readA: Node = { kind: 'var', line, variable: binary.lhs.variable, ty: binary.lhs.ty };
+      return { kind: 'assign', line, lhs: binary.lhs, rhs: { ...binary, lhs: readA } };
+    }
     const tmp = this.newLocal('', pointerTo(binary.lhs?.ty ?? tyInt));
     const tmpVar = (): Node => ({ kind: 'var', line, variable: tmp });
     const expr1: Node = {

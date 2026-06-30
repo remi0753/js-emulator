@@ -214,6 +214,10 @@ static void gen_double_expr(Node *node);
 static void gen_float_value(Node *node);
 static void gen_double_value(Node *node);
 static void gen_float_compare(Node *node);
+// Register allocation: name of a promoted register (defined near gen_function,
+// but used earlier by gen_expr). The guest chibicc frontend rejects implicit
+// declarations, so it must be declared before its first use.
+static char *reg_name(int reg);
 
 // Soft-float helper used at compile time to fold a float literal's IEEE-754
 // double bits down to binary32. The guest cc executable links the soft-float
@@ -223,6 +227,10 @@ extern unsigned __truncdfsf2(unsigned lo, unsigned hi);
 // --- lvalue addresses -------------------------------------------------------
 
 static void emit_var_addr(Obj *var) {
+  if (var->reg)
+    // Promoted variables have no address; the address-taken analysis must have
+    // excluded any var whose address is needed. Reaching here is an analysis bug.
+    error("codegen: cannot take address of register variable");
   if (var->is_local) {
     int off = var->offset;
     ins("MOVR R0, R6");
@@ -1347,6 +1355,13 @@ static void gen_expr(Node *node) {
     gen_memzero(node);
     return;
   case ND_VAR:
+    if (node->var->reg) {
+      ins_sym("MOVR R0", reg_name(node->var->reg));
+      return;
+    }
+    gen_addr(node);
+    load(node);
+    return;
   case ND_MEMBER:
     gen_addr(node);
     load(node);
@@ -1361,6 +1376,14 @@ static void gen_expr(Node *node) {
   case ND_ASSIGN:
     if (is_aggregate(node->lhs->ty)) {
       gen_aggregate_assign(node);
+      return;
+    }
+    if (node->lhs->kind == ND_VAR && node->lhs->var->reg) {
+      // The promoted variable *is* the register: compute the value (already
+      // narrowed to the lvalue type by the parser, as for the memory store
+      // path) and move it in. The result stays in R0.
+      gen_expr(node->rhs);
+      ins_sym(format("MOVR %s", reg_name(node->lhs->var->reg)), "R0");
       return;
     }
     gen_addr(node->lhs);
@@ -1588,11 +1611,124 @@ static void assign_lvar_offsets(Obj *fn) {
   }
 }
 
+// --- register allocation (mirrors codegen.ts) -------------------------------
+//
+// Stage 1: promote address-not-taken 32-bit scalar locals/params to R2-R4 in
+// leaf, scalar-only functions, where those registers are provably never used as
+// scratch (see the rationale in codegen.ts). Each backend allocates
+// independently and deterministically; the guest-rebuild test only requires the
+// guest compiler to be deterministic, not byte-identical to the host.
+
+static char *reg_name(int reg) { return reg == 2 ? "R2" : reg == 3 ? "R3" : "R4"; }
+
+static bool ra_leaf;
+static bool ra_scalar;
+
+// `&lvalue` pins the address of a named local only through a variable directly
+// or via member access; `&*p` / `&a[i]` compute from a value and pin nothing.
+static void mark_addr_taken(Node *node) {
+  if (!node)
+    return;
+  if (node->kind == ND_VAR) {
+    if (node->var)
+      node->var->addr_taken = true;
+  } else if (node->kind == ND_MEMBER) {
+    mark_addr_taken(node->lhs);
+  }
+}
+
+static void ra_visit(Node *node);
+
+static void ra_visit_list(Node *head) {
+  for (Node *n = head; n; n = n->next)
+    ra_visit(n);
+}
+
+static void ra_visit(Node *node) {
+  if (!node)
+    return;
+  if (node->kind == ND_FUNCALL)
+    ra_leaf = false; // CALL/CALLR, or INT via builtins
+  if (is64(node->ty) || is_flonum_ty(node->ty) || is_aggregate(node->ty))
+    ra_scalar = false;
+  if (node->kind == ND_MEMBER && node->member && node->member->is_bitfield)
+    ra_scalar = false;
+  switch (node->kind) {
+  case ND_ASM:
+  case ND_MEMZERO:
+  case ND_VLA_PTR:
+  case ND_CAS:
+  case ND_EXCH:
+    ra_scalar = false; // each uses an R2-R4 scratch or unsupported sequence
+    break;
+  case ND_ADDR:
+    mark_addr_taken(node->lhs);
+    break;
+  default:
+    break;
+  }
+  ra_visit(node->lhs);
+  ra_visit(node->rhs);
+  ra_visit(node->cond);
+  ra_visit(node->then);
+  ra_visit(node->els);
+  ra_visit(node->init);
+  ra_visit(node->inc);
+  ra_visit_list(node->body);
+  ra_visit_list(node->args);
+  ra_visit(node->default_case);
+}
+
+// Skip compiler-internal objects (anonymous, `.`-prefixed, or `__`-reserved
+// such as `__alloca_size__`/`__va_area__`): they are not source variables and
+// may be accessed specially by the backend.
+static bool ra_name_ok(char *n) {
+  if (!n || n[0] == '\0' || n[0] == '.')
+    return false;
+  if (n[0] == '_' && n[1] == '_')
+    return false;
+  return true;
+}
+
+static bool ra_type_blocks(Type *ty) {
+  return is_aggregate(ty) || is64(ty) || is_flonum_ty(ty) || ty->kind == TY_ARRAY ||
+         ty->kind == TY_VLA;
+}
+
+static bool is_promotable(Obj *o) {
+  if (!o->is_local || o->addr_taken || !ra_name_ok(o->name))
+    return false;
+  TypeKind k = o->ty->kind;
+  if (k == TY_INT || k == TY_ENUM || k == TY_PTR)
+    return true;
+  return k == TY_LONG && o->ty->size == 4; // 4-byte long, not long long
+}
+
+static void analyze_and_allocate(Obj *fn) {
+  ra_leaf = true;
+  ra_scalar = true;
+  // Any aggregate/array/64-bit/float local or parameter pulls in a scratch
+  // sequence (copy/memzero/load64/...) that clobbers R2-R4, so it disqualifies
+  // the whole function. fn->locals already includes the parameters.
+  for (Obj *l = fn->locals; l; l = l->next)
+    if (ra_type_blocks(l->ty))
+      ra_scalar = false;
+  ra_visit(fn->body);
+  if (!ra_leaf || !ra_scalar)
+    return;
+  int pool[3] = {2, 3, 4};
+  int next = 0;
+  for (Obj *l = fn->locals; l && next < 3; l = l->next)
+    if (is_promotable(l))
+      l->reg = pool[next++];
+}
+
 // --- functions and globals --------------------------------------------------
 
 static void gen_function(Obj *fn) {
   cur_fn = fn;
   cur_return_label = new_label();
+  analyze_and_allocate(fn);
   emit_label(fn->name);
   ins("PUSH R6");
   ins("LOAD R6, __csp");
@@ -1601,6 +1737,23 @@ static void gen_function(Obj *fn) {
     ins_imm("MOV R7", fn->stack_size);
     ins("ADD R5, R7");
     ins("STORE R5, __csp");
+  }
+
+  // Prime promoted parameters from their incoming stack slots. Promoted plain
+  // locals need no init (an uninitialized read is UB here as it is in memory).
+  for (Obj *p = fn->params; p; p = p->next) {
+    if (!p->reg)
+      continue;
+    int off = p->offset;
+    ins("MOVR R0, R6");
+    if (off < 0) {
+      ins_imm("MOV R7", -off);
+      ins("SUB R0, R7");
+    } else if (off > 0) {
+      ins_imm("MOV R7", off);
+      ins("ADD R0, R7");
+    }
+    ins_sym(format("LOADR %s", reg_name(p->reg)), "R0");
   }
 
   if (fn->body)

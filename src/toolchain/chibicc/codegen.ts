@@ -258,12 +258,98 @@ class Generator {
     }
   }
 
+  // --- register allocation -------------------------------------------------
+  //
+  // Stage 1: promote address-not-taken 32-bit scalar locals/params to R2-R4 in
+  // functions where those registers are provably never clobbered — i.e. leaf
+  // functions (no CALL/CALLR/INT) that use no aggregate/bit-field/64-bit/float/
+  // va/VLA/asm sequence (the only emitters of R2-R4 as scratch). In such a
+  // function R2-R4 behave as callee-preserved across the whole body, so a
+  // promoted variable simply *is* its register: a read becomes `MOVR R0, reg`
+  // and a write `MOVR reg, R0`, with no __csp traffic. The variable keeps its
+  // reserved frame slot (stack layout unchanged) for a future spill-around-calls
+  // stage. Allocation is a deterministic function of the AST (declaration order)
+  // so the host backend and the C port in cc-c/codegen.c agree byte-for-byte.
+
+  // Walk the body once to (a) mark `&var` escapes as addrTaken and (b) decide
+  // whether the function is register-allocatable, then assign R2-R4 to the first
+  // eligible variables in declaration order.
+  private analyzeAndAllocate(fn: Obj): void {
+    let leaf = true;
+    let scalarOnly = true;
+    const visit = (node: Node | undefined): void => {
+      if (!node) return;
+      if (node.kind === 'funcall') leaf = false; // CALL/CALLR, or INT via builtins
+      if (is64(node.ty) || isFloating(node.ty) || isAggregate(node.ty)) scalarOnly = false;
+      if (node.kind === 'member' && node.member?.bitWidth !== undefined) scalarOnly = false;
+      if (
+        node.kind === 'vaarg' ||
+        node.kind === 'vastart' ||
+        node.kind === 'vlaalloc' ||
+        node.kind === 'asm'
+      ) {
+        scalarOnly = false;
+      }
+      if (node.kind === 'addr') this.markAddrTaken(node.lhs);
+      visit(node.lhs);
+      visit(node.rhs);
+      visit(node.cond);
+      visit(node.thenStmt);
+      visit(node.els);
+      visit(node.init);
+      visit(node.inc);
+      visit(node.funcExpr);
+      visit(node.vlaLen);
+      visit(node.vaList);
+      for (const s of node.body ?? []) visit(s);
+      for (const a of node.args ?? []) visit(a);
+      for (const s of node.initStmts ?? []) visit(s);
+      for (const c of node.cases ?? []) visit(c.body);
+      visit(node.defaultCase);
+    };
+    visit(fn.bodyNode);
+
+    if (!leaf || !scalarOnly) return;
+    const pool: Array<'R2' | 'R3' | 'R4'> = ['R2', 'R3', 'R4'];
+    let next = 0;
+    for (const obj of [...(fn.params ?? []), ...(fn.locals ?? [])]) {
+      if (next >= pool.length) break;
+      if (this.isPromotable(obj)) obj.reg = pool[next++];
+    }
+  }
+
+  // `&lvalue` escapes the address of a named local only when the lvalue resolves
+  // to a variable directly or through member access; `&*p` / `&a[i]` compute an
+  // address from a value and pin no named local, so they leave nothing to mark.
+  private markAddrTaken(node: Node | undefined): void {
+    if (!node) return;
+    if (node.kind === 'var') {
+      if (node.variable) node.variable.addrTaken = true;
+    } else if (node.kind === 'member') {
+      this.markAddrTaken(node.lhs);
+    }
+  }
+
+  private isPromotable(obj: Obj): boolean {
+    if (!obj.isLocal || obj.addrTaken) return false;
+    // Skip compiler-internal temporaries (anonymous, `.`-prefixed, or `__`
+    // reserved names such as the C backend's `__alloca_size__`/`__va_area__`):
+    // they may be accessed specially and are not source variables to optimize.
+    const n = obj.name;
+    if (n === '' || n[0] === '.' || (n[0] === '_' && n[1] === '_')) return false;
+    // `long` is 4-byte in this ILP32 ABI; `long long` is the separate `llong`
+    // kind, so {int, long, ptr} is exactly the 4-byte scalar set.
+    const k = obj.ty.kind;
+    return k === 'int' || k === 'long' || k === 'ptr';
+  }
+
   // --- functions -----------------------------------------------------------
 
   private genFunction(fn: Obj): void {
     this.currentFn = fn;
     this.cspMemStale = false;
     this.r5HasCsp = false;
+    this.analyzeAndAllocate(fn);
     if (!fn.isStatic) this.globalDecls.push(fn.name);
     this.returnLabel = this.label(`${fn.name}.return`);
 
@@ -276,6 +362,22 @@ class Generator {
       this.emit(`  MOV R7, ${stackSize}`);
       this.emit('  ADD R5, R7');
       this.emit('  STORE R5, __csp');
+    }
+
+    // Prime promoted parameters from their incoming stack slots. Promoted plain
+    // locals need no init (an uninitialized read is UB here as it is in memory).
+    for (const p of fn.params ?? []) {
+      if (!p.reg) continue;
+      const offset = p.offset ?? 0;
+      this.emit('  MOVR R0, R6');
+      if (offset < 0) {
+        this.emit(`  MOV R7, ${-offset}`);
+        this.emit('  SUB R0, R7');
+      } else if (offset > 0) {
+        this.emit(`  MOV R7, ${offset}`);
+        this.emit('  ADD R0, R7');
+      }
+      this.emit(`  LOADR ${p.reg}, R0`);
     }
 
     if (fn.bodyNode) this.genStmt(fn.bodyNode);
@@ -435,6 +537,12 @@ class Generator {
     switch (node.kind) {
       case 'var': {
         const obj = node.variable!;
+        if (obj.reg) {
+          // Promoted variables have no address; the address-taken analysis must
+          // have excluded any var whose address is needed. Reaching here is a
+          // bug in that analysis.
+          throw new CodegenError(`cannot take address of register variable ${obj.name}`);
+        }
         if (obj.isLocal) {
           const offset = obj.offset ?? 0;
           this.emit('  MOVR R0, R6');
@@ -725,6 +833,10 @@ class Generator {
         this.emit(`  MOV R0, ${node.value! >>> 0}`);
         return;
       case 'var':
+        if (node.variable?.reg) {
+          this.emit(`  MOVR R0, ${node.variable.reg}`);
+          return;
+        }
         this.genAddr(node);
         this.load(node);
         return;
@@ -747,6 +859,14 @@ class Generator {
       case 'assign':
         if (isAggregate(node.lhs?.ty)) {
           this.genAggregateAssign(node);
+          return;
+        }
+        if (node.lhs?.kind === 'var' && node.lhs.variable?.reg) {
+          // The promoted variable *is* the register: compute the value (already
+          // narrowed to the lvalue type by the parser, as for the memory store
+          // path) and move it in. The result stays in R0.
+          this.genExpr(node.rhs!);
+          this.emit(`  MOVR ${node.lhs.variable.reg}, R0`);
           return;
         }
         this.genAddr(node.lhs!);
