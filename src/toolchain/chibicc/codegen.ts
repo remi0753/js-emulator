@@ -1208,6 +1208,14 @@ class Generator {
 
   private genFloatExpr(node: Node): void {
     switch (node.kind) {
+      // See genDoubleExpr: comma/`?:` results are produced by their arms.
+      case 'comma':
+        this.genExpr(node.lhs!);
+        this.genExpr(node.rhs!);
+        return;
+      case 'cond':
+        this.genConditional(node);
+        return;
       case 'num':
         this.emit(`  MOV R0, ${node.value! >>> 0}`);
         return;
@@ -1248,6 +1256,18 @@ class Generator {
 
   private genDoubleExpr(node: Node): void {
     switch (node.kind) {
+      // The comma operator and `?:` decide their result width by the producing
+      // arm, so they are dispatched here. genExpr handles them before the type
+      // routing, but the typed value helpers reach genDoubleExpr directly;
+      // genConditional and the comma sequence re-enter genExpr per arm, which
+      // lands a double arm back here and leaves the result in R0:R1.
+      case 'comma':
+        this.genExpr(node.lhs!);
+        this.genExpr(node.rhs!);
+        return;
+      case 'cond':
+        this.genConditional(node);
+        return;
       case 'num':
         this.emit(`  MOV R0, ${node.value! >>> 0}`);
         this.emit(`  MOV R1, ${node.valueHi! >>> 0}`);
@@ -1419,6 +1439,14 @@ class Generator {
 
   private gen64Expr(node: Node): void {
     switch (node.kind) {
+      // See genDoubleExpr: comma/`?:` results are produced by their arms.
+      case 'comma':
+        this.genExpr(node.lhs!);
+        this.genExpr(node.rhs!);
+        return;
+      case 'cond':
+        this.genConditional(node);
+        return;
       case 'num': {
         const v = node.value ?? 0;
         this.emit(`  MOV R0, ${v >>> 0}`);

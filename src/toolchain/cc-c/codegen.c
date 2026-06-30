@@ -214,10 +214,10 @@ static void gen_double_expr(Node *node);
 static void gen_float_value(Node *node);
 static void gen_double_value(Node *node);
 static void gen_float_compare(Node *node);
-// Used by the float/double `?:` paths in gen_float_expr/gen_double_expr, which
-// are defined before gen_cond. Forward-declared so the guest frontend (which
-// rejects implicit declarations) accepts the early reference.
-static void gen_cond(Node *node);
+// The float/double/64-bit `?:` value paths in gen_{float,double,64}_expr delegate
+// to gen_conditional, which is defined later. Forward-declared so the guest
+// frontend (which rejects implicit declarations) accepts the early reference.
+static void gen_conditional(Node *node);
 // Register allocation: name of a promoted register (defined near gen_function,
 // but used earlier by gen_expr). The guest chibicc frontend rejects implicit
 // declarations, so it must be declared before its first use.
@@ -536,6 +536,14 @@ static void gen64_compare(Node *node) {
 
 static void gen64_expr(Node *node) {
   switch (node->kind) {
+  // See gen_double_expr: comma/`?:` results are produced by their arms.
+  case ND_COMMA:
+    gen_expr(node->lhs);
+    gen_expr(node->rhs);
+    return;
+  case ND_COND:
+    gen_conditional(node);
+    return;
   case ND_NUM:
     ins_imm("MOV R0", (unsigned)node->val);
     ins_imm("MOV R1", (unsigned)(node->val >> 32));
@@ -645,28 +653,14 @@ static void gen_double_binary(Node *node) {
 // Produce a binary32 value in R0 for a node already typed `float`.
 static void gen_float_expr(Node *node) {
   switch (node->kind) {
+  // See gen_double_expr: comma/`?:` results are produced by their arms.
   case ND_COMMA:
-    // The comma's value is its rhs; the lhs runs only for side effects.
     gen_expr(node->lhs);
-    gen_float_value(node->rhs);
+    gen_expr(node->rhs);
     return;
-  case ND_COND: {
-    // `?:` keeps its operands in cond/then/els (never lhs/rhs), so the default
-    // gen_float_binary path would read a NULL rhs. Lower it like gen_conditional
-    // but evaluate each arm through the float value path.
-    char *els = new_label();
-    char *end = new_label();
-    gen_cond(node->cond);
-    ins("MOV R7, 0");
-    ins("CMP R0, R7");
-    jmp("JZ", els);
-    gen_float_value(node->then);
-    jmp("JMP", end);
-    emit_label(els);
-    gen_float_value(node->els);
-    emit_label(end);
+  case ND_COND:
+    gen_conditional(node);
     return;
-  }
   case ND_NUM:
     ins_imm("MOV R0", float_literal_bits(node));
     return;
@@ -706,28 +700,20 @@ static void gen_float_expr(Node *node) {
 // `double`.
 static void gen_double_expr(Node *node) {
   switch (node->kind) {
+  // The comma operator and `?:` decide their result width by the producing arm,
+  // so they are dispatched here. gen_expr handles them before the type routing,
+  // but the typed value helpers (gen_double_value) reach gen_double_expr
+  // directly; gen_conditional and the comma sequence re-enter gen_expr per arm,
+  // which lands a double arm back here and leaves the result in R0:R1. `?:` keeps
+  // its operands in cond/then/els (never lhs/rhs), so without this it would fall
+  // into the default gen_double_binary and read a NULL rhs.
   case ND_COMMA:
-    // The comma's value is its rhs; the lhs runs only for side effects.
     gen_expr(node->lhs);
-    gen_double_value(node->rhs);
+    gen_expr(node->rhs);
     return;
-  case ND_COND: {
-    // `?:` keeps its operands in cond/then/els (never lhs/rhs), so the default
-    // gen_double_binary path would read a NULL rhs. Lower it like
-    // gen_conditional but evaluate each arm through the double value path.
-    char *els = new_label();
-    char *end = new_label();
-    gen_cond(node->cond);
-    ins("MOV R7, 0");
-    ins("CMP R0, R7");
-    jmp("JZ", els);
-    gen_double_value(node->then);
-    jmp("JMP", end);
-    emit_label(els);
-    gen_double_value(node->els);
-    emit_label(end);
+  case ND_COND:
+    gen_conditional(node);
     return;
-  }
   case ND_NUM: {
     unsigned lo, hi;
     double_literal_bits(node, &lo, &hi);

@@ -96,14 +96,19 @@ int main(void){
   double n = -2.5;
   line("neg", (int)(-n * 10.0));                 // 25
 
-  // double-/float-VALUED ?: and comma. These reach the float codegen via the
-  // value path (gen_double_value/gen_float_value), whose ND_COND/ND_COMMA used
-  // to fall through to the binary helper and dereference a NULL operand —
-  // crashing the compiler (it broke the in-guest self-build on parse.c).
+  // float/double/long-long-VALUED ?: and comma. These reach the typed codegen
+  // via the value path (gen_{float,double,64}_value), whose ND_COND/ND_COMMA used
+  // to fall through to the binary helper and dereference the cond node's NULL
+  // lhs/rhs — crashing the compiler (it broke the in-guest self-build on
+  // parse.c's double conditional).
   line("dcond", (int)(((a>b) ? 2.5 : 9.5) * 10.0));    // 25
   line("fcond", (int)(((a<b) ? 4.0f : 8.0f) * 10.0f)); // 80
   int kk=0; double cz = (kk++, 5.5);
   line("dcomma", (int)(cz*10.0) + kk);                 // 56
+  long long lc = (a > b) ? 100LL : 200LL;              // 64-bit ?: as a value
+  line("lcond", (int)lc);                              // 100
+  long long lm = (b, 300LL);                           // 64-bit comma as a value
+  line("lcomma", (int)lm);                             // 300
 
   return 0;
 }
@@ -123,6 +128,8 @@ const EXPECT = [
   'dcond25',
   'fcond80',
   'dcomma56',
+  'lcond100',
+  'lcomma300',
 ];
 
 test('guest cc compiles and runs floating-point and variadic-double programs', () => {
