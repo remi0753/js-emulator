@@ -101,6 +101,21 @@ void on_page_fault(void) {
     __lptbr(proc_table[current].vm.ptbr);
     return;
   }
+  // An unresolved user fault kills the process with SIGSEGV. The default action
+  // is silent, so a guest program that derefs a bad pointer just vanishes mid-run
+  // (e.g. the compiler dying part-way leaves a truncated .s and a baffling
+  // downstream "undefined symbol"). Log it unconditionally — pid, faulting
+  // address, faulting pc, and error bits — so the failure is visible without
+  // having to set CFG_TRACE_FAULT ahead of time.
+  klog("kernel: SIGSEGV pid=");
+  klog_int(current);
+  klog(" addr=");
+  klog_int(page_fault_addr);
+  klog(" pc=");
+  klog_int(sctx_pc);
+  klog(" err=");
+  klog_int(error);
+  klog("\n");
   send_signal(current, CFG_SIGSEGV);
   prepare_signal(current);
   load_ctx(current);

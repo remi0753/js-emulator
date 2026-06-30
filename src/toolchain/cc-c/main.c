@@ -4,6 +4,7 @@
 StringArray include_paths;
 bool opt_fpic;
 bool opt_fcommon = true;
+bool opt_verbose;
 char *base_file;
 
 static char *inputs[128];
@@ -12,6 +13,13 @@ static char *output_path;
 static bool opt_asm;
 static bool opt_compile;
 
+// Progress trace: with `-v`, stamp each compile phase to stderr as it starts so
+// a long or failing build shows where it is (which file, which phase) instead
+// of going silent. Front-end phases are the slow ones, so they each get a line.
+static void trace(char *phase, char *file) {
+  if (opt_verbose) fprintf(stderr, "cc: %-12s %s\n", phase, file);
+}
+
 bool file_exists(char *path) {
   struct stat st;
   return stat(path, &st) == 0;
@@ -19,7 +27,7 @@ bool file_exists(char *path) {
 
 static void usage(int status) {
   FILE *out = status == 0 ? stdout : stderr;
-  fprintf(out, "usage: cc [-S | -c] [-I dir] [-o output] input...\n");
+  fprintf(out, "usage: cc [-S | -c] [-v] [-I dir] [-o output] input...\n");
   exit(status);
 }
 
@@ -54,6 +62,11 @@ static void parse_args(int argc, char **argv) {
     }
     if (!strcmp(argv[i], "-c")) {
       opt_compile = true;
+      i = i + 1;
+      continue;
+    }
+    if (!strcmp(argv[i], "-v")) {
+      opt_verbose = true;
       i = i + 1;
       continue;
     }
@@ -145,13 +158,16 @@ static void compile_to_asm(char *input, char *output) {
   Obj *prog;
   FILE *out;
   base_file = input;
+  trace("tokenize", input);
   tok = tokenize_file(input);
   if (tok == 0) {
     fprintf(stderr, "cc: cannot open %s: %s\n", input, strerror(errno));
     exit(1);
   }
   init_macros();
+  trace("preprocess", input);
   tok = preprocess(tok);
+  trace("parse", input);
   prog = parse(tok);
 
   out = fopen(output, "w");
@@ -159,8 +175,10 @@ static void compile_to_asm(char *input, char *output) {
     fprintf(stderr, "cc: cannot open %s: %s\n", output, strerror(errno));
     exit(1);
   }
+  trace("codegen", output);
   codegen(prog, out);
   fclose(out);
+  trace("done", output);
 }
 
 static char *compile_to_asm_memory(char *input) {
@@ -170,13 +188,16 @@ static char *compile_to_asm_memory(char *input) {
   char *buffer;
   size_t size;
   base_file = input;
+  trace("tokenize", input);
   tok = tokenize_file(input);
   if (tok == 0) {
     fprintf(stderr, "cc: cannot open %s: %s\n", input, strerror(errno));
     exit(1);
   }
   init_macros();
+  trace("preprocess", input);
   tok = preprocess(tok);
+  trace("parse", input);
   prog = parse(tok);
 
   buffer = 0;
@@ -186,8 +207,10 @@ static char *compile_to_asm_memory(char *input) {
     fprintf(stderr, "cc: cannot create assembly buffer\n");
     exit(1);
   }
+  trace("codegen", input);
   codegen(prog, out);
   fclose(out);
+  trace("done", input);
   return buffer;
 }
 
@@ -227,7 +250,9 @@ int main(int argc, char **argv) {
   for (int i = 0; i < input_count; i++)
     if (!ends_with(inputs[i], ".s") && !ends_with(inputs[i], ".o")) all_linkable = false;
   if (all_linkable) {
+    trace("link", output_path ? output_path : "a.out");
     link_guest_objects(inputs, input_count, output_path);
+    trace("done", output_path ? output_path : "a.out");
     return 0;
   }
 

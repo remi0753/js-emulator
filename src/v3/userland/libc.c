@@ -295,8 +295,27 @@ struct heap_block {
 struct heap_block *heap_free;
 char *heap_next;
 char *heap_limit;
+int heap_oom_reported;
 
 #define HEAP_CHUNK 65536
+
+// Announce heap exhaustion on stderr (once) before malloc hands back NULL.
+// Most callers — the C compiler in particular — do not check every allocation,
+// so an out-of-memory condition would otherwise surface only as a later NULL
+// dereference: a SIGSEGV that kills the process mid-write and leaves a
+// half-written output file, with no hint that memory was the cause. A single
+// raw write to fd 2 (no malloc, no buffering) makes the real reason visible so
+// a failing build points at "out of memory" instead of a corrupt artifact.
+void report_oom(void) {
+  char *m;
+  int n;
+  if (heap_oom_reported != 0) return;
+  heap_oom_reported = 1;
+  m = "libc: out of memory (heap exhausted)\n";
+  n = 0;
+  while (m[n] != 0) n = n + 1;
+  write(2, m, n);
+}
 
 void *malloc(int size) {
   struct heap_block *block;
@@ -318,7 +337,10 @@ void *malloc(int size) {
   while (heap_next == 0 || heap_next + total > heap_limit) {
     int need = total > HEAP_CHUNK ? total : HEAP_CHUNK;
     char *base = sbrk(need);
-    if (base == (char *)-1) return 0;
+    if (base == (char *)-1) {
+      report_oom();
+      return 0;
+    }
     if (heap_next != 0 && base == heap_limit) {
       heap_limit = base + need; // contiguous growth: keep the current cursor
     } else {
@@ -1243,10 +1265,47 @@ void format_ll(struct format_sink *sink, long long value) {
   }
 }
 
+// Emit `body[0..bodylen)` into `sink`, padded out to `width` columns. When
+// `left` is set the padding follows the body (left-justified, `%-10s`);
+// otherwise it precedes it, using '0' instead of ' ' when `zero` is set
+// (`%05d`). Shared by every conversion so width/precision behave uniformly.
+void format_padded(struct format_sink *sink, char *body, int bodylen, int width,
+                   int left, int zero) {
+  int pad;
+  int k;
+  pad = width - bodylen;
+  if (pad < 0) pad = 0;
+  if (left == 0) {
+    k = 0;
+    while (k < pad) {
+      format_putc(sink, zero != 0 ? '0' : ' ');
+      k = k + 1;
+    }
+  }
+  k = 0;
+  while (k < bodylen) {
+    format_putc(sink, body[k]);
+    k = k + 1;
+  }
+  if (left != 0) {
+    k = 0;
+    while (k < pad) {
+      format_putc(sink, ' ');
+      k = k + 1;
+    }
+  }
+}
+
 int vformat(struct format_sink *sink, char *format, va_list ap) {
   int i;
   int long_flag;
   int spec;
+  int left;
+  int zero;
+  int width;
+  int prec;
+  char numbuf[80];
+  char onechar[1];
   i = 0;
   while (format[i] != 0) {
     if (format[i] != '%') {
@@ -1260,6 +1319,47 @@ int vformat(struct format_sink *sink, char *format, va_list ap) {
       i = i + 1;
       continue;
     }
+    // Flags: only '-' (left-justify) and '0' (zero-pad) change layout; '+',
+    // ' ' and '#' are accepted and ignored so format strings using them print.
+    left = 0;
+    zero = 0;
+    while (format[i] == '-' || format[i] == '0' || format[i] == '+' ||
+           format[i] == ' ' || format[i] == '#') {
+      if (format[i] == '-') left = 1;
+      else if (format[i] == '0') zero = 1;
+      i = i + 1;
+    }
+    // Field width: a literal count or '*' to take it from the argument list.
+    // A negative '*' width means left-justify to its magnitude (printf rule).
+    width = 0;
+    if (format[i] == '*') {
+      width = va_arg(ap, int);
+      i = i + 1;
+      if (width < 0) {
+        left = 1;
+        width = 0 - width;
+      }
+    } else {
+      while (format[i] >= '0' && format[i] <= '9') {
+        width = width * 10 + (format[i] - '0');
+        i = i + 1;
+      }
+    }
+    // Precision: caps string length / minimum digits. -1 means "unspecified".
+    prec = -1;
+    if (format[i] == '.') {
+      i = i + 1;
+      if (format[i] == '*') {
+        prec = va_arg(ap, int);
+        i = i + 1;
+      } else {
+        prec = 0;
+        while (format[i] >= '0' && format[i] <= '9') {
+          prec = prec * 10 + (format[i] - '0');
+          i = i + 1;
+        }
+      }
+    }
     long_flag = 0;
     if (format[i] == 'l') {
       long_flag = 1;
@@ -1271,24 +1371,50 @@ int vformat(struct format_sink *sink, char *format, va_list ap) {
     }
     spec = format[i];
     if (spec == 0) break;
-    if (spec == 's') format_puts(sink, va_arg(ap, char *));
-    else if (spec == 'c') format_putc(sink, va_arg(ap, int));
-    else if (spec == 'd' || spec == 'i') {
-      if (long_flag == 2) format_ll(sink, va_arg(ap, long long));
-      else format_int(sink, va_arg(ap, int));
-    } else if (spec == 'u') {
-      if (long_flag == 2) format_ull(sink, va_arg(ap, unsigned long long), 10, 0);
-      else format_uint(sink, va_arg(ap, unsigned int), 10, 0);
-    } else if (spec == 'x') {
-      if (long_flag == 2) format_ull(sink, va_arg(ap, unsigned long long), 16, 0);
-      else format_uint(sink, va_arg(ap, unsigned int), 16, 0);
-    } else if (spec == 'X') {
-      if (long_flag == 2) format_ull(sink, va_arg(ap, unsigned long long), 16, 1);
-      else format_uint(sink, va_arg(ap, unsigned int), 16, 1);
-    }
-    else if (spec == 'p') {
-      format_puts(sink, "0x");
-      format_uint(sink, va_arg(ap, unsigned int), 16, 0);
+    if (spec == 's') {
+      char *str;
+      int slen;
+      str = va_arg(ap, char *);
+      if (str == 0) str = "(null)";
+      slen = 0;
+      while (str[slen] != 0) slen = slen + 1;
+      if (prec >= 0 && prec < slen) slen = prec;  // precision truncates strings
+      format_padded(sink, str, slen, width, left, 0);
+    } else if (spec == 'c') {
+      onechar[0] = va_arg(ap, int);
+      format_padded(sink, onechar, 1, width, left, 0);
+    } else if (spec == 'd' || spec == 'i' || spec == 'u' || spec == 'x' ||
+               spec == 'X' || spec == 'p') {
+      // Render the digits into a scratch buffer (a buffer-backed sink), then
+      // pad to the field width. va_arg stays in this scope so the real `ap`
+      // advances — va_list is `char *` here, so a helper taking it by value
+      // would consume the argument from a copy and desync the rest.
+      struct format_sink tmp;
+      int nlen;
+      tmp.stream = 0;
+      tmp.buffer = numbuf;
+      tmp.size = 80;
+      tmp.count = 0;
+      tmp.error = 0;
+      if (spec == 'd' || spec == 'i') {
+        if (long_flag == 2) format_ll(&tmp, va_arg(ap, long long));
+        else format_int(&tmp, va_arg(ap, int));
+      } else if (spec == 'u') {
+        if (long_flag == 2) format_ull(&tmp, va_arg(ap, unsigned long long), 10, 0);
+        else format_uint(&tmp, va_arg(ap, unsigned int), 10, 0);
+      } else if (spec == 'x') {
+        if (long_flag == 2) format_ull(&tmp, va_arg(ap, unsigned long long), 16, 0);
+        else format_uint(&tmp, va_arg(ap, unsigned int), 16, 0);
+      } else if (spec == 'X') {
+        if (long_flag == 2) format_ull(&tmp, va_arg(ap, unsigned long long), 16, 1);
+        else format_uint(&tmp, va_arg(ap, unsigned int), 16, 1);
+      } else {
+        format_puts(&tmp, "0x");
+        format_uint(&tmp, va_arg(ap, unsigned int), 16, 0);
+      }
+      nlen = tmp.count > 79 ? 79 : tmp.count;
+      // Zero-padding is meaningless once left-justified (printf ignores it too).
+      format_padded(sink, numbuf, nlen, width, left, left != 0 ? 0 : zero);
     } else {
       format_putc(sink, '%');
       if (long_flag != 0) format_putc(sink, 'l');

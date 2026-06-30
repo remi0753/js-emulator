@@ -96,6 +96,15 @@ int main(void){
   double n = -2.5;
   line("neg", (int)(-n * 10.0));                 // 25
 
+  // double-/float-VALUED ?: and comma. These reach the float codegen via the
+  // value path (gen_double_value/gen_float_value), whose ND_COND/ND_COMMA used
+  // to fall through to the binary helper and dereference a NULL operand —
+  // crashing the compiler (it broke the in-guest self-build on parse.c).
+  line("dcond", (int)(((a>b) ? 2.5 : 9.5) * 10.0));    // 25
+  line("fcond", (int)(((a<b) ? 4.0f : 8.0f) * 10.0f)); // 80
+  int kk=0; double cz = (kk++, 5.5);
+  line("dcomma", (int)(cz*10.0) + kk);                 // 56
+
   return 0;
 }
 `;
@@ -111,6 +120,9 @@ const EXPECT = [
   'vari102',
   'vard400',
   'neg25',
+  'dcond25',
+  'fcond80',
+  'dcomma56',
 ];
 
 test('guest cc compiles and runs floating-point and variadic-double programs', () => {

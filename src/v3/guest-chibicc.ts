@@ -179,10 +179,17 @@ function guestSupportAssembly(): { name: string; text: string }[] {
     },
   );
   const i64Text = chibiccCompile(I64_RUNTIME_SOURCE, { name: 'i64rt.c' });
+  // The compiler's own object code references soft-float helpers: codegen.c folds
+  // float literals with __truncdfsf2, and any compiler source that does double
+  // arithmetic (e.g. parse.c's constant evaluator) emits __adddf3/__floatsidf/…
+  // calls. The multi-object self-build link does not auto-pull /lib runtime the
+  // way the single-source `cc -o` path does, so ship soft-float in the kit too.
+  const floatText = chibiccCompile(FLOAT_RUNTIME_SOURCE, { name: 'softfloat.c' });
   return [
     { name: 'crt.s', text: userCrtAssembly(COMPILER_STACK_SIZE) },
     { name: 'libc.s', text: libcText },
     { name: 'i64rt.s', text: i64Text },
+    { name: 'softfloat.s', text: floatText },
   ];
 }
 
@@ -204,7 +211,7 @@ function guestBuildScript(output: string, scratch = '/b'): string {
 }
 
 function guestLinkList(scratch = '/b'): string {
-  const support = ['crt.s', 'libc.s', 'i64rt.s'].map((s) => `/usr/src/cc/${s}`);
+  const support = ['crt.s', 'libc.s', 'i64rt.s', 'softfloat.s'].map((s) => `/usr/src/cc/${s}`);
   const objs = GUEST_SELFBUILD_UNITS.map((u) => `${scratch}/${u.obj}.s`);
   return `${[...support, ...objs].join('\n')}\n`;
 }
