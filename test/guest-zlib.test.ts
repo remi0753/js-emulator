@@ -21,7 +21,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -52,7 +52,9 @@ function laneCount(units: number): number {
   let cores = availableParallelism();
   if (process.platform === 'darwin') {
     try {
-      const perf = Number(execFileSync('sysctl', ['-n', 'hw.perflevel0.logicalcpu'], { encoding: 'utf8' }).trim());
+      const perf = Number(
+        execFileSync('sysctl', ['-n', 'hw.perflevel0.logicalcpu'], { encoding: 'utf8' }).trim(),
+      );
       if (Number.isFinite(perf) && perf > 0) cores = perf;
     } catch {
       // no perflevel info -- keep availableParallelism()
@@ -172,10 +174,12 @@ function compileBatch(units: string[]): Array<[string, Uint8Array]> {
   // well under it once the shell hits EOF after the script).
   const label = units.join(',');
   const result = machine.run(120_000_000_000);
-  if (result.reason !== 'halt') throw new Error(`batch ${label}: VM stopped with ${result.reason}\n${out}`);
+  if (result.reason !== 'halt')
+    throw new Error(`batch ${label}: VM stopped with ${result.reason}\n${out}`);
   if (out.includes('cc:')) throw new Error(`batch ${label}: guest cc reported an error\n${out}`);
   if (out.includes('PANIC')) throw new Error(`batch ${label}: kernel panicked\n${out}`);
-  if (!out.includes('__CCDONE__')) throw new Error(`batch ${label}: compile did not finish\n${out}`);
+  if (!out.includes('__CCDONE__'))
+    throw new Error(`batch ${label}: compile did not finish\n${out}`);
 
   // Re-mount fresh: the guest created /b/<unit>.o through its own FS, so the
   // host Fs used to stage sources has no record of it; a fresh mount reads the
@@ -227,9 +231,7 @@ if (isMainThread) {
     for (const b of bins) b.sort((a, c) => sizeOf(a) - sizeOf(c));
 
     const objects = new Map<string, Uint8Array>();
-    const results = await Promise.all(
-      bins.filter((b) => b.length > 0).map(compileBatchInWorker),
-    );
+    const results = await Promise.all(bins.filter((b) => b.length > 0).map(compileBatchInWorker));
     for (const batch of results) for (const [u, bytes] of batch) objects.set(u, bytes);
 
     // Link the collected objects (in canonical order) and run the round trip in

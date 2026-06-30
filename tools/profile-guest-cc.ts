@@ -1,9 +1,9 @@
+import type { Mnemonic } from '../src/isa.ts';
 import { DirectBlockDevice } from '../src/storage/direct-block-device.ts';
 import { Fs } from '../src/storage/fs.ts';
 import { bootGuestDiskImage } from '../src/v3/boot.ts';
 import { chibiccCompilerSymbols, installChibiccToolchain } from '../src/v3/guest-chibicc.ts';
 import { buildGuestDiskImage, GUEST_DEVELOPMENT_FS_BLOCKS } from '../src/v3/guest-kernel.ts';
-import type { Mnemonic } from '../src/isa.ts';
 
 const BUDGET = Number(process.env.GUEST_CC_BUDGET ?? 20_000_000_000);
 const SAMPLE_EVERY = Number(process.env.GUEST_CC_SAMPLE_EVERY ?? 16384);

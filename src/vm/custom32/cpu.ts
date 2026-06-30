@@ -225,10 +225,6 @@ export class CPU {
 
   // --- memory access with address translation ---
 
-  private xlate(vaddr: number, write: boolean): number {
-    return this.xlateN(vaddr, 1, write);
-  }
-
   private xlateN(vaddr: number, bytes: number, write: boolean): number {
     if (!this.pagingEnabled) {
       if (vaddr < 0 || vaddr + bytes > this.phys.size) {

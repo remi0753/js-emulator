@@ -64,10 +64,11 @@ function runGuest(disk: Uint8Array, script: string, budget: number, stream = fal
     out += s;
     if (!stream) return;
     pending += s;
-    let nl: number;
-    while ((nl = pending.indexOf('\n')) >= 0) {
+    let nl = pending.indexOf('\n');
+    while (nl >= 0) {
       emit(pending.slice(0, nl));
       pending = pending.slice(nl + 1);
+      nl = pending.indexOf('\n');
     }
   };
   const { machine } = bootGuestDiskImage(disk, { consoleSink: sink });

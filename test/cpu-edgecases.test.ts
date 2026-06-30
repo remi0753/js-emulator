@@ -46,7 +46,10 @@ function pagedMachine(
   source: string,
   opts: {
     mode?: (typeof MODE)[keyof typeof MODE];
-    extraMaps?: (map: (va: number, frame: number, flags: number) => void, alloc: () => number) => void;
+    extraMaps?: (
+      map: (va: number, frame: number, flags: number) => void,
+      alloc: () => number,
+    ) => void;
   } = {},
 ) {
   const phys = new PhysicalMemory(2 * MiB);
@@ -60,7 +63,8 @@ function pagedMachine(
   const { bytes } = assemble(source);
   phys.bytes.set(bytes, codeFrame);
 
-  const map = (va: number, frame: number, flags: number) => cpu.mmu.map(pd, va, frame, flags, alloc);
+  const map = (va: number, frame: number, flags: number) =>
+    cpu.mmu.map(pd, va, frame, flags, alloc);
   map(CODE_VA, codeFrame, PTE.U); // code page: user-readable, not writable
   const stackFrame = alloc();
   map(STACK_TOP - PAGE_SIZE, stackFrame, PTE.U | PTE.W);

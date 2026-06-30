@@ -994,7 +994,9 @@ class Generator {
   }
 
   private isCommutative(kind: Node['kind']): boolean {
-    return kind === 'add' || kind === 'mul' || kind === 'bitand' || kind === 'bitor' || kind === 'bitxor';
+    return (
+      kind === 'add' || kind === 'mul' || kind === 'bitand' || kind === 'bitor' || kind === 'bitxor'
+    );
   }
 
   // True when genExpr(node) writes only R0 and the R7 scratch — never R1-R5. A
