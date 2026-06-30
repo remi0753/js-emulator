@@ -14,6 +14,7 @@
     "ar": "node tools/custom32-ar.ts",
     "cc": "node tools/custom32-cc.ts",
     "objdump": "node tools/custom32-objdump.ts",
+    "symbolize": "node tools/symbolize-guest-cc.ts",
     "demo": "node demo/multitask.ts",
     "demo:v3": "node demo/v3.ts",
     "lint": "biome lint .",

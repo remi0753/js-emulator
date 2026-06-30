@@ -79,6 +79,48 @@ void on_default_trap(void) {
   panic("unexpected trap");
 }
 
+// Print a simple backtrace for a faulting user process: the faulting pc is the
+// innermost frame; the rest is found by scanning the user (hardware) stack for
+// words that point into the loaded image [USER_BASE, brk_start), i.e. return
+// addresses left by CALL. It is heuristic — a pushed pointer into the image can
+// look like a return address — so it over-reports rather than miss frames, and
+// the host symbolizer (tools/symbolize-guest-cc.ts) drops words that don't land
+// on a function. Values are decimal to match klog_int; feed them straight to the
+// symbolizer. This is what turns a guest cc crash from "addr=8, now go map a pc
+// by hand" into a ready-to-read call chain.
+void user_backtrace(int proc, int pc, int sp) {
+  int text_lo;
+  int text_hi;
+  int addr;
+  int phys;
+  int word;
+  int scanned;
+  int printed;
+  text_lo = CFG_USER_BASE;
+  text_hi = proc_table[proc].vm.brk_start; // end of the loaded image (text+data)
+  klog("kernel: backtrace (decimal pcs; symbolize with tools/symbolize-guest-cc.ts):\n");
+  klog("  ");
+  klog_int(pc); // innermost frame: where the fault happened
+  scanned = 0;
+  printed = 1;
+  addr = sp;
+  while (scanned < 2048 && printed < 32) {
+    phys = user_phys_addr(proc, addr, 0);
+    if (phys < 0) {
+      break; // walked off the mapped stack
+    }
+    word = read32_at(phys);
+    if (word >= text_lo && word < text_hi) {
+      klog(" ");
+      klog_int(word);
+      printed = printed + 1;
+    }
+    addr = addr + 4;
+    scanned = scanned + 1;
+  }
+  klog("\n");
+}
+
 void on_page_fault(void) {
   int error;
   page_fault_addr = __rdpfla();
@@ -116,6 +158,7 @@ void on_page_fault(void) {
   klog(" err=");
   klog_int(error);
   klog("\n");
+  user_backtrace(current, sctx_pc, sctx_sp);
   send_signal(current, CFG_SIGSEGV);
   prepare_signal(current);
   load_ctx(current);
